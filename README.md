@@ -1,8 +1,10 @@
-# Template for Isaac Lab Projects
+# ViTacLab
+
+Benchmarking and Pretraining Visuo-Tactile Representations for Robotic Manipulation
 
 ## Overview
 
-This project/repository serves as a template for building projects or extensions based on Isaac Lab.
+This project/repository is based on Isaac Lab and extends it with visuo-tactile manipulation tasks.
 It allows you to develop in an isolated environment, outside of the core Isaac Lab repository.
 
 **Key Features:**
