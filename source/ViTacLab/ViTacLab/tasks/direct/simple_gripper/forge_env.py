@@ -146,6 +146,8 @@ class ForgeEnv(FactoryEnv):
         # Get RGB image size from scene config
         self.tactile_image_height = self.cfg.scene.tactile_sensor_left.render_cfg.image_height  # 240
         self.tactile_image_width = self.cfg.scene.tactile_sensor_left.render_cfg.image_width  # 320
+        # self.tactile_image_height = 480
+        # self.tactile_image_width = 640
         self.tactile_image_channels = 3  # RGB
         self.tactile_image_total = self.tactile_image_height * self.tactile_image_width * self.tactile_image_channels  # 240 * 320 * 3 = 230400
         

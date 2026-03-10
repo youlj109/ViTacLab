@@ -17,17 +17,41 @@ from isaaclab.assets import Articulation, RigidObject
 from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
+from isaaclab.sim.utils.stage import get_current_stage
 from isaaclab.utils.math import quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate
+from pxr import UsdPhysics
+
+# Optional tactile (Shadow Hand with GelSight)
+try:
+    from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
+except ImportError:
+    VisuoTactileSensorData = None
+
+TACTILE_SENSOR_NAMES = ("tactile_sensor_ff", "tactile_sensor_lf", "tactile_sensor_mf", "tactile_sensor_rf", "tactile_sensor_th")
+# Full tactile obs dims (5 sensors * 490 points, 5 * 490 * 2 for shear); see ShadowHandSceneCfg.
+TACTILE_POINTS_PER_SENSOR = 20 * 25  # For DexCube, the original is 20 * 25 = 500
+TACTILE_NORMAL_DIM = 5 * TACTILE_POINTS_PER_SENSOR  # 2500
+TACTILE_SHEAR_DIM = 5 * TACTILE_POINTS_PER_SENSOR * 2  # 5000
+FULL_TACTILE_OBS_DIM = 157 + TACTILE_NORMAL_DIM + TACTILE_SHEAR_DIM  # 7507
+FULL_TACTILE_STATE_DIM = 187 + TACTILE_NORMAL_DIM + TACTILE_SHEAR_DIM  # 7507
 
 if TYPE_CHECKING:
-    from isaaclab_tasks.direct.allegro_hand.allegro_hand_env_cfg import AllegroHandEnvCfg
-    from isaaclab_tasks.direct.shadow_hand.shadow_hand_env_cfg import ShadowHandEnvCfg
+    from ViTacLab.tasks.direct.simple_dexhand.allegro_hand.allegro_hand_env_cfg import AllegroHandEnvCfg
+    from ViTacLab.tasks.direct.simple_dexhand.shadow_hand.shadow_hand_env_cfg import ShadowHandEnvCfg
 
 
 class InHandManipulationEnv(DirectRLEnv):
     cfg: AllegroHandEnvCfg | ShadowHandEnvCfg
 
     def __init__(self, cfg: AllegroHandEnvCfg | ShadowHandEnvCfg, render_mode: str | None = None, **kwargs):
+        # Before super(): set observation_space / state_space for full tactile mode (like forge obs_mode)
+        if (
+            hasattr(cfg, "scene")
+            and hasattr(cfg.scene, "tactile_sensor_ff")
+            and not getattr(cfg, "reduced_obs", True)
+        ):
+            cfg.observation_space = FULL_TACTILE_OBS_DIM
+            cfg.state_space = FULL_TACTILE_STATE_DIM
         super().__init__(cfg, render_mode, **kwargs)
 
         self.num_hand_dofs = self.hand.num_joints
@@ -81,6 +105,9 @@ class InHandManipulationEnv(DirectRLEnv):
         # add hand, in-hand object, and goal object
         self.hand = Articulation(self.cfg.robot_cfg)
         self.object = RigidObject(self.cfg.object_cfg)
+        # ensure the in-hand object has an SDF collision mesh so TacSL can build
+        # force-field SDF views for the contact object.
+        self._ensure_object_sdf_collision()
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         # clone and replicate (no need to filter for this environment)
@@ -91,6 +118,56 @@ class InHandManipulationEnv(DirectRLEnv):
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
+
+        # Optional: buffers for tactile sensors (Shadow Hand with 5 GelSight).
+        # We do not call sim.reset() or sensor.get_initial_render() here to
+        # avoid re-entrantly triggering sensor initialization during _setup_scene,
+        # which can lead to black-screen / crashes inside Isaac Sim UI.
+        self._tactile_normal_force = None
+        self._tactile_shear_force = None
+        self._num_tactile_sensors = 0
+        self._tactile_array_total = 0
+        if TACTILE_SENSOR_NAMES[0] in self.scene.sensors and VisuoTactileSensorData is not None:
+            first = self.scene[TACTILE_SENSOR_NAMES[0]]
+            sz = first.cfg.tactile_array_size
+            self._tactile_array_total = sz[0] * sz[1]
+            self._num_tactile_sensors = len(TACTILE_SENSOR_NAMES)
+            self._tactile_normal_force = torch.zeros(
+                (self.num_envs, self._num_tactile_sensors * self._tactile_array_total),
+                device=self.device,
+            )
+            self._tactile_shear_force = torch.zeros(
+                (self.num_envs, self._num_tactile_sensors * self._tactile_array_total * 2),
+                device=self.device,
+            )
+
+    def _ensure_object_sdf_collision(self) -> None:
+        """Ensure the in-hand object has at least one mesh collision marked as SDF.
+
+        TacSL's force-field sensing requires the contact object to expose an SDF
+        collision mesh. Here we retrofit the loaded object by marking the first
+        collision mesh under `/World/envs/env_0/object` as `approximation='sdf'`
+        if it is not already configured that way. This is done once on env_0;
+        cloned environments inherit the same collision setup.
+        """
+        stage = get_current_stage()
+        # Find the root prim for the in-hand object in env_0
+        object_prim = sim_utils.find_first_matching_prim("/World/envs/env_0/object")
+        if object_prim is None:
+            return
+
+        def has_collision_api(prim):
+            return prim.HasAPI(UsdPhysics.MeshCollisionAPI)
+
+        # Find the first mesh with MeshCollisionAPI under the object hierarchy
+        collision_mesh = sim_utils.get_first_matching_child_prim(object_prim.GetPath(), predicate=has_collision_api)
+        if collision_mesh is None:
+            return
+
+        collision_api = UsdPhysics.MeshCollisionAPI(collision_mesh)
+        approx_attr = collision_api.GetApproximationAttr()
+        if approx_attr.Get() != "sdf":
+            approx_attr.Set("sdf")
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clone()
@@ -117,6 +194,23 @@ class InHandManipulationEnv(DirectRLEnv):
             self.cur_targets[:, self.actuated_dof_indices], joint_ids=self.actuated_dof_indices
         )
 
+    def _update_tactile_data(self) -> None:
+        """Read 5 GelSight sensors and fill _tactile_normal_force, _tactile_shear_force."""
+        if self._tactile_normal_force is None:
+            return
+        norm_list, shear_list = [], []
+        for name in TACTILE_SENSOR_NAMES:
+            if name not in self.scene.sensors:
+                continue
+            data = self.scene[name].data
+            if getattr(data, "tactile_normal_force", None) is not None:
+                norm_list.append(data.tactile_normal_force)
+            if getattr(data, "tactile_shear_force", None) is not None:
+                shear_list.append(data.tactile_shear_force.view(self.num_envs, -1))
+        if len(norm_list) == self._num_tactile_sensors and len(shear_list) == self._num_tactile_sensors:
+            self._tactile_normal_force = torch.cat(norm_list, dim=1)
+            self._tactile_shear_force = torch.cat(shear_list, dim=1)
+
     def _get_observations(self) -> dict:
         if self.cfg.asymmetric_obs:
             self.fingertip_force_sensors = self.hand.root_physx_view.get_link_incoming_joint_force()[
@@ -132,6 +226,17 @@ class InHandManipulationEnv(DirectRLEnv):
 
         if self.cfg.asymmetric_obs:
             states = self.compute_full_state()
+
+        # Append tactile (5 GelSight: normal + shear) only when present and not reduced mode
+        use_tactile_obs = (
+            self._tactile_normal_force is not None
+            and not getattr(self.cfg, "reduced_obs", True)
+        )
+        if use_tactile_obs:
+            self._update_tactile_data()
+            obs = torch.cat([obs, self._tactile_normal_force, self._tactile_shear_force], dim=-1)
+            if self.cfg.asymmetric_obs:
+                states = torch.cat([states, self._tactile_normal_force, self._tactile_shear_force], dim=-1)
 
         observations = {"policy": obs}
         if self.cfg.asymmetric_obs:

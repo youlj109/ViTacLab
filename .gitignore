@@ -64,6 +64,9 @@ _build
 # Teleop Recorded Dataset
 /datasets/
 
+# Local run/play data (checkpoints, recordings)
+/data/
+
 # Tests
 tests/
 

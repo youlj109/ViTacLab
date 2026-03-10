@@ -131,7 +131,7 @@ class ForgeSceneCfg(InteractiveSceneCfg):
         normal_contact_stiffness=1.0,
         friction_coefficient=2.0,
         tangential_stiffness=0.1,
-        # Camera configuration
+        # Camera configuration (must match render_cfg)
         camera_cfg=TiledCameraCfg(
             prim_path="/World/envs/env_.*/Robot/R15_leftfinger/elastomer_tip/cam",
             height=GELSIGHT_R15_CFG.image_height,
@@ -162,7 +162,7 @@ class ForgeSceneCfg(InteractiveSceneCfg):
         normal_contact_stiffness=1.0,
         friction_coefficient=2.0,
         tangential_stiffness=0.1,
-        # Camera configuration
+        # Camera configuration (must match render_cfg)
         camera_cfg=TiledCameraCfg(
             prim_path="/World/envs/env_.*/Robot/R15_rightfinger/elastomer_tip/cam",
             height=GELSIGHT_R15_CFG.image_height,
@@ -179,9 +179,11 @@ class ForgeSceneCfg(InteractiveSceneCfg):
     third_person_camera = TiledCameraCfg(
         prim_path="/World/envs/env_.*/ThirdPersonCamera",
         offset=TiledCameraCfg.OffsetCfg(
-            pos=(0.5, 0.0, 0.8),
-            rot=(0.9239, 0.0, 0.3827, 0.0),
-            convention="world",
+            # pos=(1.51596, -0.0097, 0.2),
+            # rot=(0, 0, 0, 1),
+            pos=(1.35521, -0.03639, 0.66108),
+            rot=(0.59765, 0.38546, 0.38104, 0.5908),
+            convention="None",
         ),
         data_types=["rgb"],
         spawn=sim_utils.PinholeCameraCfg(
@@ -190,13 +192,21 @@ class ForgeSceneCfg(InteractiveSceneCfg):
             horizontal_aperture=20.955,
             clipping_range=(0.1, 20.0),
         ),
-        width=256,
-        height=256,
+        width=480,
+        height=640,
     )
 
 
 @configclass
 class ForgeEnvCfg(FactoryEnvCfg):
+    # # --- 在这里添加全局渲染分辨率配置 ---
+    # sim: sim_utils.SimulationCfg = sim_utils.SimulationCfg(
+    #         render=sim_utils.RenderCfg(
+    #             width=640,   # 设置为与传感器一致的宽度
+    #             height=480   # 设置为与传感器一致的高度
+    #         )
+    # )
+    # # -----------------------------------
     action_space: int = 7
     obs_rand: ForgeObsRandCfg = ForgeObsRandCfg()
     ctrl: ForgeCtrlCfg = ForgeCtrlCfg()
@@ -248,7 +258,7 @@ class ForgeEnvCfg(FactoryEnvCfg):
                 solver_position_iteration_count=192,
                 solver_velocity_iteration_count=1,
             ),
-            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
+            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=-0.001),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
             joint_pos={

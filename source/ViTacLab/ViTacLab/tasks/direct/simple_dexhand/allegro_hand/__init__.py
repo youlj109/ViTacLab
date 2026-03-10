@@ -15,7 +15,7 @@ from . import agents
 # Register Gym environments.
 ##
 
-inhand_task_entry = "isaaclab_tasks.direct.inhand_manipulation"
+inhand_task_entry = "ViTacLab.tasks.direct.simple_dexhand.inhand_manipulation"
 
 gym.register(
     id="Isaac-Repose-Cube-Allegro-Direct-v0",
