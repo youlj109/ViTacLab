@@ -13,13 +13,15 @@ import numpy as np
 import torch
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, RigidObject
+from isaaclab.assets import Articulation, RigidObject, RigidObjectCfg, ArticulationCfg
 from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.sim.utils.stage import get_current_stage
 from isaaclab.utils.math import quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate
-from pxr import UsdPhysics
+from pxr import UsdPhysics, PhysxSchema
+
+from isaaclab_tasks.direct.factory.factory_tasks_cfg import PegInsert
 
 # Optional tactile (Shadow Hand with GelSight)
 try:
@@ -104,6 +106,39 @@ class InHandManipulationEnv(DirectRLEnv):
     def _setup_scene(self):
         # add hand, in-hand object, and goal object
         self.hand = Articulation(self.cfg.robot_cfg)
+        # 原始 DexCube 抓取对象：直接使用配置里的 object_cfg（RigidObjectCfg）。
+        # self.object = RigidObject(self.cfg.object_cfg)
+        #
+        # 改为使用代码定义的立方体（边长 0.06，Rigid + collision）。
+        # cube_cfg: RigidObjectCfg = RigidObjectCfg(
+        #     prim_path="/World/envs/env_.*/object",
+        #     spawn=sim_utils.CuboidCfg(
+        #         size=(0.06, 0.06, 0.06),
+        #         rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        #             kinematic_enabled=False,
+        #             disable_gravity=False,
+        #             linear_damping=0.0,
+        #             angular_damping=0.0,
+        #             max_linear_velocity=1000.0,
+        #             max_angular_velocity=3666.0,
+        #             enable_gyroscopic_forces=True,
+        #             solver_position_iteration_count=8,
+        #             solver_velocity_iteration_count=0,
+        #             sleep_threshold=0.005,
+        #             stabilization_threshold=0.0025,
+        #             max_depenetration_velocity=1000.0,
+        #         ),
+        #         collision_props=sim_utils.CollisionPropertiesCfg(
+        #             contact_offset=0.005,
+        #             rest_offset=0.0,
+        #         ),
+        #     ),
+        #     init_state=RigidObjectCfg.InitialStateCfg(
+        #         pos=(0.0, -0.39, 0.6),
+        #         rot=(1.0, 0.0, 0.0, 0.0),
+        #     ),
+        # )
+        # self.object = RigidObject(cube_cfg)
         self.object = RigidObject(self.cfg.object_cfg)
         # ensure the in-hand object has an SDF collision mesh so TacSL can build
         # force-field SDF views for the contact object.
@@ -144,30 +179,41 @@ class InHandManipulationEnv(DirectRLEnv):
     def _ensure_object_sdf_collision(self) -> None:
         """Ensure the in-hand object has at least one mesh collision marked as SDF.
 
-        TacSL's force-field sensing requires the contact object to expose an SDF
-        collision mesh. Here we retrofit the loaded object by marking the first
-        collision mesh under `/World/envs/env_0/object` as `approximation='sdf'`
-        if it is not already configured that way. This is done once on env_0;
-        cloned environments inherit the same collision setup.
+        TacSL's force-field sensing和 PhysX tensors 都要求接触物体暴露一个 SDF 碰撞体。
+        这里我们优先在 `/World/envs/env_0/object/collisions/collisions` 上挂 SDF 配置。
         """
         stage = get_current_stage()
-        # Find the root prim for the in-hand object in env_0
-        object_prim = sim_utils.find_first_matching_prim("/World/envs/env_0/object")
-        if object_prim is None:
+
+        # 优先使用你实际的 mesh 路径：
+        # /World/envs/env_0/object/collisions/collisions.mesh
+        target_prim = stage.GetPrimAtPath("/World/envs/env_0/object/collisions/collisions")
+
+        # 如果这个 prim 不存在/无效，再退回到 “第一个带 MeshCollisionAPI 的 mesh”
+        if not target_prim.IsValid():
+            object_prim = sim_utils.find_first_matching_prim("/World/envs/env_0/object")
+            if object_prim is None:
+                return
+
+            def has_collision_api(prim):
+                return prim.HasAPI(UsdPhysics.MeshCollisionAPI)
+
+            target_prim = sim_utils.get_first_matching_child_prim(object_prim.GetPath(), predicate=has_collision_api)
+
+        if target_prim is None or not target_prim.IsValid():
             return
 
-        def has_collision_api(prim):
-            return prim.HasAPI(UsdPhysics.MeshCollisionAPI)
+        # 1) 通用 Collision API
+        collider = UsdPhysics.CollisionAPI.Apply(target_prim)
+        collider.GetCollisionEnabledAttr().Set(True)
 
-        # Find the first mesh with MeshCollisionAPI under the object hierarchy
-        collision_mesh = sim_utils.get_first_matching_child_prim(object_prim.GetPath(), predicate=has_collision_api)
-        if collision_mesh is None:
-            return
+        # 2) MeshCollisionAPI，设置 approximation = "sdf"
+        mesh_collider = UsdPhysics.MeshCollisionAPI.Apply(target_prim)
+        mesh_collider.CreateApproximationAttr().Set("sdf")
 
-        collision_api = UsdPhysics.MeshCollisionAPI(collision_mesh)
-        approx_attr = collision_api.GetApproximationAttr()
-        if approx_attr.Get() != "sdf":
-            approx_attr.Set("sdf")
+        # 3) PhysX SDF mesh 碰撞 API，设置分辨率并由 PhysX 生成 SDF
+        sdf_api = PhysxSchema.PhysxSDFMeshCollisionAPI.Apply(target_prim)
+        sdf_api.CreateSdfResolutionAttr().Set(256)
+        print("ensure_object_sdf_collision done")
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clone()

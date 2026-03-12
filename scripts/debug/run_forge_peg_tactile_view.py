@@ -35,6 +35,12 @@ def _to_uint8(img: np.ndarray) -> np.ndarray:
         return np.clip(img, 0.0, 255.0).astype(np.uint8)
     return np.clip(img.astype(np.float64), 0.0, 255.0).astype(np.uint8)
 
+def _ff_to_uint8(img: np.ndarray) -> np.ndarray:
+    """Convert force-field viz image in [0,1] float to uint8."""
+    if img.dtype != np.uint8:
+        return (np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
+    return img
+
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     """Build argument parser (including Isaac AppLauncher args, like train/play scripts)."""
@@ -88,6 +94,7 @@ def main() -> None:
     import ViTacLab.tasks  # noqa: F401
     from ViTacLab.tasks.direct.simple_gripper.forge_env import ForgeEnv
     from ViTacLab.tasks.direct.simple_gripper.forge_env_cfg import ForgeTaskPegInsertCfg
+    from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_render import compute_tactile_shear_image
 
     # Build environment configuration for the PegInsert task.
     cfg = ForgeTaskPegInsertCfg()
@@ -106,8 +113,13 @@ def main() -> None:
         obs, extras = env.reset()
         print("Environment created. Starting real-time tactile viewer (Ctrl+C to stop).")
 
-        # Prepare Matplotlib figure with two subplots (left/right tactile RGB).
-        fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(8, 4))
+        # Determine force-field grid shape from sensor config.
+        nrows, ncols = env.scene.cfg.tactile_sensor_left.tactile_array_size  # type: ignore[attr-defined]
+
+        # Prepare Matplotlib figure:
+        # top row: tactile RGB (left/right), bottom row: force-field viz (left/right)
+        fig, axes = plt.subplots(2, 2, figsize=(8, 8))
+        (ax_left, ax_right), (ax_ff_left, ax_ff_right) = axes
         plt.tight_layout()
 
         # Initialize with zeros until first data arrives.
@@ -119,6 +131,16 @@ def main() -> None:
         im_right = ax_right.imshow(zero_img)
         ax_right.set_title("Tactile Right")
         ax_right.axis("off")
+
+        # Force-field visualizations (arrow field): returned image size depends on resolution in compute_tactile_shear_image.
+        zero_ff = np.zeros((nrows * 30, ncols * 30, 3), dtype=np.uint8)
+        im_ff_left = ax_ff_left.imshow(zero_ff)
+        ax_ff_left.set_title("Force Field Left (normal+shear)")
+        ax_ff_left.axis("off")
+
+        im_ff_right = ax_ff_right.imshow(zero_ff)
+        ax_ff_right.set_title("Force Field Right (normal+shear)")
+        ax_ff_right.axis("off")
 
         fig.canvas.draw()
         plt.pause(0.1)
@@ -146,15 +168,23 @@ def main() -> None:
                 if "tactile_sensor_left" in env.scene.sensors:
                     data_left = env.scene["tactile_sensor_left"].data  # type: ignore[index]
                     img_left = getattr(data_left, "tactile_rgb_image", None)
+                    nf_left = getattr(data_left, "tactile_normal_force", None)
+                    sf_left = getattr(data_left, "tactile_shear_force", None)
                 else:
                     img_left = None
+                    nf_left = None
+                    sf_left = None
 
                 # Right sensor
                 if "tactile_sensor_right" in env.scene.sensors:
                     data_right = env.scene["tactile_sensor_right"].data  # type: ignore[index]
                     img_right = getattr(data_right, "tactile_rgb_image", None)
+                    nf_right = getattr(data_right, "tactile_normal_force", None)
+                    sf_right = getattr(data_right, "tactile_shear_force", None)
                 else:
                     img_right = None
+                    nf_right = None
+                    sf_right = None
 
                 # Update left image
                 if img_left is not None and img_left.ndim == 4:
@@ -167,6 +197,22 @@ def main() -> None:
                     e = min(env_idx, img_right.shape[0] - 1)
                     arr_r = img_right[e].detach().cpu().numpy()  # (H, W, 3)
                     im_right.set_data(_to_uint8(arr_r))
+
+                # Update force-field (left)
+                if nf_left is not None and sf_left is not None:
+                    e = min(env_idx, nf_left.shape[0] - 1)
+                    nf = nf_left[e].view(nrows, ncols).detach().cpu().numpy()
+                    sf = sf_left[e].view(nrows, ncols, 2).detach().cpu().numpy()
+                    ff_img = compute_tactile_shear_image(nf, sf)  # float image in [0,1]
+                    im_ff_left.set_data(_ff_to_uint8(ff_img))
+
+                # Update force-field (right)
+                if nf_right is not None and sf_right is not None:
+                    e = min(env_idx, nf_right.shape[0] - 1)
+                    nf = nf_right[e].view(nrows, ncols).detach().cpu().numpy()
+                    sf = sf_right[e].view(nrows, ncols, 2).detach().cpu().numpy()
+                    ff_img = compute_tactile_shear_image(nf, sf)
+                    im_ff_right.set_data(_ff_to_uint8(ff_img))
 
                 fig.canvas.draw_idle()
                 plt.pause(0.001)

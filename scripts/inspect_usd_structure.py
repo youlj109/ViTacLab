@@ -4,7 +4,7 @@ Inspect USD file prim hierarchy. Run in Isaac Sim Python or any env with pxr (e.
 
 Usage:
   python scripts/inspect_usd_structure.py [path_to.usd]
-  Default: source/ViTacLab/ViTacLab/assets/data/Robots/ShadowHand/shadow_hand_withtac.usd
+  Default: source/ViTacLab/ViTacLab/assets/data/Objects/DexCube/dex_cube_sdf.usd
 """
 import os
 import sys
@@ -13,7 +13,7 @@ import sys
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DEFAULT_USD = os.path.join(
     REPO_ROOT,
-    "source/ViTacLab/ViTacLab/assets/data/Robots/ShadowHand/shadow_hand_withtac.usd",
+    "source/ViTacLab/ViTacLab/assets/data/Sensors/Gelsight_finger/gelsight_r15_finger_short.usd",
 )
 
 
