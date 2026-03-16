@@ -142,7 +142,7 @@ class InHandManipulationEnv(DirectRLEnv):
         self.object = RigidObject(self.cfg.object_cfg)
         # ensure the in-hand object has an SDF collision mesh so TacSL can build
         # force-field SDF views for the contact object.
-        self._ensure_object_sdf_collision()
+        # self._ensure_object_sdf_collision()
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         # clone and replicate (no need to filter for this environment)
@@ -184,11 +184,10 @@ class InHandManipulationEnv(DirectRLEnv):
         """
         stage = get_current_stage()
 
-        # 优先使用你实际的 mesh 路径：
-        # /World/envs/env_0/object/collisions/collisions.mesh
+
         target_prim = stage.GetPrimAtPath("/World/envs/env_0/object/collisions/collisions")
 
-        # 如果这个 prim 不存在/无效，再退回到 “第一个带 MeshCollisionAPI 的 mesh”
+
         if not target_prim.IsValid():
             object_prim = sim_utils.find_first_matching_prim("/World/envs/env_0/object")
             if object_prim is None:

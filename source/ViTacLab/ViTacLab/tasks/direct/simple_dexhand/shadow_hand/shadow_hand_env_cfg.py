@@ -138,9 +138,9 @@ class ShadowHandSceneCfg(InteractiveSceneCfg):
         debug_vis=False,
         render_cfg=GELSIGHT_R15_CFG,
         enable_camera_tactile=True,
-        enable_force_field=False,
+        enable_force_field=True,
         tactile_array_size=(20, 25),
-        tactile_margin=0.001,
+        tactile_margin=0.005,
         contact_object_prim_path_expr="/World/envs/env_.*/object",
         normal_contact_stiffness=1.0,
         friction_coefficient=2.0,
@@ -161,9 +161,9 @@ class ShadowHandSceneCfg(InteractiveSceneCfg):
         debug_vis=False,
         render_cfg=GELSIGHT_R15_CFG,
         enable_camera_tactile=True,
-        enable_force_field=False,
+        enable_force_field=True,
         tactile_array_size=(20, 25),
-        tactile_margin=0.001,
+        tactile_margin=0.005,
         contact_object_prim_path_expr="/World/envs/env_.*/object",
         normal_contact_stiffness=1.0,
         friction_coefficient=2.0,
@@ -184,9 +184,9 @@ class ShadowHandSceneCfg(InteractiveSceneCfg):
         debug_vis=False,
         render_cfg=GELSIGHT_R15_CFG,
         enable_camera_tactile=True,
-        enable_force_field=False,
+        enable_force_field=True,
         tactile_array_size=(20, 25),
-        tactile_margin=0.001,
+        tactile_margin=0.005,
         contact_object_prim_path_expr="/World/envs/env_.*/object",
         normal_contact_stiffness=1.0,
         friction_coefficient=2.0,
@@ -207,9 +207,9 @@ class ShadowHandSceneCfg(InteractiveSceneCfg):
         debug_vis=False,
         render_cfg=GELSIGHT_R15_CFG,
         enable_camera_tactile=True,
-        enable_force_field=False,
+        enable_force_field=True,
         tactile_array_size=(20, 25),
-        tactile_margin=0.001,
+        tactile_margin=0.005,
         contact_object_prim_path_expr="/World/envs/env_.*/object",
         normal_contact_stiffness=1.0,
         friction_coefficient=2.0,
@@ -230,9 +230,9 @@ class ShadowHandSceneCfg(InteractiveSceneCfg):
         debug_vis=False,
         render_cfg=GELSIGHT_R15_CFG,
         enable_camera_tactile=True,
-        enable_force_field=False,
+        enable_force_field=True,
         tactile_array_size=(20, 25),
-        tactile_margin=0.001,
+        tactile_margin=0.005,
         contact_object_prim_path_expr="/World/envs/env_.*/object",
         normal_contact_stiffness=1.0,
         friction_coefficient=2.0,
@@ -275,7 +275,7 @@ class ShadowHandEnvCfg(DirectRLEnvCfg):
     # robot
     _shadow_hand_spawn = SHADOW_HAND_CFG.spawn.replace(
         usd_path="source/ViTacLab/ViTacLab/assets/data/Robots/ShadowHand/shadow_hand_withtac.usd",
-        collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=-0.001)
+        collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.001, rest_offset=-0.001)
     )
     robot_cfg: ArticulationCfg = SHADOW_HAND_CFG.replace(prim_path="/World/envs/env_.*/Robot").replace(
         init_state=ArticulationCfg.InitialStateCfg(
@@ -319,7 +319,7 @@ class ShadowHandEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/object",
         spawn=sim_utils.UsdFileCfg(
             usd_path="source/ViTacLab/ViTacLab/assets/data/Objects/DexCube/dex_cube_sdf.usd",
-            # activate_contact_sensors=True,
+            activate_contact_sensors=True,
             #usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 kinematic_enabled=False,
@@ -337,7 +337,7 @@ class ShadowHandEnvCfg(DirectRLEnvCfg):
                 max_contact_impulse=1e32,
             ),
             mass_props=sim_utils.MassPropertiesCfg(density=567.0),
-            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
+            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.001, rest_offset=0.0),
             semantic_tags=[("class", "cube")],
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.39, 0.6), rot=(1.0, 0.0, 0.0, 0.0)),

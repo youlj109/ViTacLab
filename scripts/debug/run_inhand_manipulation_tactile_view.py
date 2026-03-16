@@ -155,6 +155,10 @@ def main() -> None:
         target_dt = 1.0 / max(1e-3, float(args.fps))
         env_idx = max(0, int(args.env_index))
 
+        # 保存第 100 帧的力点阵（只保存一次）
+        saved_force_frame = False
+        frame_idx = 0
+
         while simulation_app.is_running():
             t0 = time.time()
 
@@ -169,7 +173,6 @@ def main() -> None:
                 actions = torch.zeros(env.num_envs, action_dim, device=env.device)
 
             env.step(actions)
-            print(f"actions: {actions}")
 
             # Update plots from sensor data.
             try:
@@ -184,8 +187,18 @@ def main() -> None:
                         e = min(env_idx, nf.shape[0] - 1)
                         nf_np = nf[e].view(nrows, ncols).detach().cpu().numpy()
                         sf_np = sf[e].view(nrows, ncols, 2).detach().cpu().numpy()
-                        ff_img = compute_tactile_shear_image(nf_np, sf_np)
+                        ff_img = compute_tactile_shear_image(nf_np*0.01, sf_np*0.01)
                         ff_ims[i].set_data(_ff_to_uint8(ff_img))
+
+                        # 当到达第 100 帧时，保存一次第一个传感器的当前帧力点阵
+                        # if not saved_force_frame and i == 0 and frame_idx == 100:
+                        #     np.savez(
+                        #         "tactile_force_frame_env{}_sensor{}.npz".format(env_idx, i),
+                        #         normal_force=nf_np,
+                        #         shear_force=sf_np,
+                        #         ff_image=ff_img,
+                        #     )
+                        #     saved_force_frame = True
 
                     if args.show_rgb:
                         rgb = getattr(data, "tactile_rgb_image", None)
@@ -202,6 +215,7 @@ def main() -> None:
             remaining = target_dt - elapsed
             if remaining > 0:
                 time.sleep(remaining)
+            frame_idx += 1
 
     except KeyboardInterrupt:
         print("\nInterrupted by user. Closing environment and viewer...")
