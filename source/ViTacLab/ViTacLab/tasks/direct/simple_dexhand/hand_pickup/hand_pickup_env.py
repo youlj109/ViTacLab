@@ -218,11 +218,18 @@ class UR10eShadowHandPickupEnv(UR10eShadowHandDirectBaseEnv):
         pos_err = self.goal_object_pos - self.object_pos
         pos_dist = torch.norm(pos_err, p=2, dim=-1)
         pos_rew = (1.0 - torch.tanh(pos_dist / (self.cfg.pos_tracking_std + 1e-6))) * self.cfg.pos_tracking_weight
+        # shaping: distance from robot base / EE region to object
+        ee_to_obj = self.object_pos - self.robot_root_pos_env
+        ee_dist = torch.norm(ee_to_obj, p=2, dim=-1)
+        # plateau: treat distances within saturation radius as equally good
+        sat_r = self.cfg.ee_object_saturation_radius
+        ee_dist_eff = torch.clamp(ee_dist, min=sat_r)
+        ee_rew = (1.0 - torch.tanh(ee_dist_eff / (self.cfg.ee_object_std + 1e-6))) * self.cfg.ee_object_weight
 
         action_l2 = torch.sum(self.actions**2, dim=-1) * self.cfg.action_l2_weight
         action_rate_l2 = torch.sum(self._action_rate**2, dim=-1) * self.cfg.action_rate_l2_weight
 
-        reward = pos_rew + action_l2 + action_rate_l2
+        reward = pos_rew + ee_rew + action_l2 + action_rate_l2
 
         # success (position-only lift)
         height_err = torch.abs(pos_err[:, 2])
@@ -324,6 +331,8 @@ class UR10eShadowHandPickupEnv(UR10eShadowHandDirectBaseEnv):
         # robot state
         self.robot_dof_pos = self.robot.data.joint_pos
         self.robot_dof_vel = self.robot.data.joint_vel
+        # robot base position in env frame (used as a simple proxy for end-effector region)
+        self.robot_root_pos_env = self.robot.data.root_pos_w - self.scene.env_origins
 
         # object pose
         self.object_pos = self.object.data.root_pos_w - self.scene.env_origins

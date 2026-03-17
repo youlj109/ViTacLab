@@ -122,6 +122,11 @@ class UR10eShadowHandPickupEnvCfg(DirectRLEnvCfg):
     # --- reward composition (dexsuite-like)
     pos_tracking_std: float = 0.10
     pos_tracking_weight: float = 2.0
+    # small shaping term: distance from robot base/EE region to object
+    ee_object_std: float = 0.10
+    ee_object_weight: float = 0.5
+    # within this radius, EE→object reward is considered equally good (plateau)
+    ee_object_saturation_radius: float = 0.2
     success_pos_tol: float = 0.03
     success_height_tol: float = 0.02
     success_weight: float = 10.0
