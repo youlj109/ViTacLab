@@ -70,7 +70,8 @@ _build
 # Tests
 tests/
 
-# Docker history
+/tmp/
+
 .isaac-lab-docker-history
 
 # TacSL sensor

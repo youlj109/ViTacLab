@@ -35,10 +35,8 @@ import numpy as np
 import torch
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, DeformableObject, RigidObject
-from isaaclab.envs import DirectRLEnv
+from isaaclab.assets import DeformableObject, RigidObject
 from isaaclab.markers import VisualizationMarkers
-from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import (
     quat_conjugate,
     quat_from_angle_axis,
@@ -48,6 +46,10 @@ from isaaclab.utils.math import (
 )
 
 from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
+
+from ViTacLab.assets.robot.ur10e_shadowhand_direct_base_single.ur10e_shadowhand_direct_base_env import (
+    UR10eShadowHandDirectBaseEnv,
+)
 
 from .ur10e_shadowhand_pour_env_cfg import (
     UR10eShadowHandPourEnvCfg,
@@ -98,7 +100,7 @@ def _rotation_distance(object_rot, target_rot):
 ##
 
 
-class UR10eShadowHandPourEnv(DirectRLEnv):
+class UR10eShadowHandPourEnv(UR10eShadowHandDirectBaseEnv):
     """UR10e + ShadowHand deformable paper-cup pouring environment with tactile sensing."""
 
     cfg: UR10eShadowHandPourEnvCfg
@@ -119,30 +121,6 @@ class UR10eShadowHandPourEnv(DirectRLEnv):
         cfg.observation_space = full_obs_dim
 
         super().__init__(cfg, render_mode, **kwargs)
-
-        # 关节数量与关节索引
-        self.num_robot_dofs = self.robot.num_joints
-        self.robot_dof_targets = torch.zeros(
-            (self.num_envs, self.num_robot_dofs), dtype=torch.float, device=self.device
-        )
-        self.prev_targets = torch.zeros_like(self.robot_dof_targets)
-        self.cur_targets = torch.zeros_like(self.robot_dof_targets)
-
-        # 选择所有可控关节（使用名字正则，与 TacEx 一致）
-        self.actuated_dof_indices: list[int] = []
-        for i, name in enumerate(self.robot.joint_names):
-            if re.match(self.cfg.arm_joint_expr, name) or re.match(self.cfg.hand_joint_expr, name):
-                self.actuated_dof_indices.append(i)
-        if not self.actuated_dof_indices:
-            # 回退：如果正则匹配不到，则全部关节可控
-            self.actuated_dof_indices = list(range(self.num_robot_dofs))
-        self.actuated_dof_indices.sort()
-        self.num_actions = len(self.actuated_dof_indices)
-
-        # 关节限位
-        joint_pos_limits = self.robot.root_physx_view.get_dof_limits().to(self.device)
-        self.robot_dof_lower_limits = joint_pos_limits[..., 0]
-        self.robot_dof_upper_limits = joint_pos_limits[..., 1]
 
         # 单位向量
         self.x_unit_tensor = torch.tensor([1, 0, 0], dtype=torch.float, device=self.device).repeat(
@@ -185,26 +163,12 @@ class UR10eShadowHandPourEnv(DirectRLEnv):
     # Scene setup
     # ---------------------------------------------------------------------
 
-    def _setup_scene(self):
-        # 机器人、纸杯、目标容器
-        self.robot = Articulation(self.cfg.robot_cfg)
+    def _setup_task_scene(self) -> None:
+        # 纸杯、目标容器
         self.cup = DeformableObject(self.cfg.cup_cfg)
         self.target = RigidObject(self.cfg.target_cfg)
-
-        # 地面
-        spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
-
-        # 复制 envs
-        self.scene.clone_environments(copy_from_source=False)
-
-        # 注册到 scene，便于 randomization / 管理
-        self.scene.articulations["robot"] = self.robot
         self.scene.deformable_objects["cup"] = self.cup
         self.scene.rigid_objects["target_cup"] = self.target
-
-        # 环境光照
-        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
-        light_cfg.func("/World/Light", light_cfg)
 
         # 初始化 TacSL 触觉 buffers（参考 inhand_manipulation）
         if TACTILE_SENSOR_NAMES[0] in self.scene.sensors and VisuoTactileSensorData is not None:
@@ -224,29 +188,6 @@ class UR10eShadowHandPourEnv(DirectRLEnv):
     # ---------------------------------------------------------------------
     # Control
     # ---------------------------------------------------------------------
-
-    def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        # 将输入 action 映射为 [-1, 1]，并缓存到 self.actions
-        self.actions = actions.clone()
-
-    def _apply_action(self) -> None:
-        # 关节位置目标（与 inhand_manipulation 中的手部控制逻辑保持一致）
-        self.cur_targets[:, self.actuated_dof_indices] = _scale(
-            self.actions,
-            self.robot_dof_lower_limits[:, self.actuated_dof_indices],
-            self.robot_dof_upper_limits[:, self.actuated_dof_indices],
-        )
-        self.cur_targets[:, self.actuated_dof_indices] = saturate(
-            self.cur_targets[:, self.actuated_dof_indices],
-            self.robot_dof_lower_limits[:, self.actuated_dof_indices],
-            self.robot_dof_upper_limits[:, self.actuated_dof_indices],
-        )
-
-        self.prev_targets[:, self.actuated_dof_indices] = self.cur_targets[:, self.actuated_dof_indices]
-        self.robot.set_joint_position_target(
-            self.cur_targets[:, self.actuated_dof_indices],
-            joint_ids=self.actuated_dof_indices,
-        )
 
     # ---------------------------------------------------------------------
     # Tactile data
@@ -370,10 +311,15 @@ class UR10eShadowHandPourEnv(DirectRLEnv):
     # ---------------------------------------------------------------------
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
+        # IMPORTANT: Passing `None` into `scene.reset()` uses `slice(None)` inside sensors.
+        # This avoids CUDA indexing asserts in case some sensors were initialized with a different
+        # internal env count (e.g., when their prims are not yet present at construction time).
         if env_ids is None:
-            env_ids = self.robot._ALL_INDICES
-
-        super()._reset_idx(env_ids)
+            super()._reset_idx(slice(None))
+            env_ids = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
+        else:
+            env_ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+            super()._reset_idx(env_ids)
 
         # 重置目标杯
         target_state = self.target.data.default_root_state.clone()[env_ids]
@@ -392,13 +338,7 @@ class UR10eShadowHandPourEnv(DirectRLEnv):
 
         dof_vel_noise = sample_uniform(-1.0, 1.0, (len(env_ids), self.num_robot_dofs), device=self.device)
         dof_vel = self.robot.data.default_joint_vel[env_ids] + self.cfg.reset_robot_dof_vel_noise * dof_vel_noise
-
-        self.prev_targets[env_ids] = dof_pos
-        self.cur_targets[env_ids] = dof_pos
-        self.robot_dof_targets[env_ids] = dof_pos
-
-        self.robot.set_joint_position_target(dof_pos, env_ids=env_ids)
-        self.robot.write_joint_state_to_sim(dof_pos, dof_vel, env_ids=env_ids)
+        self._reset_robot_joints(env_ids, dof_pos, dof_vel)
 
         # 重置统计量
         self.successes[env_ids] = 0.0
