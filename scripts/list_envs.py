@@ -42,7 +42,7 @@ def main():
     """Print all environments registered in `ViTacLab` extension."""
     # print all the available environments
     table = PrettyTable(["S. No.", "Task Name", "Entry Point", "Config"])
-    table.title = "Available Environments in Isaac Lab"
+    table.title = "ViTacLab registered environments (gymnasium)"
     # set alignment of table columns
     table.align["Task Name"] = "l"
     table.align["Entry Point"] = "l"
@@ -50,13 +50,18 @@ def main():
 
     # count of environments
     index = 0
-    # acquire all Isaac environments names
+    # Environments registered by this extension use entry points under `ViTacLab.tasks`.
     for task_spec in gym.registry.values():
-        if "Template-" in task_spec.id and (args_cli.keyword is None or args_cli.keyword in task_spec.id):
-            # add details to table
-            table.add_row([index + 1, task_spec.id, task_spec.entry_point, task_spec.kwargs["env_cfg_entry_point"]])
-            # increment count
-            index += 1
+        entry_point = getattr(task_spec, "entry_point", "") or ""
+        if "ViTacLab.tasks" not in entry_point:
+            continue
+        tid = task_spec.id
+        if args_cli.keyword is not None and args_cli.keyword not in tid:
+            continue
+        kwargs = getattr(task_spec, "kwargs", None) or {}
+        cfg_ep = kwargs.get("env_cfg_entry_point", "-")
+        table.add_row([index + 1, tid, entry_point, cfg_ep])
+        index += 1
 
     print(table)
 

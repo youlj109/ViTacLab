@@ -22,7 +22,7 @@ gym.register(
     entry_point=f"{inhand_task_entry}.inhand_manipulation_env:InHandManipulationEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.shadow_hand_env_cfg:ShadowHandEnvCfg",
+        "env_cfg_entry_point": f"{inhand_task_entry}.inhand_manipulation_env_cfg:UR10eShadowHandInHandEnvCfg",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:ShadowHandPPORunnerCfg",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
@@ -34,7 +34,7 @@ gym.register(
     entry_point=f"{inhand_task_entry}.inhand_manipulation_env:InHandManipulationEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.shadow_hand_env_cfg:ShadowHandOpenAIEnvCfg",
+        "env_cfg_entry_point": f"{inhand_task_entry}.inhand_manipulation_env_cfg:UR10eShadowHandInHandOpenAIEnvCfg",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_ff_cfg.yaml",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:ShadowHandAsymFFPPORunnerCfg",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ff_ppo_cfg.yaml",
@@ -46,20 +46,20 @@ gym.register(
     entry_point=f"{inhand_task_entry}.inhand_manipulation_env:InHandManipulationEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.shadow_hand_env_cfg:ShadowHandOpenAIEnvCfg",
+        "env_cfg_entry_point": f"{inhand_task_entry}.inhand_manipulation_env_cfg:UR10eShadowHandInHandOpenAIEnvCfg",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_cfg.yaml",
     },
 )
 
-# Shadow Hand with 5 GelSight tactile sensors.
-# reduced_obs=True (default): 157-dim obs, use ShadowHandPPORunnerCfg.
-# reduced_obs=False: 7657-dim obs, use --agent rsl_rl_ppo_cfg:ShadowHandTactilePPORunnerCfg
+# UR10e + Shadow Hand with 5 GelSight tactile sensors (policy controls hand only).
+# reduced_obs=True (default): same proprio layout as full task (no tactile in policy obs).
+# reduced_obs=False: adds dense tactile channels; widen networks (e.g. ShadowHandTactilePPORunnerCfg).
 gym.register(
     id="Isaac-Repose-Cube-Shadow-Tactile-Direct-v0",
     entry_point=f"{inhand_task_entry}.inhand_manipulation_env:InHandManipulationEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.shadow_hand_env_cfg:ShadowHandTactileEnvCfg",
+        "env_cfg_entry_point": f"{inhand_task_entry}.inhand_manipulation_env_cfg:UR10eShadowHandInHandTactileEnvCfg",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:ShadowHandPPORunnerCfg",
     },

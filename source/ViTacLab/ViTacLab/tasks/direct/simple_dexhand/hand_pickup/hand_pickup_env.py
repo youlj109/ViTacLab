@@ -89,8 +89,78 @@ class UR10eShadowHandPickupEnv(UR10eShadowHandDirectBaseEnv):
         self._tactile_normal_mean: torch.Tensor | None = None
         self._tactile_shear_mean: torch.Tensor | None = None
 
-        # success stats
+        # success stats (per-env sticky "ever succeeded this episode" for bonus reward)
         self.successes = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        # consecutive env steps in success region (per env); reset when condition breaks
+        self._success_streak = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        # Smoothed mean streak (scalar), logged like :class:`InHandManipulationEnv`
+        self.consecutive_successes = torch.zeros(1, dtype=torch.float, device=self.device)
+
+        self._episode_success_count = 0
+        self._episode_total_count = 0
+        # EMA of per-reset-batch success fraction (reactive; see ``extras["log"]["episode_success_rate"]``).
+        self._episode_success_rate_ema: float = 0.0
+
+    def _out_of_bounds(self, object_pos_env: torch.Tensor) -> torch.Tensor:
+        """Boolean (N,) — object root in env frame outside configured bounds."""
+        o = object_pos_env
+        return (
+            (o[:, 0] < self.cfg.out_of_bound_x[0])
+            | (o[:, 0] > self.cfg.out_of_bound_x[1])
+            | (o[:, 1] < self.cfg.out_of_bound_y[0])
+            | (o[:, 1] > self.cfg.out_of_bound_y[1])
+            | (o[:, 2] < self.cfg.out_of_bound_z[0])
+            | (o[:, 2] > self.cfg.out_of_bound_z[1])
+        )
+
+    def _accumulate_episode_success_stats(self, env_ids: torch.Tensor) -> None:
+        """Update cumulative counts + EMA of batch success rate when episodes end."""
+        if env_ids.numel() == 0:
+            return
+        term = self.reset_terminated[env_ids]
+        tout = self.reset_time_outs[env_ids]
+        episode_done = term | tout
+        if not episode_done.any():
+            return
+        o = self.object_pos[env_ids]
+        bad = (o[:, 2] < self.cfg.fall_height) | self._out_of_bounds(o)
+        max_cons = int(self.cfg.max_consecutive_success)
+        if max_cons > 0:
+            won = episode_done & ~bad & (self._success_streak[env_ids].float() >= float(max_cons))
+        else:
+            won = episode_done & ~bad & (self.successes[env_ids] >= 1.0)
+        n_done = int(episode_done.sum().item())
+        n_won = int(won.sum().item())
+        self._episode_success_count += n_won
+        self._episode_total_count += n_done
+        if n_done > 0:
+            batch_rate = n_won / float(n_done)
+            alpha = float(self.cfg.episode_success_ema_alpha)
+            self._episode_success_rate_ema = (1.0 - alpha) * self._episode_success_rate_ema + alpha * batch_rate
+
+    def get_episode_success_rate(self) -> float:
+        """Fraction of **all** finished episodes since creation or :meth:`reset_episode_success_statistics` (cumulative)."""
+        if self._episode_total_count <= 0:
+            return 0.0
+        return self._episode_success_count / float(self._episode_total_count)
+
+    def get_episode_success_rate_ema(self) -> float:
+        """EMA of recent batch success rates (more reactive than :meth:`get_episode_success_rate`)."""
+        return float(self._episode_success_rate_ema)
+
+    def get_episode_success_stats(self) -> tuple[int, int, float]:
+        """``(n_success_episodes, n_completed_episodes, success_rate)``."""
+        return (
+            self._episode_success_count,
+            self._episode_total_count,
+            self.get_episode_success_rate(),
+        )
+
+    def reset_episode_success_statistics(self) -> None:
+        """Reset cumulative counts and EMA (e.g. before eval)."""
+        self._episode_success_count = 0
+        self._episode_total_count = 0
+        self._episode_success_rate_ema = 0.0
 
     # ---------------------------------------------------------------------
     # Scene setup
@@ -218,18 +288,11 @@ class UR10eShadowHandPickupEnv(UR10eShadowHandDirectBaseEnv):
         pos_err = self.goal_object_pos - self.object_pos
         pos_dist = torch.norm(pos_err, p=2, dim=-1)
         pos_rew = (1.0 - torch.tanh(pos_dist / (self.cfg.pos_tracking_std + 1e-6))) * self.cfg.pos_tracking_weight
-        # shaping: distance from robot base / EE region to object
-        ee_to_obj = self.object_pos - self.robot_root_pos_env
-        ee_dist = torch.norm(ee_to_obj, p=2, dim=-1)
-        # plateau: treat distances within saturation radius as equally good
-        sat_r = self.cfg.ee_object_saturation_radius
-        ee_dist_eff = torch.clamp(ee_dist, min=sat_r)
-        ee_rew = (1.0 - torch.tanh(ee_dist_eff / (self.cfg.ee_object_std + 1e-6))) * self.cfg.ee_object_weight
 
         action_l2 = torch.sum(self.actions**2, dim=-1) * self.cfg.action_l2_weight
         action_rate_l2 = torch.sum(self._action_rate**2, dim=-1) * self.cfg.action_rate_l2_weight
 
-        reward = pos_rew + ee_rew + action_l2 + action_rate_l2
+        reward = pos_rew + action_l2 + action_rate_l2
 
         # success (position-only lift)
         height_err = torch.abs(pos_err[:, 2])
@@ -237,6 +300,19 @@ class UR10eShadowHandPickupEnv(UR10eShadowHandDirectBaseEnv):
         success_mask = (height_err <= self.cfg.success_height_tol) & (xy_dist <= self.cfg.success_pos_tol)
         reward = torch.where(success_mask, reward + self.cfg.success_weight, reward)
         self.successes = torch.where(success_mask, torch.ones_like(self.successes), self.successes)
+
+        self._success_streak = torch.where(success_mask, self._success_streak + 1, torch.zeros_like(self._success_streak))
+        sm = self._success_streak.float().mean()
+        alpha = float(self.cfg.success_ema_alpha)
+        self.consecutive_successes.mul_(1.0 - alpha).add_(sm * alpha)
+
+        if "log" not in self.extras:
+            self.extras["log"] = {}
+        self.extras["log"]["consecutive_successes"] = self.consecutive_successes.mean()
+        # Reactive: EMA of batch success rate at episode ends. Cumulative is always "all-time" since train start.
+        self.extras["log"]["episode_success_rate"] = float(self._episode_success_rate_ema)
+        self.extras["log"]["episode_success_rate_all_time"] = self.get_episode_success_rate()
+
         return reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -262,6 +338,13 @@ class UR10eShadowHandPickupEnv(UR10eShadowHandDirectBaseEnv):
         # IMPORTANT: Passing `None` into `scene.reset()` uses `slice(None)` inside sensors.
         # This avoids CUDA indexing asserts in case some sensors were initialized with a different
         # internal env count (e.g., when their prims are not yet present at construction time).
+        if env_ids is None:
+            e = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
+        else:
+            e = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+        if e.numel() > 0:
+            self._accumulate_episode_success_stats(e)
+
         if env_ids is None:
             super()._reset_idx(slice(None))
             env_ids = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
@@ -319,6 +402,7 @@ class UR10eShadowHandPickupEnv(UR10eShadowHandDirectBaseEnv):
 
         # reset stats
         self.successes[env_ids] = 0.0
+        self._success_streak[env_ids] = 0
 
         # update caches
         self._compute_intermediate_values()
@@ -331,9 +415,6 @@ class UR10eShadowHandPickupEnv(UR10eShadowHandDirectBaseEnv):
         # robot state
         self.robot_dof_pos = self.robot.data.joint_pos
         self.robot_dof_vel = self.robot.data.joint_vel
-        # robot base position in env frame (used as a simple proxy for end-effector region)
-        self.robot_root_pos_env = self.robot.data.root_pos_w - self.scene.env_origins
-
         # object pose
         self.object_pos = self.object.data.root_pos_w - self.scene.env_origins
         self.object_rot = self.object.data.root_quat_w
@@ -401,6 +482,8 @@ class UR10eShadowHandPickupEnv(UR10eShadowHandDirectBaseEnv):
             "goal_quat_w": self.goal_object_rot[ids].clone(),
             "goal_time_left_s": self._goal_time_left_s[ids].clone(),
             "successes": self.successes[ids].clone(),
+            "success_streak": self._success_streak[ids].clone(),
+            "consecutive_successes": self.consecutive_successes.clone(),
             "episode_length_buf": self.episode_length_buf[ids].clone(),
         }
 

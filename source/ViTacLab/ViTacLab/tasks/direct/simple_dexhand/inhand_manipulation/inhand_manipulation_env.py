@@ -3,161 +3,204 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
-
 import numpy as np
 import torch
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, RigidObject, RigidObjectCfg, ArticulationCfg
-from isaaclab.envs import DirectRLEnv
+from isaaclab.assets import RigidObject
 from isaaclab.markers import VisualizationMarkers
-from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.sim.utils.stage import get_current_stage
-from isaaclab.utils.math import quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate
-from pxr import UsdPhysics, PhysxSchema
+from isaaclab.utils.math import (
+    quat_conjugate,
+    quat_from_angle_axis,
+    quat_mul,
+    sample_uniform,
+    saturate,
+)
 
-from isaaclab_tasks.direct.factory.factory_tasks_cfg import PegInsert
-
-# Optional tactile (Shadow Hand with GelSight)
 try:
     from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
 except ImportError:
-    VisuoTactileSensorData = None
+    VisuoTactileSensorData = None  # type: ignore
 
-TACTILE_SENSOR_NAMES = ("tactile_sensor_ff", "tactile_sensor_lf", "tactile_sensor_mf", "tactile_sensor_rf", "tactile_sensor_th")
-# Full tactile obs dims (5 sensors * 490 points, 5 * 490 * 2 for shear); see ShadowHandSceneCfg.
-TACTILE_POINTS_PER_SENSOR = 20 * 25  # For DexCube, the original is 20 * 25 = 500
-TACTILE_NORMAL_DIM = 5 * TACTILE_POINTS_PER_SENSOR  # 2500
-TACTILE_SHEAR_DIM = 5 * TACTILE_POINTS_PER_SENSOR * 2  # 5000
-FULL_TACTILE_OBS_DIM = 157 + TACTILE_NORMAL_DIM + TACTILE_SHEAR_DIM  # 7507
-FULL_TACTILE_STATE_DIM = 187 + TACTILE_NORMAL_DIM + TACTILE_SHEAR_DIM  # 7507
+from ViTacLab.assets.robot.ur10e_shadowhand_direct_base_single.ur10e_shadowhand_direct_base_env import (
+    UR10eShadowHandDirectBaseEnv,
+)
 
-if TYPE_CHECKING:
-    from ViTacLab.tasks.direct.simple_dexhand.allegro_hand.allegro_hand_env_cfg import AllegroHandEnvCfg
-    from ViTacLab.tasks.direct.simple_dexhand.shadow_hand.shadow_hand_env_cfg import ShadowHandEnvCfg
+from .inhand_manipulation_env_cfg import UR10eShadowHandInHandEnvCfg, sync_inhand_rl_space_dims
+
+TACTILE_SENSOR_NAMES = (
+    "tactile_sensor_ff",
+    "tactile_sensor_lf",
+    "tactile_sensor_mf",
+    "tactile_sensor_rf",
+    "tactile_sensor_th",
+)
+TACTILE_POINTS_PER_SENSOR = 20 * 25
+TACTILE_NORMAL_DIM = 5 * TACTILE_POINTS_PER_SENSOR
+TACTILE_SHEAR_DIM = 5 * TACTILE_POINTS_PER_SENSOR * 2
 
 
-class InHandManipulationEnv(DirectRLEnv):
-    cfg: AllegroHandEnvCfg | ShadowHandEnvCfg
+class InHandManipulationEnv(UR10eShadowHandDirectBaseEnv):
+    """In-hand cube reorientation on UR10e + Shadow Hand; policy controls hand only (arm pose fixed)."""
 
-    def __init__(self, cfg: AllegroHandEnvCfg | ShadowHandEnvCfg, render_mode: str | None = None, **kwargs):
-        # Before super(): set observation_space / state_space for full tactile mode (like forge obs_mode)
-        if (
-            hasattr(cfg, "scene")
-            and hasattr(cfg.scene, "tactile_sensor_ff")
-            and not getattr(cfg, "reduced_obs", True)
-        ):
-            cfg.observation_space = FULL_TACTILE_OBS_DIM
-            cfg.state_space = FULL_TACTILE_STATE_DIM
+    cfg: UR10eShadowHandInHandEnvCfg
+
+    def __init__(self, cfg: UR10eShadowHandInHandEnvCfg, render_mode: str | None = None, **kwargs):
+        sync_inhand_rl_space_dims(cfg)
         super().__init__(cfg, render_mode, **kwargs)
 
-        self.num_hand_dofs = self.hand.num_joints
+        # Alias for preserved in-hand logic (expects `hand`).
+        self.hand = self.robot
 
-        # buffers for position targets
-        self.hand_dof_targets = torch.zeros((self.num_envs, self.num_hand_dofs), dtype=torch.float, device=self.device)
-        self.prev_targets = torch.zeros((self.num_envs, self.num_hand_dofs), dtype=torch.float, device=self.device)
-        self.cur_targets = torch.zeros((self.num_envs, self.num_hand_dofs), dtype=torch.float, device=self.device)
+        # Policy actions: hand joints only (arm stays at commanded default pose).
+        hand_re = re.compile(cfg.hand_joint_expr)
+        self._hand_dof_indices = [i for i, name in enumerate(self.robot.joint_names) if hand_re.match(name)]
+        self._hand_dof_indices.sort()
+        if len(self._hand_dof_indices) != cfg.num_hand_dofs:
+            raise RuntimeError(
+                f"Expected {cfg.num_hand_dofs} hand DOFs from hand_joint_expr, "
+                f"found {len(self._hand_dof_indices)}: {self._hand_dof_indices} / {self.robot.joint_names}"
+            )
+        self.actuated_dof_indices = self._hand_dof_indices
+        self.num_actions = len(self._hand_dof_indices)
+        self.actions = torch.zeros((self.num_envs, self.num_actions), device=self.device)
 
-        # list of actuated joints
-        self.actuated_dof_indices = list()
-        for joint_name in cfg.actuated_joint_names:
-            self.actuated_dof_indices.append(self.hand.joint_names.index(joint_name))
-        self.actuated_dof_indices.sort()
+        self.num_hand_dofs = len(self._hand_dof_indices)
 
-        # finger bodies
-        self.finger_bodies = list()
+        self.hand_dof_targets = torch.zeros((self.num_envs, self.num_robot_dofs), dtype=torch.float, device=self.device)
+
+        self.finger_bodies = []
         for body_name in self.cfg.fingertip_body_names:
-            self.finger_bodies.append(self.hand.body_names.index(body_name))
+            self.finger_bodies.append(self._resolve_body_index(body_name))
         self.finger_bodies.sort()
         self.num_fingertips = len(self.finger_bodies)
 
-        # joint limits
-        joint_pos_limits = self.hand.root_physx_view.get_dof_limits().to(self.device)
-        self.hand_dof_lower_limits = joint_pos_limits[..., 0]
-        self.hand_dof_upper_limits = joint_pos_limits[..., 1]
-
-        # track goal resets
         self.reset_goal_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        # used to compare object position
         self.in_hand_pos = self.object.data.default_root_state[:, 0:3].clone()
         self.in_hand_pos[:, 2] -= 0.04
-        # default goal positions
+
         self.goal_rot = torch.zeros((self.num_envs, 4), dtype=torch.float, device=self.device)
         self.goal_rot[:, 0] = 1.0
         self.goal_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
-        self.goal_pos[:, :] = torch.tensor([-0.2, -0.45, 0.68], device=self.device)
-        # initialize goal marker
+        gp = torch.tensor(self.cfg.goal_marker_pos, device=self.device, dtype=torch.float).view(1, 3)
+        self.goal_pos[:, :] = gp
+
         self.goal_markers = VisualizationMarkers(self.cfg.goal_object_cfg)
 
-        # track successes
         self.successes = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self.consecutive_successes = torch.zeros(1, dtype=torch.float, device=self.device)
 
-        # unit tensors
+        # Cumulative episodic success for :meth:`get_episode_success_rate` (updated in :meth:`_reset_idx`).
+        self._episode_success_count = 0
+        self._episode_total_count = 0
+
         self.x_unit_tensor = torch.tensor([1, 0, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
         self.y_unit_tensor = torch.tensor([0, 1, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
         self.z_unit_tensor = torch.tensor([0, 0, 1], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
 
-    def _setup_scene(self):
-        # add hand, in-hand object, and goal object
-        self.hand = Articulation(self.cfg.robot_cfg)
-        # 原始 DexCube 抓取对象：直接使用配置里的 object_cfg（RigidObjectCfg）。
-        # self.object = RigidObject(self.cfg.object_cfg)
-        #
-        # 改为使用代码定义的立方体（边长 0.06，Rigid + collision）。
-        # cube_cfg: RigidObjectCfg = RigidObjectCfg(
-        #     prim_path="/World/envs/env_.*/object",
-        #     spawn=sim_utils.CuboidCfg(
-        #         size=(0.06, 0.06, 0.06),
-        #         rigid_props=sim_utils.RigidBodyPropertiesCfg(
-        #             kinematic_enabled=False,
-        #             disable_gravity=False,
-        #             linear_damping=0.0,
-        #             angular_damping=0.0,
-        #             max_linear_velocity=1000.0,
-        #             max_angular_velocity=3666.0,
-        #             enable_gyroscopic_forces=True,
-        #             solver_position_iteration_count=8,
-        #             solver_velocity_iteration_count=0,
-        #             sleep_threshold=0.005,
-        #             stabilization_threshold=0.0025,
-        #             max_depenetration_velocity=1000.0,
-        #         ),
-        #         collision_props=sim_utils.CollisionPropertiesCfg(
-        #             contact_offset=0.005,
-        #             rest_offset=0.0,
-        #         ),
-        #     ),
-        #     init_state=RigidObjectCfg.InitialStateCfg(
-        #         pos=(0.0, -0.39, 0.6),
-        #         rot=(1.0, 0.0, 0.0, 0.0),
-        #     ),
-        # )
-        # self.object = RigidObject(cube_cfg)
-        self.object = RigidObject(self.cfg.object_cfg)
-        # ensure the in-hand object has an SDF collision mesh so TacSL can build
-        # force-field SDF views for the contact object.
-        # self._ensure_object_sdf_collision()
-        # add ground plane
-        spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
-        # clone and replicate (no need to filter for this environment)
-        self.scene.clone_environments(copy_from_source=False)
-        # add articulation to scene - we must register to scene to randomize with EventManager
-        self.scene.articulations["robot"] = self.hand
-        self.scene.rigid_objects["object"] = self.object
-        # add lights
-        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
-        light_cfg.func("/World/Light", light_cfg)
+        # Hand-only limit tensors (for observations / unscale in preserved math).
+        h = torch.tensor(self._hand_dof_indices, device=self.device, dtype=torch.long)
+        self._hand_idx_t = h
+        self.hand_dof_lower_limits = self.robot_dof_lower_limits[:, h]
+        self.hand_dof_upper_limits = self.robot_dof_upper_limits[:, h]
 
-        # Optional: buffers for tactile sensors (Shadow Hand with 5 GelSight).
-        # We do not call sim.reset() or sensor.get_initial_render() here to
-        # avoid re-entrantly triggering sensor initialization during _setup_scene,
-        # which can lead to black-screen / crashes inside Isaac Sim UI.
+        # Tactile buffers (populated in _setup_task_scene when sensors exist).
+        self._tactile_normal_force: torch.Tensor | None = None
+        self._tactile_shear_force: torch.Tensor | None = None
+        self._num_tactile_sensors = 0
+        self._tactile_array_total = 0
+
+    def orientation_success(self) -> torch.Tensor:
+        """Per-environment orientation success: ``|rotation_distance(object, goal)| <= success_tolerance``.
+
+        Same criterion as :func:`compute_rewards` / ``goal_resets`` (DexCube target pose).
+
+        Returns:
+            Boolean tensor of shape ``(num_envs,)`` on :attr:`device`.
+        """
+        rd = rotation_distance(self.object_rot, self.goal_rot)
+        return torch.abs(rd) <= float(self.cfg.success_tolerance)
+
+    def _accumulate_episode_success_stats(self, env_ids: torch.Tensor) -> None:
+        """Update cumulative success/total episode counts when an episode ends (called from :meth:`_reset_idx`).
+
+        Only envs that actually finished an episode **this step** (``terminated | time_out``) are counted.
+        This excludes e.g. :meth:`env.reset` / full :meth:`_reset_idx` where buffers are still false, which
+        would otherwise inflate the denominator and depress the reported success rate.
+        """
+        if env_ids.numel() == 0:
+            return
+        term = self.reset_terminated[env_ids]
+        tout = self.reset_time_outs[env_ids]
+        episode_done = term | tout
+        if not episode_done.any():
+            return
+        not_fall = ~term
+        # Episode finished without dropping: timeout / truncation (includes max-consecutive-success termination).
+        completed = not_fall & tout
+        max_cons = int(self.cfg.max_consecutive_success)
+        if max_cons > 0:
+            won = completed & (self.successes[env_ids] >= float(max_cons))
+        else:
+            won = completed & self.orientation_success()[env_ids]
+        # Count only finished episodes (fall = failure, timeout with criteria = success/failure).
+        won = won & episode_done
+        self._episode_success_count += int(won.sum().item())
+        self._episode_total_count += int(episode_done.sum().item())
+
+    def get_episode_success_rate(self) -> float:
+        """Fraction of **finished episodes** that ended in success (running average since env creation).
+
+        Denominator includes only envs where ``terminated | time_out`` was true when :meth:`_reset_idx` ran
+        (i.e. a real episode end from :meth:`step`), not spurious full resets such as the initial :meth:`reset`.
+
+        **Success** (per episode):
+
+        - If :attr:`max_consecutive_success` > 0: episode ends without a fall **and** (timeout path)
+          ``successes >= max_consecutive_success`` after the last reward update (task completion), **or**
+          horizon timeout with enough accumulated successes (same check).
+        - If ``max_consecutive_success`` == 0: episode ends without a fall, on timeout, **and**
+          :meth:`orientation_success` is true at termination (still within goal at episode end).
+
+        **Failure**: object dropped (fall / out-of-reach termination), or horizon timeout without meeting
+        the success criteria above.
+
+        Returns:
+            Scalar in ``[0, 1]``. Returns ``0.0`` if no episode has finished yet.
+        """
+        if self._episode_total_count <= 0:
+            return 0.0
+        return self._episode_success_count / float(self._episode_total_count)
+
+    def get_episode_success_stats(self) -> tuple[int, int, float]:
+        """Return ``(n_success_episodes, n_completed_episodes, success_rate)`` for :meth:`get_episode_success_rate`."""
+        return (
+            self._episode_success_count,
+            self._episode_total_count,
+            self.get_episode_success_rate(),
+        )
+
+    def reset_episode_success_statistics(self) -> None:
+        """Reset running counts used by :meth:`get_episode_success_rate` (e.g. before a new eval run)."""
+        self._episode_success_count = 0
+        self._episode_total_count = 0
+
+    def _resolve_body_index(self, name: str) -> int:
+        names = self.robot.body_names
+        if name in names:
+            return names.index(name)
+        for i, bn in enumerate(names):
+            if bn.endswith(name) or name in bn:
+                return i
+        raise KeyError(f"Fingertip body {name!r} not found in robot.body_names={names!r}")
+
+    def _setup_task_scene(self) -> None:
+        self.object = RigidObject(self.cfg.object_cfg)
+        self.scene.rigid_objects["object"] = self.object
+
         self._tactile_normal_force = None
         self._tactile_shear_force = None
         self._num_tactile_sensors = 0
@@ -176,68 +219,8 @@ class InHandManipulationEnv(DirectRLEnv):
                 device=self.device,
             )
 
-    def _ensure_object_sdf_collision(self) -> None:
-        """Ensure the in-hand object has at least one mesh collision marked as SDF.
-
-        TacSL's force-field sensing和 PhysX tensors 都要求接触物体暴露一个 SDF 碰撞体。
-        这里我们优先在 `/World/envs/env_0/object/collisions/collisions` 上挂 SDF 配置。
-        """
-        stage = get_current_stage()
-
-
-        target_prim = stage.GetPrimAtPath("/World/envs/env_0/object/collisions/collisions")
-
-
-        if not target_prim.IsValid():
-            object_prim = sim_utils.find_first_matching_prim("/World/envs/env_0/object")
-            if object_prim is None:
-                return
-
-            def has_collision_api(prim):
-                return prim.HasAPI(UsdPhysics.MeshCollisionAPI)
-
-            target_prim = sim_utils.get_first_matching_child_prim(object_prim.GetPath(), predicate=has_collision_api)
-
-        if target_prim is None or not target_prim.IsValid():
-            return
-
-        # 1) 通用 Collision API
-        collider = UsdPhysics.CollisionAPI.Apply(target_prim)
-        collider.GetCollisionEnabledAttr().Set(True)
-
-        # 2) MeshCollisionAPI，设置 approximation = "sdf"
-        mesh_collider = UsdPhysics.MeshCollisionAPI.Apply(target_prim)
-        mesh_collider.CreateApproximationAttr().Set("sdf")
-
-        # 3) PhysX SDF mesh 碰撞 API，设置分辨率并由 PhysX 生成 SDF
-        sdf_api = PhysxSchema.PhysxSDFMeshCollisionAPI.Apply(target_prim)
-        sdf_api.CreateSdfResolutionAttr().Set(256)
-        print("ensure_object_sdf_collision done")
-
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        self.actions = actions.clone()
-
-    def _apply_action(self) -> None:
-        self.cur_targets[:, self.actuated_dof_indices] = scale(
-            self.actions,
-            self.hand_dof_lower_limits[:, self.actuated_dof_indices],
-            self.hand_dof_upper_limits[:, self.actuated_dof_indices],
-        )
-        self.cur_targets[:, self.actuated_dof_indices] = (
-            self.cfg.act_moving_average * self.cur_targets[:, self.actuated_dof_indices]
-            + (1.0 - self.cfg.act_moving_average) * self.prev_targets[:, self.actuated_dof_indices]
-        )
-        self.cur_targets[:, self.actuated_dof_indices] = saturate(
-            self.cur_targets[:, self.actuated_dof_indices],
-            self.hand_dof_lower_limits[:, self.actuated_dof_indices],
-            self.hand_dof_upper_limits[:, self.actuated_dof_indices],
-        )
-
-        self.prev_targets[:, self.actuated_dof_indices] = self.cur_targets[:, self.actuated_dof_indices]
-
-        self.hand.set_joint_position_target(
-            self.cur_targets[:, self.actuated_dof_indices], joint_ids=self.actuated_dof_indices
-        )
+        self.actions = torch.clamp(actions.to(device=self.device), -1.0, 1.0)
 
     def _update_tactile_data(self) -> None:
         """Read 5 GelSight sensors and fill _tactile_normal_force, _tactile_shear_force."""
@@ -272,11 +255,7 @@ class InHandManipulationEnv(DirectRLEnv):
         if self.cfg.asymmetric_obs:
             states = self.compute_full_state()
 
-        # Append tactile (5 GelSight: normal + shear) only when present and not reduced mode
-        use_tactile_obs = (
-            self._tactile_normal_force is not None
-            and not getattr(self.cfg, "reduced_obs", True)
-        )
+        use_tactile_obs = self._tactile_normal_force is not None and not getattr(self.cfg, "reduced_obs", True)
         if use_tactile_obs:
             self._update_tactile_data()
             obs = torch.cat([obs, self._tactile_normal_force, self._tactile_shear_force], dim=-1)
@@ -320,7 +299,6 @@ class InHandManipulationEnv(DirectRLEnv):
             self.extras["log"] = dict()
         self.extras["log"]["consecutive_successes"] = self.consecutive_successes.mean()
 
-        # reset goals if the goal has been reached
         goal_env_ids = self.reset_goal_buf.nonzero(as_tuple=False).squeeze(-1)
         if len(goal_env_ids) > 0:
             self._reset_target_pose(goal_env_ids)
@@ -330,12 +308,10 @@ class InHandManipulationEnv(DirectRLEnv):
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         self._compute_intermediate_values()
 
-        # reset when cube has fallen
         goal_dist = torch.norm(self.object_pos - self.in_hand_pos, p=2, dim=-1)
         out_of_reach = goal_dist >= self.cfg.fall_dist
 
         if self.cfg.max_consecutive_success > 0:
-            # Reset progress (episode length buf) on goal envs if max_consecutive_success > 0
             rot_dist = rotation_distance(self.object_rot, self.goal_rot)
             self.episode_length_buf = torch.where(
                 torch.abs(rot_dist) <= self.cfg.success_tolerance,
@@ -351,22 +327,29 @@ class InHandManipulationEnv(DirectRLEnv):
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:
-            env_ids = self.hand._ALL_INDICES
-        # resets articulation and rigid body attributes
-        super()._reset_idx(env_ids)
+            e = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
+        else:
+            e = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
 
-        # reset goals
+        if e.numel() > 0:
+            self._accumulate_episode_success_stats(e)
+
+        if env_ids is None:
+            super()._reset_idx(slice(None))
+            env_ids = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
+        else:
+            env_ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+            super()._reset_idx(env_ids)
+
         self._reset_target_pose(env_ids)
 
-        # reset object
         object_default_state = self.object.data.default_root_state.clone()[env_ids]
         pos_noise = sample_uniform(-1.0, 1.0, (len(env_ids), 3), device=self.device)
-        # global object positions
         object_default_state[:, 0:3] = (
             object_default_state[:, 0:3] + self.cfg.reset_position_noise * pos_noise + self.scene.env_origins[env_ids]
         )
 
-        rot_noise = sample_uniform(-1.0, 1.0, (len(env_ids), 2), device=self.device)  # noise for X and Y rotation
+        rot_noise = sample_uniform(-1.0, 1.0, (len(env_ids), 2), device=self.device)
         object_default_state[:, 3:7] = randomize_rotation(
             rot_noise[:, 0], rot_noise[:, 1], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids]
         )
@@ -375,35 +358,37 @@ class InHandManipulationEnv(DirectRLEnv):
         self.object.write_root_pose_to_sim(object_default_state[:, :7], env_ids)
         self.object.write_root_velocity_to_sim(object_default_state[:, 7:], env_ids)
 
-        # reset hand
-        delta_max = self.hand_dof_upper_limits[env_ids] - self.hand.data.default_joint_pos[env_ids]
-        delta_min = self.hand_dof_lower_limits[env_ids] - self.hand.data.default_joint_pos[env_ids]
+        defaults = self.robot.data.default_joint_pos[env_ids]
+        delta_max = self.robot_dof_upper_limits[env_ids] - defaults
+        delta_min = self.robot_dof_lower_limits[env_ids] - defaults
 
-        dof_pos_noise = sample_uniform(-1.0, 1.0, (len(env_ids), self.num_hand_dofs), device=self.device)
+        dof_pos_noise = sample_uniform(-1.0, 1.0, (len(env_ids), self.num_robot_dofs), device=self.device)
         rand_delta = delta_min + (delta_max - delta_min) * 0.5 * dof_pos_noise
-        dof_pos = self.hand.data.default_joint_pos[env_ids] + self.cfg.reset_dof_pos_noise * rand_delta
 
-        dof_vel_noise = sample_uniform(-1.0, 1.0, (len(env_ids), self.num_hand_dofs), device=self.device)
-        dof_vel = self.hand.data.default_joint_vel[env_ids] + self.cfg.reset_dof_vel_noise * dof_vel_noise
+        hand_mask = torch.zeros(self.num_robot_dofs, device=self.device)
+        hand_mask[self._hand_dof_indices] = 1.0
+        arm_scale = float(getattr(self.cfg, "arm_reset_dof_pos_noise_scale", 0.0))
+        arm_mask = 1.0 - hand_mask
+        rand_delta = rand_delta * (hand_mask + arm_mask * arm_scale)
 
-        self.prev_targets[env_ids] = dof_pos
-        self.cur_targets[env_ids] = dof_pos
+        dof_pos = defaults + self.cfg.reset_dof_pos_noise * rand_delta
+
+        dof_vel_noise = sample_uniform(-1.0, 1.0, (len(env_ids), self.num_robot_dofs), device=self.device)
+        dof_vel = self.robot.data.default_joint_vel[env_ids] + self.cfg.reset_dof_vel_noise * dof_vel_noise
+        dof_vel = dof_vel * hand_mask.unsqueeze(0)
+
+        self._reset_robot_joints(env_ids, dof_pos=dof_pos, dof_vel=dof_vel)
         self.hand_dof_targets[env_ids] = dof_pos
-
-        self.hand.set_joint_position_target(dof_pos, env_ids=env_ids)
-        self.hand.write_joint_state_to_sim(dof_pos, dof_vel, env_ids=env_ids)
 
         self.successes[env_ids] = 0
         self._compute_intermediate_values()
 
     def _reset_target_pose(self, env_ids):
-        # reset goal rotation
         rand_floats = sample_uniform(-1.0, 1.0, (len(env_ids), 2), device=self.device)
         new_rot = randomize_rotation(
             rand_floats[:, 0], rand_floats[:, 1], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids]
         )
 
-        # update goal pose and markers
         self.goal_rot[env_ids] = new_rot
         goal_pos = self.goal_pos + self.scene.env_origins
         self.goal_markers.visualize(goal_pos, self.goal_rot)
@@ -411,7 +396,6 @@ class InHandManipulationEnv(DirectRLEnv):
         self.reset_goal_buf[env_ids] = 0
 
     def _compute_intermediate_values(self):
-        # data for hand
         self.fingertip_pos = self.hand.data.body_pos_w[:, self.finger_bodies]
         self.fingertip_rot = self.hand.data.body_quat_w[:, self.finger_bodies]
         self.fingertip_pos -= self.scene.env_origins.repeat((1, self.num_fingertips)).reshape(
@@ -419,10 +403,9 @@ class InHandManipulationEnv(DirectRLEnv):
         )
         self.fingertip_velocities = self.hand.data.body_vel_w[:, self.finger_bodies]
 
-        self.hand_dof_pos = self.hand.data.joint_pos
-        self.hand_dof_vel = self.hand.data.joint_vel
+        self.hand_dof_pos = self.hand.data.joint_pos[:, self._hand_idx_t]
+        self.hand_dof_vel = self.hand.data.joint_vel[:, self._hand_idx_t]
 
-        # data for object
         self.object_pos = self.object.data.root_pos_w - self.scene.env_origins
         self.object_rot = self.object.data.root_quat_w
         self.object_velocities = self.object.data.root_vel_w
@@ -430,10 +413,6 @@ class InHandManipulationEnv(DirectRLEnv):
         self.object_angvel = self.object.data.root_ang_vel_w
 
     def compute_reduced_observations(self):
-        # Per https://arxiv.org/pdf/1808.00177.pdf Table 2
-        #   Fingertip positions
-        #   Object Position, but not orientation
-        #   Relative target orientation
         obs = torch.cat(
             (
                 self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3),
@@ -449,23 +428,18 @@ class InHandManipulationEnv(DirectRLEnv):
     def compute_full_observations(self):
         obs = torch.cat(
             (
-                # hand
                 unscale(self.hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits),
                 self.cfg.vel_obs_scale * self.hand_dof_vel,
-                # object
                 self.object_pos,
                 self.object_rot,
                 self.object_linvel,
                 self.cfg.vel_obs_scale * self.object_angvel,
-                # goal
                 self.in_hand_pos,
                 self.goal_rot,
                 quat_mul(self.object_rot, quat_conjugate(self.goal_rot)),
-                # fingertips
                 self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3),
                 self.fingertip_rot.view(self.num_envs, self.num_fingertips * 4),
                 self.fingertip_velocities.view(self.num_envs, self.num_fingertips * 6),
-                # actions
                 self.actions,
             ),
             dim=-1,
@@ -475,25 +449,20 @@ class InHandManipulationEnv(DirectRLEnv):
     def compute_full_state(self):
         states = torch.cat(
             (
-                # hand
                 unscale(self.hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits),
                 self.cfg.vel_obs_scale * self.hand_dof_vel,
-                # object
                 self.object_pos,
                 self.object_rot,
                 self.object_linvel,
                 self.cfg.vel_obs_scale * self.object_angvel,
-                # goal
                 self.in_hand_pos,
                 self.goal_rot,
                 quat_mul(self.object_rot, quat_conjugate(self.goal_rot)),
-                # fingertips
                 self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3),
                 self.fingertip_rot.view(self.num_envs, self.num_fingertips * 4),
                 self.fingertip_velocities.view(self.num_envs, self.num_fingertips * 6),
                 self.cfg.force_torque_obs_scale
                 * self.fingertip_force_sensors.view(self.num_envs, self.num_fingertips * 6),
-                # actions
                 self.actions,
             ),
             dim=-1,
@@ -520,9 +489,8 @@ def randomize_rotation(rand0, rand1, x_unit_tensor, y_unit_tensor):
 
 @torch.jit.script
 def rotation_distance(object_rot, target_rot):
-    # Orientation alignment for the cube in hand and goal cube
     quat_diff = quat_mul(object_rot, quat_conjugate(target_rot))
-    return 2.0 * torch.asin(torch.clamp(torch.norm(quat_diff[:, 1:4], p=2, dim=-1), max=1.0))  # changed quat convention
+    return 2.0 * torch.asin(torch.clamp(torch.norm(quat_diff[:, 1:4], p=2, dim=-1), max=1.0))
 
 
 @torch.jit.script
@@ -555,20 +523,15 @@ def compute_rewards(
 
     action_penalty = torch.sum(actions**2, dim=-1)
 
-    # Total reward is: position distance + orientation alignment + action regularization + success bonus + fall penalty
     reward = dist_rew + rot_rew + action_penalty * action_penalty_scale
 
-    # Find out which envs hit the goal and update successes count
     goal_resets = torch.where(torch.abs(rot_dist) <= success_tolerance, torch.ones_like(reset_goal_buf), reset_goal_buf)
     successes = successes + goal_resets
 
-    # Success bonus: orientation is within `success_tolerance` of goal orientation
     reward = torch.where(goal_resets == 1, reward + reach_goal_bonus, reward)
 
-    # Fall penalty: distance to the goal is larger than a threshold
     reward = torch.where(goal_dist >= fall_dist, reward + fall_penalty, reward)
 
-    # Check env termination conditions, including maximum success number
     resets = torch.where(goal_dist >= fall_dist, torch.ones_like(reset_buf), reset_buf)
 
     num_resets = torch.sum(resets)
@@ -581,3 +544,14 @@ def compute_rewards(
     )
 
     return reward, goal_resets, successes, cons_successes
+
+
+# Backward-compatible names for scripts importing unscale from this module.
+__all__ = [
+    "InHandManipulationEnv",
+    "compute_rewards",
+    "randomize_rotation",
+    "rotation_distance",
+    "scale",
+    "unscale",
+]

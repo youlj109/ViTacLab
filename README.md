@@ -1,137 +1,139 @@
 # ViTacLab
 
-Benchmarking and Pretraining Visuo-Tactile Representations for Robotic Manipulation
+Benchmarking and pretraining **visuo-tactile** representations for robotic manipulation, built on [Isaac Lab](https://github.com/isaac-sim/IsaacLab).
 
 ## Overview
 
-This project/repository is based on Isaac Lab and extends it with visuo-tactile manipulation tasks.
-It allows you to develop in an isolated environment, outside of the core Isaac Lab repository.
+ViTacLab is an Isaac Lab **extension** that lives **outside** the upstream `IsaacLab` repo. It adds dexterous manipulation environments (e.g. Shadow Hand, UR10e + hand), tactile and vision sensors, and training / teleoperation tooling.
 
-**Key Features:**
+**Highlights**
 
-- `Isolation` Work outside the core Isaac Lab repository, ensuring that your development efforts remain self-contained.
-- `Flexibility` This template is set up to allow your code to be run as an extension in Omniverse.
+- **Isolation** — Develop and version-control project code here without forking Isaac Lab.
+- **Flexibility** — Run as a Python package (`pip install -e`) and as an Omniverse extension.
 
-**Keywords:** extension, template, isaaclab
+**Keywords:** Isaac Lab, visuo-tactile, dexterous manipulation, extension
+
+---
+
+## Repository map
+
+| Path | Description |
+|------|-------------|
+| `source/ViTacLab/` | Main extension: tasks, assets, agents |
+| `source/video_teleop/` | Camera + MediaPipe → ZMQ; no Isaac dependency on the sender side |
+| `scripts/rsl_rl/` | RSL-RL training / play (full-joint RL and IK-assisted hand RL) |
+| `scripts/teleoperation/video_teleop/` | Video teleop launchers + calibration configs |
+| `docs/` | Extra notes (e.g. cameras vs headless for RL) |
+
+---
+
+## Documentation index
+
+| Topic | Location |
+|-------|----------|
+| RSL-RL training (commands, Hydra, IK-RL) | [`scripts/rsl_rl/README.md`](scripts/rsl_rl/README.md), [`scripts/rsl_rl/QUICKSTART.md`](scripts/rsl_rl/QUICKSTART.md) |
+| IK-RL team guide (env / reward / recording) | [`docs/ik_rl_modification_guide.md`](docs/ik_rl_modification_guide.md) |
+| IK-RL YAML configs | [`scripts/rsl_rl/ik_rl/configs/README.md`](scripts/rsl_rl/ik_rl/configs/README.md) |
+| Video teleop (calibration, sender/receiver, UR10e task) | [`scripts/teleoperation/video_teleop/QUICK_START.md`](scripts/teleoperation/video_teleop/QUICK_START.md), [`scripts/teleoperation/video_teleop/README.md`](scripts/teleoperation/video_teleop/README.md) |
+| `video_teleop` package internals | [`source/video_teleop/docs/README.md`](source/video_teleop/docs/README.md), [`source/video_teleop/docs/ENGINEERING_SUMMARY.md`](source/video_teleop/docs/ENGINEERING_SUMMARY.md) |
+| Headless training vs `enable_cameras` | [`docs/enable_cameras_headless_rl.md`](docs/enable_cameras_headless_rl.md) |
+
+---
 
 ## Installation
 
-- Install Isaac Lab by following the [installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html).
-  We recommend using the conda or uv installation as it simplifies calling Python scripts from the terminal.
+1. Install Isaac Lab using the [official installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html). Conda or `uv` installs simplify calling Python from the terminal.
 
-- Clone or copy this project/repository separately from the Isaac Lab installation (i.e. outside the `IsaacLab` directory):
+2. Clone this repository **separately** from the Isaac Lab installation (not inside the upstream `IsaacLab` tree).
 
-- Using a python interpreter that has Isaac Lab installed, install the library in editable mode using:
+3. With a Python interpreter that has Isaac Lab available, install the extension in editable mode:
 
     ```bash
-    # use 'PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
+    # use 'PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in your venv/conda
     python -m pip install -e source/ViTacLab
+    ```
 
-- Verify that the extension is correctly installed by:
+4. **Verify** the installation:
 
-    - Listing the available tasks:
-
-        Note: It the task name changes, it may be necessary to update the search pattern `"Template-"`
-        (in the `scripts/list_envs.py` file) so that it can be listed.
+    - List environments registered by this extension (all IDs whose entry point lives under `ViTacLab.tasks`):
 
         ```bash
-        # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
         python scripts/list_envs.py
         ```
 
-    - Running a task:
+        Optional filter:
 
         ```bash
-        # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-        python scripts/<RL_LIBRARY>/train.py --task=<TASK_NAME>
+        python scripts/list_envs.py --keyword Pour
         ```
 
-    - Running a task with dummy agents:
+    - Run a task with the standard Isaac Lab training script (example):
 
-        These include dummy agents that output zero or random agents. They are useful to ensure that the environments are configured correctly.
+        ```bash
+        python scripts/rsl_rl/full_rl/train.py --task=<TASK_NAME>
+        ```
 
-        - Zero-action agent
+        See [`scripts/rsl_rl/README.md`](scripts/rsl_rl/README.md) for IK-RL and other entry points.
 
-            ```bash
-            # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-            python scripts/zero_agent.py --task=<TASK_NAME>
-            ```
-        - Random-action agent
+    - **Dummy agents** (zero or random actions) are useful to sanity-check environments:
 
-            ```bash
-            # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-            python scripts/random_agent.py --task=<TASK_NAME>
-            ```
+        ```bash
+        python scripts/zero_agent.py --task=<TASK_NAME>
+        python scripts/random_agent.py --task=<TASK_NAME>
+        ```
 
-### Set up IDE (Optional)
+---
 
-To setup the IDE, please follow these instructions:
+## IDE setup (optional)
 
-- Run VSCode Tasks, by pressing `Ctrl+Shift+P`, selecting `Tasks: Run Task` and running the `setup_python_env` in the drop down menu.
-  When running this task, you will be prompted to add the absolute path to your Isaac Sim installation.
+- In VS Code: `Ctrl+Shift+P` → **Tasks: Run Task** → `setup_python_env`. You will be prompted for the absolute path to your Isaac Sim installation.
 
-If everything executes correctly, it should create a file .python.env in the `.vscode` directory.
-The file contains the python paths to all the extensions provided by Isaac Sim and Omniverse.
-This helps in indexing all the python modules for intelligent suggestions while writing code.
+If it succeeds, `.vscode/.python.env` contains Python paths for Omniverse/Isaac extensions and improves IntelliSense.
 
-### Setup as Omniverse Extension (Optional)
+---
 
-We provide an example UI extension that will load upon enabling your extension defined in `source/ViTacLab/ViTacLab/ui_extension_example.py`.
+## Omniverse extension (optional)
 
-To enable your extension, follow these steps:
+Example UI code: `source/ViTacLab/ViTacLab/ui_extension_example.py`.
 
-1. **Add the search path of this project/repository** to the extension manager:
-    - Navigate to the extension manager using `Window` -> `Extensions`.
-    - Click on the **Hamburger Icon**, then go to `Settings`.
-    - In the `Extension Search Paths`, enter the absolute path to the `source` directory of this project/repository.
-    - If not already present, in the `Extension Search Paths`, enter the path that leads to Isaac Lab's extension directory directory (`IsaacLab/source`)
-    - Click on the **Hamburger Icon**, then click `Refresh`.
+1. **Extension Manager** → `Window` → `Extensions` → hamburger menu → **Settings**.
+2. Under **Extension Search Paths**, add the absolute path to this **repository’s `source` directory**, and (if needed) Isaac Lab’s `IsaacLab/source`.
+3. Refresh, then enable the extension under **Third Party**.
 
-2. **Search and enable your extension**:
-    - Find your extension under the `Third Party` category.
-    - Toggle it to enable your extension.
+---
 
 ## Code formatting
 
-We have a pre-commit template to automatically format your code.
-To install pre-commit:
+We use **pre-commit** for formatting:
 
 ```bash
 pip install pre-commit
-```
-
-Then you can run pre-commit with:
-
-```bash
 pre-commit run --all-files
 ```
 
+---
+
 ## Troubleshooting
 
-### Pylance Missing Indexing of Extensions
+### Pylance missing extension indexing
 
-In some VsCode versions, the indexing of part of the extensions is missing.
-In this case, add the path to your extension in `.vscode/settings.json` under the key `"python.analysis.extraPaths"`.
+Add your extension path under `python.analysis.extraPaths` in `.vscode/settings.json`, for example:
 
 ```json
 {
     "python.analysis.extraPaths": [
-        "<path-to-ext-repo>/source/ViTacLab"
+        "<path-to-this-repo>/source/ViTacLab"
     ]
 }
 ```
 
-### Pylance Crash
+### Pylance running out of memory
 
-If you encounter a crash in `pylance`, it is probable that too many files are indexed and you run out of memory.
-A possible solution is to exclude some of omniverse packages that are not used in your project.
-To do so, modify `.vscode/settings.json` and comment out packages under the key `"python.analysis.extraPaths"`
-Some examples of packages that can likely be excluded are:
+If indexing too many Omniverse packages, remove unused paths from `extraPaths`. Candidates to exclude often include:
 
 ```json
-"<path-to-isaac-sim>/extscache/omni.anim.*"         // Animation packages
-"<path-to-isaac-sim>/extscache/omni.kit.*"          // Kit UI tools
-"<path-to-isaac-sim>/extscache/omni.graph.*"        // Graph UI tools
-"<path-to-isaac-sim>/extscache/omni.services.*"     // Services tools
-...
+"<path-to-isaac-sim>/extscache/omni.anim.*"     // animation
+"<path-to-isaac-sim>/extscache/omni.kit.*"      // kit UI
+"<path-to-isaac-sim>/extscache/omni.graph.*"    // graph UI
+"<path-to-isaac-sim>/extscache/omni.services.*" // services
 ```

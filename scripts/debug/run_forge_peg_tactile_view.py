@@ -70,7 +70,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=0,
         help="Index of env to visualize when num-envs > 1 (default: 0).",
     )
-    # Follow scripts/rsl_rl/train.py & play.py: append AppLauncher CLI args
+    # Follow scripts/rsl_rl/full_rl/train.py & play.py: append AppLauncher CLI args
     AppLauncher.add_app_launcher_args(parser)
     return parser
 

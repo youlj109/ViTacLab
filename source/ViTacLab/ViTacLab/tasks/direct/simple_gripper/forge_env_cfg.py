@@ -195,6 +195,7 @@ class ForgeSceneCfg(InteractiveSceneCfg):
         width=480,
         height=640,
     )
+    
 
 
 @configclass
@@ -216,6 +217,10 @@ class ForgeEnvCfg(FactoryEnvCfg):
     
     # Observation mode: "reduce" (without tactile) or "full" (with tactile)
     obs_mode: str = "reduce"  # Options: "reduce", "full"
+
+    # When False (default for headless RL), Forge strips tactile + third-person camera from the scene.
+    # Set True via train/play (from --enable_cameras / ENABLE_CAMERAS) or in cfg for debugging / video.
+    enable_cameras: bool = False
 
     # Visual disturbance: when True, apply Gaussian noise or Gaussian blur to third_person_camera images
     visual_disturbance: bool = False

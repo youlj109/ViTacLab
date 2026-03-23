@@ -11,6 +11,13 @@ Examples (inside Isaac Sim python):
     # Pickup task
     ./python.sh scripts/debug/run_ur10e_shadowhand_single.py --task pickup --num_envs 1 --show_rgb --show_ff --random_actions --enable_cameras
 
+    # In-hand cube reorientation (UR10e + ShadowHand, tactile)
+    ./python.sh scripts/debug/run_ur10e_shadowhand_single.py --task inhand --num_envs 1  --show_rgb --show_ff --random_actions --enable_cameras
+
+    # Play trained policy (RSL-RL .pt), same enable_cameras as train/play
+    ./python.sh scripts/debug/run_ur10e_shadowhand_single.py --task inhand --num_envs 4096 --play \\
+        --resume_path logs/rsl_rl/shadow_hand_tactile/2026-03-21_00-01-44/model_1000.pt --enable_cameras
+
     # Fully custom (module:Class)
     ./python.sh scripts/debug/run_ur10e_shadowhand_single.py \\
         --env ViTacLab.tasks.direct.difficult_dexhand.ur10e_shadowhand_pour_env:UR10eShadowHandPourEnv \\
@@ -50,6 +57,17 @@ _TASK_PRESETS: dict[str, dict[str, str]] = {
         "env": "ViTacLab.tasks.direct.simple_dexhand.hand_pickup.hand_pickup_env:UR10eShadowHandPickupEnv",
         "cfg": "ViTacLab.tasks.direct.simple_dexhand.hand_pickup.hand_pickup_env_cfg:UR10eShadowHandPickupEnvCfg",
     },
+    "inhand": {
+        "env": "ViTacLab.tasks.direct.simple_dexhand.inhand_manipulation.inhand_manipulation_env:InHandManipulationEnv",
+        "cfg": "ViTacLab.tasks.direct.simple_dexhand.inhand_manipulation.inhand_manipulation_env_cfg:UR10eShadowHandInHandTactileEnvCfg",
+    },
+}
+
+# Gym-registered ids for loading `rsl_rl_cfg_entry_point` (must match training task / network layout).
+_TASK_PRESET_GYM_TASK: dict[str, str] = {
+    "pour": "Isaac-UR10eShadowHand-PourDeformable-Direct-v0",
+    "pickup": "Isaac-UR10eShadowHand-Pickup-Direct-v0",
+    "inhand": "Isaac-Repose-Cube-Shadow-Tactile-Direct-v0",
 }
 
 
@@ -64,10 +82,34 @@ def _img_to_uint8(img: np.ndarray) -> np.ndarray:
     return img.astype(np.uint8)
 
 
-def _ff_to_uint8(img: np.ndarray) -> np.ndarray:
-    if img.dtype != np.uint8:
-        return (np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
-    return img
+def _render_tactile_ff_rgb(nf: np.ndarray, sf: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+    """Render tactile normal/shear arrays into an RGB image — same as show_ur10e_shadowhand_records.py.
+
+    Args:
+        nf: (H, W) normal force
+        sf: (H, W, 2) shear force (x, y)
+    Returns:
+        (H, W, 3) uint8 image in [0, 255]
+    """
+    nf = np.asarray(nf, dtype=np.float32)
+    sf = np.asarray(sf, dtype=np.float32)
+    if nf.ndim != 2 or sf.ndim != 3 or sf.shape[-1] != 2:
+        raise ValueError(f"Invalid shapes for ff render: nf={nf.shape}, sf={sf.shape}")
+
+    nf_scale = np.percentile(np.abs(nf), 99.0) + eps
+    sf_scale = np.percentile(np.linalg.norm(sf, axis=-1), 99.0) + eps
+
+    n = np.clip(nf / nf_scale, 0.0, 1.0)
+    sx = np.clip(sf[..., 0] / sf_scale, -1.0, 1.0)
+    sy = np.clip(sf[..., 1] / sf_scale, -1.0, 1.0)
+
+    r = 0.5 + 0.5 * sx
+    g = 0.5 + 0.5 * sy
+    b = n
+    img = np.stack([r, g, b], axis=-1)
+
+    img = img * (0.3 + 0.7 * n[..., None])
+    return (np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
 
 
 def _load_symbol(entry: str) -> Any:
@@ -119,6 +161,29 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task", choices=sorted(_TASK_PRESETS.keys()), default="pour", help="Preset task.")
     parser.add_argument("--env", type=str, default="", help="Env entry: module:Class (overrides --task).")
     parser.add_argument("--cfg", type=str, default="", help="Cfg entry: module:Class (overrides --task).")
+    parser.add_argument(
+        "--play",
+        action="store_true",
+        help="Use trained RSL-RL policy from --resume_path instead of random/zero actions.",
+    )
+    parser.add_argument(
+        "--resume_path",
+        type=str,
+        default="",
+        help="Path to model_*.pt checkpoint (requires --play). Same format as scripts/rsl_rl/full_rl/play.py --checkpoint.",
+    )
+    parser.add_argument(
+        "--gym_task",
+        type=str,
+        default="",
+        help="Registered Gym task id for RSL-RL agent config (default: preset mapping). Required if --env/--cfg override breaks the preset.",
+    )
+    parser.add_argument(
+        "--play_success_interval",
+        type=float,
+        default=2.0,
+        help="When --play: print mean success rate over all envs every N seconds (in-hand task only; default: 2).",
+    )
     parser.add_argument("--num_envs", type=int, default=1, help="Number of envs (default: 1).")
     parser.add_argument("--env_index", type=int, default=0, help="Env index to visualize (default: 0).")
     parser.add_argument("--fps", type=float, default=20.0, help="Target display FPS (default: 20).")
@@ -142,11 +207,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = _build_arg_parser().parse_args()
 
+    if args.play and not str(args.resume_path).strip():
+        raise SystemExit("--play requires --resume_path to a trained RSL-RL checkpoint (.pt).")
+
     app_launcher = AppLauncher(args)
     simulation_app = app_launcher.app
 
     # Import tasks after app launch (gym registrations, etc.)
     import ViTacLab.tasks  # noqa: F401
+    import isaaclab_tasks  # noqa: F401  # registry side effects
 
     preset = _TASK_PRESETS[str(args.task)]
     env_entry = str(args.env).strip() or preset["env"]
@@ -182,30 +251,76 @@ def main() -> None:
     cfg.scene.num_envs = max(1, int(args.num_envs))
     cfg.device = getattr(args, "device", None) or "cuda:0"
 
+    # Match scripts/rsl_rl/full_rl/train.py / play.py: gate cameras / tactile sensors.
+    _enable_cams = bool(getattr(args, "enable_cameras", False)) or bool(int(os.environ.get("ENABLE_CAMERAS", "0")))
+    setattr(cfg, "enable_cameras", _enable_cams)
+    print(f"[INFO] cfg.enable_cameras={getattr(cfg, 'enable_cameras', None)} (CLI or ENABLE_CAMERAS)")
+
     print(f"Creating {EnvCls.__name__} (device={cfg.device}, num_envs={cfg.scene.num_envs}) ...")
     env = EnvCls(cfg)
     action_dim = env.num_actions
     print(f"Action dim: {action_dim}, Obs dim: {cfg.observation_space}")
 
-    obs, _ = env.reset()
-    policy_obs = obs.get("policy")
-    if policy_obs is not None:
-        print(f"Reset ok. policy obs shape: {tuple(policy_obs.shape)}")
+    # RSL-RL policy + wrapper (play mode)
+    policy = None
+    policy_nn = None
+    wrapped_env = env
+    if args.play:
+        from isaaclab.utils.assets import retrieve_file_path
+        from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
+        from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper
+        from rsl_rl.runners import DistillationRunner, OnPolicyRunner
+
+        gym_task = str(args.gym_task).strip() or _TASK_PRESET_GYM_TASK.get(str(args.task), "")
+        if not gym_task:
+            raise SystemExit(
+                "Could not resolve --gym_task for RSL-RL agent config. "
+                "Pass --gym_task explicitly (registered Gym id for this env/cfg)."
+            )
+        agent_cfg: RslRlBaseRunnerCfg = load_cfg_from_registry(gym_task, "rsl_rl_cfg_entry_point")
+        agent_cfg.device = str(cfg.device)
+
+        resume_path = retrieve_file_path(str(args.resume_path).strip())
+        print(f"[INFO] Play mode: gym_task={gym_task}, checkpoint={resume_path}")
+
+        wrapped_env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+        if agent_cfg.class_name == "OnPolicyRunner":
+            runner = OnPolicyRunner(wrapped_env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+        elif agent_cfg.class_name == "DistillationRunner":
+            runner = DistillationRunner(wrapped_env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+        else:
+            raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
+        runner.load(resume_path)
+        policy = runner.get_inference_policy(device=wrapped_env.unwrapped.device)
+        try:
+            policy_nn = runner.alg.policy
+        except AttributeError:
+            policy_nn = runner.alg.actor_critic
+        obs = wrapped_env.get_observations()
+        policy_obs = obs.get("policy") if hasattr(obs, "get") else None
+        if policy_obs is not None:
+            print(f"Play ready. policy obs shape: {tuple(policy_obs.shape)}")
+    else:
+        obs, _ = env.reset()
+        policy_obs = obs.get("policy")
+        if policy_obs is not None:
+            print(f"Reset ok. policy obs shape: {tuple(policy_obs.shape)}")
 
     # Initialize tactile sensors' nominal render (for camera tactile)
+    _scene_env = wrapped_env.unwrapped
     for name in TACTILE_SENSOR_NAMES:
-        if name in env.scene.sensors:
+        if name in _scene_env.scene.sensors:
             try:
-                env.scene[name].get_initial_render()
+                _scene_env.scene[name].get_initial_render()
             except Exception:
                 pass
 
     # Determine tactile array size for FF from sensor cfg
     if args.show_ff and fig is not None:
         for name in TACTILE_SENSOR_NAMES:
-            if name in env.scene.sensors:
+            if name in _scene_env.scene.sensors:
                 try:
-                    nrows, ncols = env.scene[name].cfg.tactile_array_size
+                    nrows, ncols = _scene_env.scene[name].cfg.tactile_array_size
                 except Exception:
                     pass
                 break
@@ -242,41 +357,56 @@ def main() -> None:
         fig.canvas.draw()
         plt.pause(0.1)
 
-    # Optional FF renderer
-    compute_tactile_shear_image = None
-    if args.show_ff:
-        from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_render import compute_tactile_shear_image as _cts
-
-        compute_tactile_shear_image = _cts
+    # FF: same renderer as scripts/debug/show_ur10e_shadowhand_records.py (no isaaclab_contrib dependency)
+    render_ff = _render_tactile_ff_rgb if args.show_ff else None
 
     target_dt = 1.0 / max(1e-3, float(args.fps))
-    env_idx = max(0, min(int(args.env_index), env.num_envs - 1))
-    rec_env_idx = env_idx if int(args.record_env_index) < 0 else max(0, min(int(args.record_env_index), env.num_envs - 1))
+    env_idx = max(0, min(int(args.env_index), wrapped_env.num_envs - 1))
+    rec_env_idx = env_idx if int(args.record_env_index) < 0 else max(0, min(int(args.record_env_index), wrapped_env.num_envs - 1))
     step = 0
     do_record = bool(str(args.record_path).strip())
     record_dir = ""
     record_prefix = ""
     if do_record:
         record_dir, record_prefix = _resolve_record_paths(str(args.record_path).strip(), str(args.record_format))
-        if not hasattr(env, "_get_record"):
-            raise AttributeError(f"{type(env).__name__} has no _get_record(). Please implement it in the env.")
+        if not hasattr(wrapped_env.unwrapped, "_get_record"):
+            raise AttributeError(f"{type(wrapped_env.unwrapped).__name__} has no _get_record(). Please implement it in the env.")
         print(f"Recording enabled: dir='{record_dir}', prefix='{record_prefix}', fmt={args.record_format}, every={args.record_every}, env={rec_env_idx}")
 
     print("Environment created. Starting viewer (Ctrl+C to stop).")
+    last_play_success_print_ts = time.time() if args.play else 0.0
+    play_sr_interval = max(0.1, float(args.play_success_interval))
+
     while simulation_app.is_running():
         t0 = time.time()
         step += 1
 
-        if args.random_actions:
-            actions = 0.3 * (2.0 * torch.rand(env.num_envs, action_dim, device=env.device) - 1.0)
+        if args.play:
+            with torch.inference_mode():
+                actions = policy(obs)
+                obs, _, dones, _ = wrapped_env.step(actions)
+                if policy_nn is not None:
+                    policy_nn.reset(dones)
+            now = time.time()
+            if now - last_play_success_print_ts >= play_sr_interval:
+                ue = wrapped_env.unwrapped
+                if hasattr(ue, "get_episode_success_stats"):
+                    n_ok, n_ep, rate = ue.get_episode_success_stats()
+                    print(
+                        f"[play] episode success rate: {rate:.4f} ({rate * 100:.2f}%)  "
+                        f"({n_ok}/{n_ep} episodes)  n_envs={wrapped_env.num_envs}  step={step}"
+                    )
+                last_play_success_print_ts = now
+        elif args.random_actions:
+            actions = 0.3 * (2.0 * torch.rand(wrapped_env.num_envs, action_dim, device=wrapped_env.device) - 1.0)
+            wrapped_env.step(actions)
         else:
-            actions = torch.zeros(env.num_envs, action_dim, device=env.device)
-
-        env.step(actions)
+            actions = torch.zeros(wrapped_env.num_envs, action_dim, device=wrapped_env.device)
+            wrapped_env.step(actions)
 
         # Record
         if do_record and int(args.record_every) > 0 and (step % int(args.record_every) == 0):
-            rec = env._get_record(env_ids=[rec_env_idx])
+            rec = wrapped_env.unwrapped._get_record(env_ids=[rec_env_idx])
             fname = os.path.join(record_dir, f"{record_prefix}_step_{step:06d}.{args.record_format}")
             if str(args.record_format) == "pt":
                 torch.save(rec, fname)
@@ -289,9 +419,9 @@ def main() -> None:
             import matplotlib.pyplot as plt
 
             for i, name in enumerate(TACTILE_SENSOR_NAMES):
-                if name not in env.scene.sensors:
+                if name not in _scene_env.scene.sensors:
                     continue
-                data = env.scene[name].data
+                data = _scene_env.scene[name].data
 
                 # RGB
                 if args.show_rgb and rgb_ims and i < len(rgb_ims):
@@ -300,15 +430,22 @@ def main() -> None:
                         e = min(env_idx, img.shape[0] - 1)
                         rgb_ims[i].set_data(_img_to_uint8(img[e].detach().cpu().numpy()))
 
-                # FF
-                if args.show_ff and ff_ims and i < len(ff_ims) and compute_tactile_shear_image is not None:
+                # FF (point-array → RGB, aligned with show_ur10e_shadowhand_records.py)
+                if args.show_ff and ff_ims and i < len(ff_ims) and render_ff is not None:
                     nf = getattr(data, "tactile_normal_force", None)
                     sf = getattr(data, "tactile_shear_force", None)
                     if nf is not None and sf is not None:
                         e = min(env_idx, nf.shape[0] - 1)
-                        nf_np = nf[e].view(nrows, ncols).detach().cpu().numpy()
-                        sf_np = sf[e].view(nrows, ncols, 2).detach().cpu().numpy()
-                        ff_ims[i].set_data(_ff_to_uint8(compute_tactile_shear_image(nf_np, sf_np)))
+                        nf_flat = nf[e].detach().cpu().numpy().reshape(-1)
+                        sf_flat = sf[e].detach().cpu().numpy().reshape(-1, 2)
+                        p = int(nf_flat.shape[0])
+                        nrows_guess, ncols_guess = nrows, ncols
+                        if p != nrows_guess * ncols_guess:
+                            nrows_guess = int(np.sqrt(p))
+                            ncols_guess = max(1, p // max(1, nrows_guess))
+                        nf_img = nf_flat.reshape(nrows_guess, ncols_guess)
+                        sf_img = sf_flat.reshape(nrows_guess, ncols_guess, 2)
+                        ff_ims[i].set_data(render_ff(nf_img, sf_img))
 
             fig.canvas.draw_idle()
             plt.pause(0.001)
@@ -320,7 +457,7 @@ def main() -> None:
         if target_dt - elapsed > 0:
             time.sleep(target_dt - elapsed)
 
-    env.close()
+    wrapped_env.close()
     if fig is not None:
         import matplotlib.pyplot as plt
 

@@ -72,18 +72,20 @@ class UR10eShadowHandDirectBaseEnv(DirectRLEnv):
         self.scene.articulations["robot"] = self.robot
         self._setup_task_scene()
 
-        # Create third-person camera AFTER cloning environments.
-        if "third_person_camera" not in self.scene.sensors:
-            cam_cfg = build_ur10e_shadowhand_third_person_camera_cfg()
-            self.scene.sensors["third_person_camera"] = cam_cfg.class_type(cam_cfg)
+        # Cameras / TacSL need rendering; skip in headless training when cfg.enable_cameras is False.
+        if getattr(self.cfg, "enable_cameras", False):
+            # Create third-person camera AFTER cloning environments.
+            if "third_person_camera" not in self.scene.sensors:
+                cam_cfg = build_ur10e_shadowhand_third_person_camera_cfg()
+                self.scene.sensors["third_person_camera"] = cam_cfg.class_type(cam_cfg)
 
-        # Create TacSL sensors AFTER cloning environments so sensor initialization sees all env prims.
-        if isinstance(self.cfg.scene, UR10eShadowHandTacSLSceneCfg):
-            sensor_cfgs = build_ur10e_shadowhand_tactile_sensor_cfgs(self.cfg.scene)
-            for name, sensor_cfg in sensor_cfgs.items():
-                if name not in self.scene.sensors:
-                    # InteractiveScene expects cfg.class_type(cfg) objects in its sensor dict.
-                    self.scene.sensors[name] = sensor_cfg.class_type(sensor_cfg)
+            # Create TacSL sensors AFTER cloning environments so sensor initialization sees all env prims.
+            if isinstance(self.cfg.scene, UR10eShadowHandTacSLSceneCfg):
+                sensor_cfgs = build_ur10e_shadowhand_tactile_sensor_cfgs(self.cfg.scene)
+                for name, sensor_cfg in sensor_cfgs.items():
+                    if name not in self.scene.sensors:
+                        # InteractiveScene expects cfg.class_type(cfg) objects in its sensor dict.
+                        self.scene.sensors[name] = sensor_cfg.class_type(sensor_cfg)
 
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)

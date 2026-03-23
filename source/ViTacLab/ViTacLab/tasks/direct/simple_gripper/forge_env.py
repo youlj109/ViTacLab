@@ -4,12 +4,14 @@
 # SPDX-License-Identifier: BSD-3-Clause
 import os
 import random
+import warnings
 import numpy as np
 import torch
 import torch.nn.functional as F
 
 import isaacsim.core.utils.torch as torch_utils
 
+from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils.math import axis_angle_from_quat
 
 from isaaclab_tasks.direct.factory import factory_utils
@@ -76,6 +78,26 @@ class ForgeEnv(FactoryEnv):
         # Object randomization: pick random USD(s) from folder(s) before scene is built
         _apply_random_objects(cfg)
 
+        # Headless RL: strip render-based sensors from scene cfg so InteractiveScene does not spawn them.
+        self._forge_render_sensors_enabled = bool(getattr(cfg, "enable_cameras", False))
+        if not self._forge_render_sensors_enabled:
+            if cfg.obs_mode == "full":
+                warnings.warn(
+                    "ForgeEnv: enable_cameras=False but obs_mode='full' requires tactile cameras; "
+                    "forcing obs_mode='reduce'. Use --enable_cameras (or ENABLE_CAMERAS=1) for full tactile obs.",
+                    stacklevel=2,
+                )
+                cfg.obs_mode = "reduce"
+            s = cfg.scene
+            cfg.scene = InteractiveSceneCfg(
+                num_envs=s.num_envs,
+                env_spacing=s.env_spacing,
+                replicate_physics=getattr(s, "replicate_physics", True),
+                clone_in_fabric=getattr(s, "clone_in_fabric", False),
+                lazy_sensor_update=getattr(s, "lazy_sensor_update", True),
+                filter_collisions=getattr(s, "filter_collisions", True),
+            )
+
         # Update obs_order and state_order based on observation mode
         # This must be done BEFORE calling super().__init__() because FactoryEnv.__init__()
         # uses these to calculate observation_space and state_space dimensions
@@ -129,6 +151,7 @@ class ForgeEnv(FactoryEnv):
         super().__init__(cfg, render_mode, **kwargs)
         print(f"num_envs: {self.num_envs}")
         print(f"Observation mode: {cfg.obs_mode}")
+        print(f"Forge render sensors (tactile + third-person camera): {self._forge_render_sensors_enabled}")
         # Success prediction.
         self.success_pred_scale = 0.0
         self.first_pred_success_tx = {}
@@ -139,13 +162,16 @@ class ForgeEnv(FactoryEnv):
         self.flip_quats = torch.ones((self.num_envs,), dtype=torch.float32, device=self.device)
 
         # Tactile sensor information.
-        # Get tactile sensor array size from scene config
-        self.tactile_array_size = self.cfg.scene.tactile_sensor_left.tactile_array_size
+        # Get tactile sensor array size from scene config (or defaults when sensors are stripped)
+        if self._forge_render_sensors_enabled and hasattr(self.cfg.scene, "tactile_sensor_left"):
+            self.tactile_array_size = self.cfg.scene.tactile_sensor_left.tactile_array_size
+            self.tactile_image_height = self.cfg.scene.tactile_sensor_left.render_cfg.image_height  # 240
+            self.tactile_image_width = self.cfg.scene.tactile_sensor_left.render_cfg.image_width  # 320
+        else:
+            self.tactile_array_size = (20, 25)
+            self.tactile_image_height = 240
+            self.tactile_image_width = 320
         self.tactile_array_total = self.tactile_array_size[0] * self.tactile_array_size[1]  # 20 * 25 = 500
-        
-        # Get RGB image size from scene config
-        self.tactile_image_height = self.cfg.scene.tactile_sensor_left.render_cfg.image_height  # 240
-        self.tactile_image_width = self.cfg.scene.tactile_sensor_left.render_cfg.image_width  # 320
         # self.tactile_image_height = 480
         # self.tactile_image_width = 640
         self.tactile_image_channels = 3  # RGB
@@ -245,61 +271,63 @@ class ForgeEnv(FactoryEnv):
         self.ee_angvel_fd[:, 0:2] = 0.0
         self.prev_fingertip_quat = self.noisy_fingertip_quat.clone()
 
-        # Get tactile sensor data from both sensors using VisuoTactileSensorData
-        tactile_data_left: VisuoTactileSensorData = self.scene["tactile_sensor_left"].data
-        tactile_data_right: VisuoTactileSensorData = self.scene["tactile_sensor_right"].data
+        # Get tactile sensor data from both sensors using VisuoTactileSensorData (skipped when headless / no sensors)
+        if (
+            self._forge_render_sensors_enabled
+            and "tactile_sensor_left" in self.scene.sensors
+            and "tactile_sensor_right" in self.scene.sensors
+        ):
+            tactile_data_left: VisuoTactileSensorData = self.scene["tactile_sensor_left"].data
+            tactile_data_right: VisuoTactileSensorData = self.scene["tactile_sensor_right"].data
 
-        # Combine tactile forces from both sensors
-        # According to VisuoTactileSensorData:
-        # - tactile_normal_force: (num_envs, nrows * ncols) - already flattened
-        # - tactile_shear_force: (num_envs, nrows * ncols, 2)
-        if tactile_data_left.tactile_normal_force is not None and tactile_data_right.tactile_normal_force is not None:
-            # Combine normal forces from both sensors: (num_envs, 2 * tactile_array_total)
-            self.tactile_normal_force = torch.cat(
-                [
-                    tactile_data_left.tactile_normal_force,
-                    tactile_data_right.tactile_normal_force,
-                ],
-                dim=1,
-            )
+            # Combine tactile forces from both sensors
+            if tactile_data_left.tactile_normal_force is not None and tactile_data_right.tactile_normal_force is not None:
+                self.tactile_normal_force = torch.cat(
+                    [
+                        tactile_data_left.tactile_normal_force,
+                        tactile_data_right.tactile_normal_force,
+                    ],
+                    dim=1,
+                )
+            else:
+                self.tactile_normal_force = torch.zeros(
+                    (self.num_envs, 2 * self.tactile_array_total), device=self.device
+                )
+
+            if tactile_data_left.tactile_shear_force is not None and tactile_data_right.tactile_shear_force is not None:
+                self.tactile_shear_force = torch.cat(
+                    [
+                        tactile_data_left.tactile_shear_force.view(self.num_envs, -1),
+                        tactile_data_right.tactile_shear_force.view(self.num_envs, -1),
+                    ],
+                    dim=1,
+                )
+            else:
+                self.tactile_shear_force = torch.zeros(
+                    (self.num_envs, 2 * self.tactile_array_total * 2), device=self.device
+                )
+
+            if tactile_data_left.tactile_rgb_image is not None and tactile_data_right.tactile_rgb_image is not None:
+                self.tactile_rgb_image = torch.cat(
+                    [
+                        tactile_data_left.tactile_rgb_image.view(self.num_envs, -1),
+                        tactile_data_right.tactile_rgb_image.view(self.num_envs, -1),
+                    ],
+                    dim=1,
+                )
+                if self.tactile_rgb_image.max() > 1.0:
+                    self.tactile_rgb_image = self.tactile_rgb_image / 255.0
+            else:
+                self.tactile_rgb_image = torch.zeros(
+                    (self.num_envs, 2 * self.tactile_image_total), device=self.device
+                )
         else:
             self.tactile_normal_force = torch.zeros(
                 (self.num_envs, 2 * self.tactile_array_total), device=self.device
             )
-
-        if tactile_data_left.tactile_shear_force is not None and tactile_data_right.tactile_shear_force is not None:
-            # Combine shear forces from both sensors
-            # Flatten each sensor's shear force from (num_envs, tactile_array_total, 2) to (num_envs, tactile_array_total * 2)
-            # Then concatenate: (num_envs, 2 * tactile_array_total * 2)
-            self.tactile_shear_force = torch.cat(
-                [
-                    tactile_data_left.tactile_shear_force.view(self.num_envs, -1),
-                    tactile_data_right.tactile_shear_force.view(self.num_envs, -1),
-                ],
-                dim=1,
-            )
-        else:
             self.tactile_shear_force = torch.zeros(
                 (self.num_envs, 2 * self.tactile_array_total * 2), device=self.device
             )
-
-        # Get tactile RGB images from both sensors
-        # According to VisuoTactileSensorData:
-        # - tactile_rgb_image: (num_envs, height, width, 3) or None
-        if tactile_data_left.tactile_rgb_image is not None and tactile_data_right.tactile_rgb_image is not None:
-            # Flatten RGB images from (num_envs, height, width, 3) to (num_envs, height * width * 3)
-            # Then concatenate: (num_envs, 2 * height * width * 3)
-            self.tactile_rgb_image = torch.cat(
-                [
-                    tactile_data_left.tactile_rgb_image.view(self.num_envs, -1),
-                    tactile_data_right.tactile_rgb_image.view(self.num_envs, -1),
-                ],
-                dim=1,
-            )
-            # Normalize to [0, 1] if needed (assuming images are in [0, 255] range)
-            if self.tactile_rgb_image.max() > 1.0:
-                self.tactile_rgb_image = self.tactile_rgb_image / 255.0
-        else:
             self.tactile_rgb_image = torch.zeros(
                 (self.num_envs, 2 * self.tactile_image_total), device=self.device
             )

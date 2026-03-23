@@ -33,12 +33,21 @@ UR10E_SHADOWHAND_LEFT_CFG: ArticulationCfg = ArticulationCfg(
             sleep_threshold=0.005,
             stabilization_threshold=0.0005,
         ),
-        collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.001, rest_offset=-0.001),
+        collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.001, rest_offset=-0.005),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
         # fixed offset w.r.t. Forge/Factory table placement
         pos=(0.0, 0.0, 0.0),
         rot=(1.0, 0.0, 0.0, 0.0),
+        # UR10e arm default pose (rad); matches video teleop IK “elbow up” reference
+        joint_pos={
+            "shoulder_pan_joint": 0.21119636416180324,
+            "shoulder_lift_joint": -1.2847641999317674,
+            "elbow_joint": 1.9852784513664496,
+            "wrist_1_joint": -0.28662118970668776,
+            "wrist_2_joint": 2.019309045922398,
+            "wrist_3_joint": 0.1536931628046836,
+        },
     ),
     actuators={
         "arm": ImplicitActuatorCfg(

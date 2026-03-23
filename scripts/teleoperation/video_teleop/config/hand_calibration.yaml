@@ -1,0 +1,124 @@
+hand_side: left
+num_open_samples: 30
+num_closed_samples: 30
+joint_ranges:
+  WRJ2:
+    human_min: 0.0
+    human_max: 0.0
+    robot_min: -0.7
+    robot_max: 0.7
+  WRJ1:
+    human_min: 0.0
+    human_max: 0.0
+    robot_min: -0.7
+    robot_max: 0.7
+  FFJ4:
+    human_min: 0.25610989632264075
+    human_max: 0.2806107528797963
+    robot_min: 0.0
+    robot_max: 0.0
+  FFJ3:
+    human_min: 0.3837233244522906
+    human_max: 0.8930542403108772
+    robot_min: -0.2618
+    robot_max: 1.5708
+  FFJ2:
+    human_min: 0.03454493890110033
+    human_max: 1.1773023785091812
+    robot_min: 0.0
+    robot_max: 1.5708
+  FFJ1:
+    human_min: 0.060977412032256595
+    human_max: 0.5190580122056954
+    robot_min: 0.0
+    robot_max: 1.5708
+  MFJ4:
+    human_min: 0.0
+    human_max: 0.0
+    robot_min: 0.0
+    robot_max: 0.0
+  MFJ3:
+    human_min: 0.43525036992397625
+    human_max: 0.9437758259868501
+    robot_min: -0.2618
+    robot_max: 1.5708
+  MFJ2:
+    human_min: 0.0221695083713227
+    human_max: 1.1766290515040712
+    robot_min: 0.0
+    robot_max: 1.5708
+  MFJ1:
+    human_min: 0.0729234760795694
+    human_max: 0.5777618032665233
+    robot_min: 0.0
+    robot_max: 1.5708
+  RFJ4:
+    human_min: -0.26102364406218603
+    human_max: -0.2270359411357444
+    robot_min: 0.0
+    robot_max: 0.0
+  RFJ3:
+    human_min: 0.4806455182637386
+    human_max: 0.996896663902068
+    robot_min: -0.2618
+    robot_max: 1.5708
+  RFJ2:
+    human_min: 0.09829852216115054
+    human_max: 1.0804800835444248
+    robot_min: 0.0
+    robot_max: 1.5708
+  RFJ1:
+    human_min: 0.11429403876848099
+    human_max: 0.5409981503971308
+    robot_min: 0.0
+    robot_max: 1.5708
+  LFJ5:
+    human_min: -0.11199741315146922
+    human_max: -0.09597486268341986
+    robot_min: 0.3927
+    robot_max: 0.3927
+  LFJ4:
+    human_min: -0.47698321419040807
+    human_max: -0.4189856665025841
+    robot_min: 0.0
+    robot_max: 0.0
+  LFJ3:
+    human_min: 0.48796991842211046
+    human_max: 0.9570997673484882
+    robot_min: -0.2618
+    robot_max: 1.5708
+  LFJ2:
+    human_min: 0.16758723797749342
+    human_max: 0.8597612934396053
+    robot_min: 0.0
+    robot_max: 1.5708
+  LFJ1:
+    human_min: 0.09013906359149182
+    human_max: 0.46090755217555435
+    robot_min: 0.0
+    robot_max: 1.5708
+  THJ5:
+    human_min: 0.2382470162716198
+    human_max: 0.40379526583825043
+    robot_min: 0.0
+    robot_max: 0.0
+  THJ4:
+    human_min: 0.2382470162716198
+    human_max: 0.40379526583825043
+    robot_min: 0.61085
+    robot_max: 0.61085
+  THJ3:
+    human_min: 0.2010655932987775
+    human_max: 0.4320949527550524
+    robot_min: -0.2094
+    robot_max: 0.2094
+  THJ2:
+    human_min: 0.030973749972096787
+    human_max: 0.43744179913726855
+    robot_min: -0.6981
+    robot_max: 0.6981
+  THJ1:
+    human_min: 0.5427298507185419
+    human_max: 0.5985474423788562
+    robot_min: -0.2618
+    robot_max: 1.5708

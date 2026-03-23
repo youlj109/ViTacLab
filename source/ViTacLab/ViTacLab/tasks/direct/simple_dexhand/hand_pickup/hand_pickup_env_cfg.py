@@ -37,6 +37,7 @@ class UR10eShadowHandPickupEnvCfg(DirectRLEnvCfg):
     observation_space = 256
     state_space = 0
     asymmetric_obs = False
+    enable_cameras: bool = False
 
     # simulation
     sim: SimulationCfg = SimulationCfg(
@@ -105,14 +106,14 @@ class UR10eShadowHandPickupEnvCfg(DirectRLEnvCfg):
     # resample goal periodically during episode (seconds)
     goal_resample_time_range_s: tuple[float, float] = (10.0, 10.0)
 
-    # --- object reset randomization (offset from initial spawn pose)
-    object_reset_pos_x_range: tuple[float, float] = (-0.10, 0.10)
-    object_reset_pos_y_range: tuple[float, float] = (-0.10, 0.10)
-    object_reset_pos_z_range: tuple[float, float] = (0.00, 0.10)
-    object_reset_yaw_range: tuple[float, float] = (-3.14159, 3.14159)
+    # --- object reset randomization (offset from initial spawn pose; smaller = easier / more repeatable)
+    object_reset_pos_x_range: tuple[float, float] = (-0.04, 0.04)
+    object_reset_pos_y_range: tuple[float, float] = (-0.04, 0.04)
+    object_reset_pos_z_range: tuple[float, float] = (0.00, 0.00)
+    object_reset_yaw_range: tuple[float, float] = (-3.14159, 3.14159)  # ±45° (was ±π)
 
     # --- robot joint reset randomization (offset from default joint pos)
-    robot_reset_dof_pos_offset_range: tuple[float, float] = (-0.50, 0.50)
+    robot_reset_dof_pos_offset_range: tuple[float, float] = (0.0, 0.0)  # no randomization
     robot_reset_dof_vel_range: tuple[float, float] = (0.0, 0.0)
 
     # --- observations
@@ -122,14 +123,17 @@ class UR10eShadowHandPickupEnvCfg(DirectRLEnvCfg):
     # --- reward composition (dexsuite-like)
     pos_tracking_std: float = 0.10
     pos_tracking_weight: float = 2.0
-    # small shaping term: distance from robot base/EE region to object
-    ee_object_std: float = 0.10
-    ee_object_weight: float = 0.5
-    # within this radius, EE→object reward is considered equally good (plateau)
-    ee_object_saturation_radius: float = 0.2
     success_pos_tol: float = 0.03
     success_height_tol: float = 0.02
     success_weight: float = 10.0
+    # EMA smoothing for :attr:`UR10eShadowHandPickupEnv.consecutive_successes` (mean in-goal streak across envs).
+    success_ema_alpha: float = 0.1
+    # Episode success (see :meth:`UR10eShadowHandPickupEnv.get_episode_success_rate`): if 0, any step in-goal
+    # counts; if >0, require ``success_streak >= max_consecutive_success`` at episode end (timeout, no fall/OOB).
+    max_consecutive_success: int = 0
+    # EMA of **batch** success rate when episodes end (fraction of finished envs that succeeded in that reset).
+    # Logged as ``extras["log"]["episode_success_rate"]`` (reactive); cumulative rate is separate.
+    episode_success_ema_alpha: float = 0.15
     action_l2_weight: float = -0.005
     action_rate_l2_weight: float = -0.005
 

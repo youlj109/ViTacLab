@@ -8,7 +8,7 @@ import torch
 
 from omegaconf import OmegaConf
 
-from lehome.lehome.assets.object.fluid import FluidObject
+from ViTacLab.assets.object.fluid import FluidObject
 
 
 @dataclass
@@ -18,15 +18,15 @@ class WaterObjectCfg:
     设计参考 Lehome_Marble 中的 `lehome/assets/object/fluid.py` 与
     `tasks/livingroom/loft_water.py`，但将资产路径与配置放在当前 ViTacLab 工程：
 
-    - USD 资产: `source/ViTacLab/ViTacLab/assets/data/Objects/Water/water.usdc`
-    - 配置 YAML: `source/ViTacLab/ViTacLab/assets/data/Objects/Water/config/fluid.yaml`
+    - USD 资产: `source/ViTacLab/ViTacLab/assets/data/Objects/Fluid/scenes/LW_Loft/water.usdc`
+    - 配置 YAML: `source/ViTacLab/ViTacLab/assets/data/Objects/Fluid/config_file/fluid.yaml`
 
-    以上文件需由用户根据自身水体资产实际情况放置到对应路径。
+    以上文件已按当前工程布局放置在 `assets/data/Objects/Fluid` 目录下。
     """
 
     prim_path: str = "/World/Object/fluid_items/fluid_items_1"
-    usd_path: str = "source/ViTacLab/ViTacLab/assets/data/Objects/Water/water.usdc"
-    cfg_path: str = "source/ViTacLab/ViTacLab/assets/data/Objects/Water/config/fluid.yaml"
+    usd_path: str = "source/ViTacLab/ViTacLab/assets/data/Objects/Fluid/scenes/LW_Loft/water.usdc"
+    cfg_path: str = "source/ViTacLab/ViTacLab/assets/data/Objects/Fluid/config_file/fluid.yaml"
     use_container: bool = True
 
 
