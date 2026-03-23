@@ -39,6 +39,9 @@ class ShadowHandVisionEnvCfg(ShadowHandEnvCfg):
     )
     feature_extractor = FeatureExtractorCfg()
 
+    # Vision task requires a tiled camera; keep True unless explicitly disabled (will error in env __init__).
+    enable_cameras: bool = True
+
     # env
     observation_space = 164 + 27  # state observation + vision CNN embedding
     state_space = 187 + 27  # asymettric states + vision CNN embedding
@@ -56,6 +59,11 @@ class ShadowHandVisionEnv(InHandManipulationEnv):
     cfg: ShadowHandVisionEnvCfg
 
     def __init__(self, cfg: ShadowHandVisionEnvCfg, render_mode: str | None = None, **kwargs):
+        if not getattr(cfg, "enable_cameras", True):
+            raise ValueError(
+                "ShadowHandVisionEnv requires cfg.enable_cameras=True (tiled RGB/depth/segmentation + CNN). "
+                "Use --enable_cameras, set ENABLE_CAMERAS=1, or run train/play with --video."
+            )
         super().__init__(cfg, render_mode, **kwargs)
         # Use the log directory from the configuration
         self.feature_extractor = FeatureExtractor(self.cfg.feature_extractor, self.device, self.cfg.log_dir)
@@ -69,13 +77,18 @@ class ShadowHandVisionEnv(InHandManipulationEnv):
         # add hand, in-hand object, and goal object
         self.hand = Articulation(self.cfg.robot_cfg)
         self.object = RigidObject(self.cfg.object_cfg)
-        self._tiled_camera = TiledCamera(self.cfg.tiled_camera)
+        # Tiled camera only when enable_cameras (validated in __init__ for this task)
+        if getattr(self.cfg, "enable_cameras", True):
+            self._tiled_camera = TiledCamera(self.cfg.tiled_camera)
+        else:
+            self._tiled_camera = None  # pragma: no cover
         # clone and replicate (no need to filter for this environment)
         self.scene.clone_environments(copy_from_source=False)
         # add articulation to scene - we must register to scene to randomize with EventManager
         self.scene.articulations["robot"] = self.hand
         self.scene.rigid_objects["object"] = self.object
-        self.scene.sensors["tiled_camera"] = self._tiled_camera
+        if self._tiled_camera is not None:
+            self.scene.sensors["tiled_camera"] = self._tiled_camera
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
