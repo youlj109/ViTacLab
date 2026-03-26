@@ -8,13 +8,13 @@ from isaaclab.sensors import TiledCameraCfg
 from isaaclab.utils import configclass
 
 from isaaclab_assets.sensors import GELSIGHT_R15_CFG
-from isaaclab_contrib.sensors.tacsl_sensor import VisuoTactileSensorCfg
+from isaaclab_contrib.sensors.tacsl_sensor import VisuoTactileSensorV2Cfg as VisuoTactileSensorCfg
 
 
 UR10E_SHADOWHAND_LEFT_CFG: ArticulationCfg = ArticulationCfg(
     prim_path="/World/envs/env_.*/Robot",
     spawn=sim_utils.UsdFileCfg(
-        usd_path="source/ViTacLab/ViTacLab/assets/data/Robots/ShadowHand/ur10e/ur10e_shadow_left_hand_glb_withtac.usd",
+        usd_path="source/ViTacLab/ViTacLab/assets/data/Robots/ShadowHand/ur10e/ur10e_shadow_left_hand_glb_withtac_v2_no_gelsight_articulation.usd",
         activate_contact_sensors=False,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=True,
@@ -33,7 +33,7 @@ UR10E_SHADOWHAND_LEFT_CFG: ArticulationCfg = ArticulationCfg(
             sleep_threshold=0.005,
             stabilization_threshold=0.0005,
         ),
-        collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.001, rest_offset=-0.005),
+        collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.001, rest_offset=-0.001),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
         # fixed offset w.r.t. Forge/Factory table placement
@@ -138,6 +138,8 @@ def build_ur10e_shadowhand_tactile_sensor_cfgs(scene_cfg: UR10eShadowHandTacSLSc
             tactile_array_size=tp["tactile_array_size"],
             tactile_margin=tp["tactile_margin"],
             contact_object_prim_path_expr=tp["contact_object_prim_path_expr"],
+            contact_object_is_deformable=tp.get("contact_object_is_deformable", False),
+            depth_penetration_deadband=tp.get("depth_penetration_deadband", 0.0),
             normal_contact_stiffness=1.0,
             friction_coefficient=2.0,
             tangential_stiffness=0.1,

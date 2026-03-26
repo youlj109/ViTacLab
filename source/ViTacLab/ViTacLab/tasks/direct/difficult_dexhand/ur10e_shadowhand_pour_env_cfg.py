@@ -15,16 +15,19 @@ from isaaclab.utils import configclass
 class UR10eShadowHandTactileSceneCfg(UR10eShadowHandTacSLSceneCfg):
     """Scene configuration for UR10e + ShadowHand with TacSL tactile sensors.
 
-    可变形纸杯 (DeformableObject) 无 SDF/碰撞网格，故关闭 force_field，仅使用 camera_tactile。
+    Deformable cup has no rigid SDF mesh; use :class:`~isaaclab_contrib.sensors.tacsl_sensor.visuotactile_sensor_v2.VisuoTactileSensorV2`
+    with ``contact_object_is_deformable=True`` (depth-based force field + soft-body nodal velocity).
     """
 
     @classmethod
     def _tactile_params(cls) -> dict:
         return {
             "contact_object_prim_path_expr": "/World/envs/env_.*/cup",
-            "enable_force_field": False,
+            "enable_force_field": True,
+            "contact_object_is_deformable": True,
             "tactile_array_size": (20, 25),
             "tactile_margin": 0.005,
+            "depth_penetration_deadband": 0.0,
         }
 
 
@@ -39,7 +42,7 @@ class UR10eShadowHandPourEnvCfg(DirectRLEnvCfg):
     observation_space = 256
     state_space = 0
     asymmetric_obs = False
-    enable_cameras: bool = False
+    enable_cameras: bool = True
 
     sim: SimulationCfg = SimulationCfg(
         dt=1.0 / 120.0,
@@ -141,7 +144,7 @@ class UR10eShadowHandPourEnvCfg(DirectRLEnvCfg):
 
     # --- observations
     vel_obs_scale: float = 0.2
-    use_full_tactile_obs: bool = False
+    use_full_tactile_obs: bool = True
 
     # --- rewards (dexsuite-style, same spirit as pickup)
     pos_tracking_std: float = 0.12

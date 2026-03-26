@@ -306,14 +306,8 @@ def main() -> None:
         if policy_obs is not None:
             print(f"Reset ok. policy obs shape: {tuple(policy_obs.shape)}")
 
-    # Initialize tactile sensors' nominal render (for camera tactile)
     _scene_env = wrapped_env.unwrapped
-    for name in TACTILE_SENSOR_NAMES:
-        if name in _scene_env.scene.sensors:
-            try:
-                _scene_env.scene[name].get_initial_render()
-            except Exception:
-                pass
+    # TacSL ``get_initial_render()`` runs in UR10eShadowHandDirectBaseEnv._setup_scene when enable_cameras.
 
     # Determine tactile array size for FF from sensor cfg
     if args.show_ff and fig is not None:
