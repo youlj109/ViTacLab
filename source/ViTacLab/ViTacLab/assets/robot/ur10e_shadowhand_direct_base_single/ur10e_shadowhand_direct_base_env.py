@@ -9,8 +9,6 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import saturate
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
-from isaaclab_contrib.sensors.tacsl_sensor import VisuoTactileSensorCfg
-
 from .ur10e_shadowhand_direct_base_cfg import (
     UR10eShadowHandTacSLSceneCfg,
     build_ur10e_shadowhand_tactile_sensor_cfgs,
@@ -21,6 +19,16 @@ from .ur10e_shadowhand_direct_base_cfg import (
 @torch.jit.script
 def _scale(x, lower, upper):
     return 0.5 * (x + 1.0) * (upper - lower) + lower
+
+
+# Names must match ``build_ur10e_shadowhand_tactile_sensor_cfgs`` keys.
+_TACSL_SENSOR_NAMES: tuple[str, ...] = (
+    "tactile_sensor_ff",
+    "tactile_sensor_lf",
+    "tactile_sensor_mf",
+    "tactile_sensor_rf",
+    "tactile_sensor_th",
+)
 
 
 def spawn_factory_table(prim_path: str = "/World/envs/env_.*/Table") -> None:
@@ -89,6 +97,34 @@ class UR10eShadowHandDirectBaseEnv(DirectRLEnv):
 
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
+
+        if getattr(self.cfg, "enable_cameras", False):
+            self._maybe_init_tacsl_nominal_render()
+
+    def _maybe_init_tacsl_nominal_render(self) -> None:
+        """Nominal camera render for TacSL (``get_initial_render``) when ``enable_cameras`` is True.
+
+        TacSL / Forge reference: call after ``sim.reset()`` so GPU handles and buffers are valid before the first
+        ``scene.update()``. ``DirectRLEnv`` will reset again after ``_setup_scene()``; an extra reset here matches
+        :class:`ForgeEnv` and avoids relying on external scripts for initialization.
+        """
+        if not isinstance(self.cfg.scene, UR10eShadowHandTacSLSceneCfg):
+            return
+        from isaaclab.sim.utils.stage import use_stage
+
+        with use_stage(self.sim.get_initial_stage()):
+            self.sim.reset()
+
+        for name in _TACSL_SENSOR_NAMES:
+            if name not in self.scene.sensors:
+                continue
+            sensor = self.scene[name]
+            if not getattr(sensor.cfg, "enable_camera_tactile", False):
+                continue
+            try:
+                sensor.get_initial_render()
+            except Exception:
+                pass
 
     def _setup_task_scene(self) -> None:
         raise NotImplementedError

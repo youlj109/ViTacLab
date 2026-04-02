@@ -9,7 +9,7 @@ seed: 42
 # Models are instantiated using skrl's model instantiator utility
 # https://skrl.readthedocs.io/en/latest/api/utils/model_instantiators.html
 models:
-  separate: True
+  separate: False
   policy:  # see gaussian_model parameters
     class: GaussianMixin
     clip_actions: False
@@ -41,10 +41,10 @@ memory:
   memory_size: -1  # automatically determined (same as agent:rollouts)
 
 
-# MAPPO agent configuration (field names are from MAPPO_DEFAULT_CONFIG)
-# https://skrl.readthedocs.io/en/latest/api/multi_agents/mappo.html
+# PPO agent configuration (field names are from PPO_DEFAULT_CONFIG)
+# https://skrl.readthedocs.io/en/latest/api/agents/ppo.html
 agent:
-  class: MAPPO
+  class: PPO
   rollouts: 16
   learning_epochs: 5
   mini_batches: 4
@@ -56,8 +56,6 @@ agent:
     kl_threshold: 0.016
   state_preprocessor: RunningStandardScaler
   state_preprocessor_kwargs: null
-  shared_state_preprocessor: RunningStandardScaler
-  shared_state_preprocessor_kwargs: null
   value_preprocessor: RunningStandardScaler
   value_preprocessor_kwargs: null
   random_timesteps: 0
@@ -73,7 +71,7 @@ agent:
   time_limit_bootstrap: False
   # logging and checkpoint
   experiment:
-    directory: "shadow_hand_over"
+    directory: "hand_over"
     experiment_name: ""
     write_interval: auto
     checkpoint_interval: auto

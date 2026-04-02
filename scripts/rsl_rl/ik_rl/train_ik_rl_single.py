@@ -222,7 +222,6 @@ from isaaclab.envs import (
     DirectRLEnv,
     DirectRLEnvCfg,
     ManagerBasedRLEnvCfg,
-    multi_agent_to_single_agent,
 )
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_yaml
@@ -244,6 +243,7 @@ from ik_rl_hand_vec_env import (
 logger = logging.getLogger(__name__)
 
 import ViTacLab.tasks  # noqa: F401
+from ViTacLab.utils.vitaclab_marl_rsl import multi_agent_to_single_agent
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True

@@ -71,7 +71,6 @@ from isaaclab.envs import (
     DirectMARLEnvCfg,
     DirectRLEnvCfg,
     ManagerBasedRLEnvCfg,
-    multi_agent_to_single_agent,
 )
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
@@ -84,6 +83,7 @@ from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import ViTacLab.tasks  # noqa: F401
+from ViTacLab.utils.vitaclab_marl_rsl import multi_agent_to_single_agent
 
 from rsl_rl_log_utils import get_rsl_rl_log_root
 

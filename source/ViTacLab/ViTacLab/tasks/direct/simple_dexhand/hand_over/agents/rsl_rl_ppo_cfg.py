@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""RSL-RL PPO for Shadow Hand Over (MARL → single-agent after wrapper)."""
+"""RSL-RL PPO for UR10e dual-arm hand-over (MARL → single-agent after wrapper)."""
 
 from isaaclab.utils import configclass
 
@@ -11,13 +11,13 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 
 @configclass
-class ShadowHandOverPPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    """PPO for Isaac-Shadow-Hand-Over-Direct-v0 (obs 157 per agent, 20-D actuation)."""
+class UR10eDualShadowHandOverPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+    """PPO for Isaac-UR10e-Dual-Shadow-Hand-Over-Direct-v0 (hand-only policy; obs 161 per agent, 24-D actuation)."""
 
     num_steps_per_env = 16
     max_iterations = 10000
     save_interval = 250
-    experiment_name = "shadow_hand_over"
+    experiment_name = "hand_over"
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         actor_obs_normalization=True,
