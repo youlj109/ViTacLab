@@ -3,9 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""
-ShadowHand Over environment.
-"""
+"""UR10e dual-arm hand-over (between two manipulators)."""
 
 import gymnasium as gym
 
@@ -16,13 +14,13 @@ from . import agents
 ##
 
 gym.register(
-    id="Isaac-Shadow-Hand-Over-Direct-v0",
-    entry_point=f"{__name__}.shadow_hand_over_env:ShadowHandOverEnv",
+    id="Isaac-UR10e-Dual-Shadow-Hand-Over-Direct-v0",
+    entry_point=f"{__name__}.hand_over_env:UR10eDualShadowHandOverEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.shadow_hand_over_env_cfg:ShadowHandOverEnvCfg",
+        "env_cfg_entry_point": f"{__name__}.hand_over_env_cfg:UR10eDualShadowHandOverEnvCfg",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:ShadowHandOverPPORunnerCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:UR10eDualShadowHandOverPPORunnerCfg",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
         "skrl_ippo_cfg_entry_point": f"{agents.__name__}:skrl_ippo_cfg.yaml",
         "skrl_mappo_cfg_entry_point": f"{agents.__name__}:skrl_mappo_cfg.yaml",

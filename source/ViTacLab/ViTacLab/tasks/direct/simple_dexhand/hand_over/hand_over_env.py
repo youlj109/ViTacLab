@@ -6,25 +6,30 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 import numpy as np
 import torch
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, RigidObject
-from isaaclab.envs import DirectMARLEnv
+from isaaclab.assets import RigidObject
 from isaaclab.markers import VisualizationMarkers
-from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate
 
-from .shadow_hand_over_env_cfg import ShadowHandOverEnvCfg
+from ViTacLab.assets.robot.ur10e_dual_shadowhand_direct_base.ur10e_dual_shadowhand_direct_base_env import (
+    UR10eDualShadowHandDirectMARLBaseEnv,
+)
+
+from .hand_over_env_cfg import (
+    UR10E_DUAL_SHADOWHAND_OVER_NUM_HAND_DOFS,
+    UR10eDualShadowHandOverEnvCfg,
+)
 
 
-class ShadowHandOverEnv(DirectMARLEnv):
-    cfg: ShadowHandOverEnvCfg
+class UR10eDualShadowHandOverEnv(UR10eDualShadowHandDirectMARLBaseEnv):
+    cfg: UR10eDualShadowHandOverEnvCfg
 
-    def __init__(self, cfg: ShadowHandOverEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: UR10eDualShadowHandOverEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
         self.num_hand_dofs = self.right_hand.num_joints
@@ -49,11 +54,16 @@ class ShadowHandOverEnv(DirectMARLEnv):
             (self.num_envs, self.num_hand_dofs), dtype=torch.float, device=self.device
         )
 
-        # list of actuated joints
-        self.actuated_dof_indices = list()
-        for joint_name in cfg.actuated_joint_names:
-            self.actuated_dof_indices.append(self.right_hand.joint_names.index(joint_name))
-        self.actuated_dof_indices.sort()
+        hand_re = re.compile(cfg.hand_joint_expr)
+        self._hand_dof_indices = [i for i, name in enumerate(self.right_hand.joint_names) if hand_re.match(name)]
+        self._hand_dof_indices.sort()
+        self.actuated_dof_indices = self._hand_dof_indices
+        if len(self.actuated_dof_indices) != UR10E_DUAL_SHADOWHAND_OVER_NUM_HAND_DOFS:
+            raise RuntimeError(
+                f"Expected {UR10E_DUAL_SHADOWHAND_OVER_NUM_HAND_DOFS} hand DOFs from hand_joint_expr, "
+                f"got {len(self.actuated_dof_indices)}: {[self.right_hand.joint_names[i] for i in self.actuated_dof_indices]}"
+            )
+        self._hand_idx_t = torch.tensor(self._hand_dof_indices, device=self.device, dtype=torch.long)
 
         # finger bodies
         self.finger_bodies = list()
@@ -62,10 +72,13 @@ class ShadowHandOverEnv(DirectMARLEnv):
         self.finger_bodies.sort()
         self.num_fingertips = len(self.finger_bodies)
 
-        # joint limits
+        # joint limits: full articulation (reset / arm hold) + hand-only slices (policy obs / actions)
         joint_pos_limits = self.right_hand.root_physx_view.get_dof_limits().to(self.device)
-        self.hand_dof_lower_limits = joint_pos_limits[..., 0]
-        self.hand_dof_upper_limits = joint_pos_limits[..., 1]
+        self.robot_dof_lower_limits = joint_pos_limits[..., 0]
+        self.robot_dof_upper_limits = joint_pos_limits[..., 1]
+        h = self._hand_idx_t
+        self.hand_dof_lower_limits = self.robot_dof_lower_limits[:, h]
+        self.hand_dof_upper_limits = self.robot_dof_upper_limits[:, h]
 
         # used to compare object position
         self.in_hand_pos = self.object.data.default_root_state[:, 0:3].clone()
@@ -74,7 +87,7 @@ class ShadowHandOverEnv(DirectMARLEnv):
         self.goal_rot = torch.zeros((self.num_envs, 4), dtype=torch.float, device=self.device)
         self.goal_rot[:, 0] = 1.0
         self.goal_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
-        self.goal_pos[:, :] = torch.tensor([0.0, -0.64, 0.54], device=self.device)
+        self.goal_pos[:, :] = torch.tensor([0.35, 0.0, 0.48], device=self.device)
         # initialize goal marker
         self.goal_markers = VisualizationMarkers(self.cfg.goal_object_cfg)
 
@@ -83,32 +96,19 @@ class ShadowHandOverEnv(DirectMARLEnv):
         self.y_unit_tensor = torch.tensor([0, 1, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
         self.z_unit_tensor = torch.tensor([0, 0, 1], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
 
-    def _setup_scene(self):
-        # add hand, in-hand object, and goal object
-        self.right_hand = Articulation(self.cfg.right_robot_cfg)
-        self.left_hand = Articulation(self.cfg.left_robot_cfg)
+    def _setup_task_scene(self) -> None:
         self.object = RigidObject(self.cfg.object_cfg)
-        # add ground plane
-        spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
-        # clone and replicate (no need to filter for this environment)
-        self.scene.clone_environments(copy_from_source=False)
-        # add articulation to scene - we must register to scene to randomize with EventManager
-        self.scene.articulations["right_robot"] = self.right_hand
-        self.scene.articulations["left_robot"] = self.left_hand
         self.scene.rigid_objects["object"] = self.object
-        # add lights
-        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
-        light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: dict[str, torch.Tensor]) -> None:
         self.actions = actions
 
     def _apply_action(self) -> None:
-        # right hand target
+        # right hand target (hand joints only; arm columns in *_curr_targets stay at reset defaults)
         self.right_hand_curr_targets[:, self.actuated_dof_indices] = scale(
             self.actions["right_hand"],
-            self.hand_dof_lower_limits[:, self.actuated_dof_indices],
-            self.hand_dof_upper_limits[:, self.actuated_dof_indices],
+            self.hand_dof_lower_limits,
+            self.hand_dof_upper_limits,
         )
         self.right_hand_curr_targets[:, self.actuated_dof_indices] = (
             self.cfg.act_moving_average * self.right_hand_curr_targets[:, self.actuated_dof_indices]
@@ -116,15 +116,15 @@ class ShadowHandOverEnv(DirectMARLEnv):
         )
         self.right_hand_curr_targets[:, self.actuated_dof_indices] = saturate(
             self.right_hand_curr_targets[:, self.actuated_dof_indices],
-            self.hand_dof_lower_limits[:, self.actuated_dof_indices],
-            self.hand_dof_upper_limits[:, self.actuated_dof_indices],
+            self.hand_dof_lower_limits,
+            self.hand_dof_upper_limits,
         )
 
         # left hand target
         self.left_hand_curr_targets[:, self.actuated_dof_indices] = scale(
             self.actions["left_hand"],
-            self.hand_dof_lower_limits[:, self.actuated_dof_indices],
-            self.hand_dof_upper_limits[:, self.actuated_dof_indices],
+            self.hand_dof_lower_limits,
+            self.hand_dof_upper_limits,
         )
         self.left_hand_curr_targets[:, self.actuated_dof_indices] = (
             self.cfg.act_moving_average * self.left_hand_curr_targets[:, self.actuated_dof_indices]
@@ -132,8 +132,8 @@ class ShadowHandOverEnv(DirectMARLEnv):
         )
         self.left_hand_curr_targets[:, self.actuated_dof_indices] = saturate(
             self.left_hand_curr_targets[:, self.actuated_dof_indices],
-            self.hand_dof_lower_limits[:, self.actuated_dof_indices],
-            self.hand_dof_upper_limits[:, self.actuated_dof_indices],
+            self.hand_dof_lower_limits,
+            self.hand_dof_upper_limits,
         )
 
         # save current targets
@@ -156,68 +156,36 @@ class ShadowHandOverEnv(DirectMARLEnv):
         observations = {
             "right_hand": torch.cat(
                 (
-                    # ---- right hand ----
-                    # DOF positions (24)
                     unscale(self.right_hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits),
-                    # DOF velocities (24)
                     self.cfg.vel_obs_scale * self.right_hand_dof_vel,
-                    # fingertip positions (5 * 3)
                     self.right_fingertip_pos.view(self.num_envs, self.num_fingertips * 3),
-                    # fingertip rotations (5 * 4)
                     self.right_fingertip_rot.view(self.num_envs, self.num_fingertips * 4),
-                    # fingertip linear and angular velocities (5 * 6)
                     self.right_fingertip_velocities.view(self.num_envs, self.num_fingertips * 6),
-                    # applied actions (20)
                     self.actions["right_hand"],
-                    # ---- object ----
-                    # positions (3)
                     self.object_pos,
-                    # rotations (4)
                     self.object_rot,
-                    # linear velocities (3)
                     self.object_linvel,
-                    # angular velocities (3)
                     self.cfg.vel_obs_scale * self.object_angvel,
-                    # ---- goal ----
-                    # positions (3)
                     self.goal_pos,
-                    # rotations (4)
                     self.goal_rot,
-                    # goal-object rotation diff (4)
                     quat_mul(self.object_rot, quat_conjugate(self.goal_rot)),
                 ),
                 dim=-1,
             ),
             "left_hand": torch.cat(
                 (
-                    # ---- left hand ----
-                    # DOF positions (24)
                     unscale(self.left_hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits),
-                    # DOF velocities (24)
                     self.cfg.vel_obs_scale * self.left_hand_dof_vel,
-                    # fingertip positions (5 * 3)
                     self.left_fingertip_pos.view(self.num_envs, self.num_fingertips * 3),
-                    # fingertip rotations (5 * 4)
                     self.left_fingertip_rot.view(self.num_envs, self.num_fingertips * 4),
-                    # fingertip linear and angular velocities (5 * 6)
                     self.left_fingertip_velocities.view(self.num_envs, self.num_fingertips * 6),
-                    # applied actions (20)
                     self.actions["left_hand"],
-                    # ---- object ----
-                    # positions (3)
                     self.object_pos,
-                    # rotations (4)
                     self.object_rot,
-                    # linear velocities (3)
                     self.object_linvel,
-                    # angular velocities (3)
                     self.cfg.vel_obs_scale * self.object_angvel,
-                    # ---- goal ----
-                    # positions (3)
                     self.goal_pos,
-                    # rotations (4)
                     self.goal_rot,
-                    # goal-object rotation diff (4)
                     quat_mul(self.object_rot, quat_conjugate(self.goal_rot)),
                 ),
                 dim=-1,
@@ -228,47 +196,24 @@ class ShadowHandOverEnv(DirectMARLEnv):
     def _get_states(self) -> torch.Tensor:
         states = torch.cat(
             (
-                # ---- right hand ----
-                # DOF positions (24)
                 unscale(self.right_hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits),
-                # DOF velocities (24)
                 self.cfg.vel_obs_scale * self.right_hand_dof_vel,
-                # fingertip positions (5 * 3)
                 self.right_fingertip_pos.view(self.num_envs, self.num_fingertips * 3),
-                # fingertip rotations (5 * 4)
                 self.right_fingertip_rot.view(self.num_envs, self.num_fingertips * 4),
-                # fingertip linear and angular velocities (5 * 6)
                 self.right_fingertip_velocities.view(self.num_envs, self.num_fingertips * 6),
-                # applied actions (20)
                 self.actions["right_hand"],
-                # ---- left hand ----
-                # DOF positions (24)
                 unscale(self.left_hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits),
-                # DOF velocities (24)
                 self.cfg.vel_obs_scale * self.left_hand_dof_vel,
-                # fingertip positions (5 * 3)
                 self.left_fingertip_pos.view(self.num_envs, self.num_fingertips * 3),
-                # fingertip rotations (5 * 4)
                 self.left_fingertip_rot.view(self.num_envs, self.num_fingertips * 4),
-                # fingertip linear and angular velocities (5 * 6)
                 self.left_fingertip_velocities.view(self.num_envs, self.num_fingertips * 6),
-                # applied actions (20)
                 self.actions["left_hand"],
-                # ---- object ----
-                # positions (3)
                 self.object_pos,
-                # rotations (4)
                 self.object_rot,
-                # linear velocities (3)
                 self.object_linvel,
-                # angular velocities (3)
                 self.cfg.vel_obs_scale * self.object_angvel,
-                # ---- goal ----
-                # positions (3)
                 self.goal_pos,
-                # rotations (4)
                 self.goal_rot,
-                # goal-object rotation diff (4)
                 quat_mul(self.object_rot, quat_conjugate(self.goal_rot)),
             ),
             dim=-1,
@@ -276,11 +221,9 @@ class ShadowHandOverEnv(DirectMARLEnv):
         return states
 
     def _get_rewards(self) -> dict[str, torch.Tensor]:
-        # compute reward
         goal_dist = torch.norm(self.object_pos - self.goal_pos, p=2, dim=-1)
         rew_dist = 2 * torch.exp(-self.cfg.dist_reward_scale * goal_dist)
 
-        # log reward components
         if "log" not in self.extras:
             self.extras["log"] = dict()
         self.extras["log"]["dist_reward"] = rew_dist.mean()
@@ -291,9 +234,7 @@ class ShadowHandOverEnv(DirectMARLEnv):
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         self._compute_intermediate_values()
 
-        # reset when object has fallen
         out_of_reach = self.object_pos[:, 2] <= self.cfg.fall_dist
-        # reset when episode ends
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
         terminated = {agent: out_of_reach for agent in self.cfg.possible_agents}
@@ -303,13 +244,10 @@ class ShadowHandOverEnv(DirectMARLEnv):
     def _reset_idx(self, env_ids: Sequence[int] | torch.Tensor | None):
         if env_ids is None:
             env_ids = self.right_hand._ALL_INDICES
-        # reset articulation and rigid body attributes
         super()._reset_idx(env_ids)
 
-        # reset goals
         self._reset_target_pose(env_ids)
 
-        # reset object
         object_default_state = self.object.data.default_root_state.clone()[env_ids]
         pos_noise = sample_uniform(-1.0, 1.0, (len(env_ids), 3), device=self.device)
 
@@ -317,7 +255,7 @@ class ShadowHandOverEnv(DirectMARLEnv):
             object_default_state[:, 0:3] + self.cfg.reset_position_noise * pos_noise + self.scene.env_origins[env_ids]
         )
 
-        rot_noise = sample_uniform(-1.0, 1.0, (len(env_ids), 2), device=self.device)  # noise for X and Y rotation
+        rot_noise = sample_uniform(-1.0, 1.0, (len(env_ids), 2), device=self.device)
         object_default_state[:, 3:7] = randomize_rotation(
             rot_noise[:, 0], rot_noise[:, 1], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids]
         )
@@ -326,16 +264,22 @@ class ShadowHandOverEnv(DirectMARLEnv):
         self.object.write_root_pose_to_sim(object_default_state[:, :7], env_ids)
         self.object.write_root_velocity_to_sim(object_default_state[:, 7:], env_ids)
 
-        # reset right hand
-        delta_max = self.hand_dof_upper_limits[env_ids] - self.right_hand.data.default_joint_pos[env_ids]
-        delta_min = self.hand_dof_lower_limits[env_ids] - self.right_hand.data.default_joint_pos[env_ids]
+        delta_max = self.robot_dof_upper_limits[env_ids] - self.right_hand.data.default_joint_pos[env_ids]
+        delta_min = self.robot_dof_lower_limits[env_ids] - self.right_hand.data.default_joint_pos[env_ids]
 
         dof_pos_noise = sample_uniform(-1.0, 1.0, (len(env_ids), self.num_hand_dofs), device=self.device)
         rand_delta = delta_min + (delta_max - delta_min) * 0.5 * dof_pos_noise
+        hand_mask = torch.zeros(self.num_hand_dofs, device=self.device)
+        hand_mask[self._hand_dof_indices] = 1.0
+        arm_scale = float(getattr(self.cfg, "arm_reset_dof_pos_noise_scale", 0.0))
+        arm_mask = 1.0 - hand_mask
+        rand_delta = rand_delta * (hand_mask + arm_mask * arm_scale)
+
         dof_pos = self.right_hand.data.default_joint_pos[env_ids] + self.cfg.reset_dof_pos_noise * rand_delta
 
         dof_vel_noise = sample_uniform(-1.0, 1.0, (len(env_ids), self.num_hand_dofs), device=self.device)
         dof_vel = self.right_hand.data.default_joint_vel[env_ids] + self.cfg.reset_dof_vel_noise * dof_vel_noise
+        dof_vel = dof_vel * hand_mask.unsqueeze(0)
 
         self.right_hand_prev_targets[env_ids] = dof_pos
         self.right_hand_curr_targets[env_ids] = dof_pos
@@ -344,16 +288,18 @@ class ShadowHandOverEnv(DirectMARLEnv):
         self.right_hand.set_joint_position_target(dof_pos, env_ids=env_ids)
         self.right_hand.write_joint_state_to_sim(dof_pos, dof_vel, env_ids=env_ids)
 
-        # reset left hand
-        delta_max = self.hand_dof_upper_limits[env_ids] - self.left_hand.data.default_joint_pos[env_ids]
-        delta_min = self.hand_dof_lower_limits[env_ids] - self.left_hand.data.default_joint_pos[env_ids]
+        delta_max = self.robot_dof_upper_limits[env_ids] - self.left_hand.data.default_joint_pos[env_ids]
+        delta_min = self.robot_dof_lower_limits[env_ids] - self.left_hand.data.default_joint_pos[env_ids]
 
         dof_pos_noise = sample_uniform(-1.0, 1.0, (len(env_ids), self.num_hand_dofs), device=self.device)
         rand_delta = delta_min + (delta_max - delta_min) * 0.5 * dof_pos_noise
+        rand_delta = rand_delta * (hand_mask + arm_mask * arm_scale)
+
         dof_pos = self.left_hand.data.default_joint_pos[env_ids] + self.cfg.reset_dof_pos_noise * rand_delta
 
         dof_vel_noise = sample_uniform(-1.0, 1.0, (len(env_ids), self.num_hand_dofs), device=self.device)
         dof_vel = self.left_hand.data.default_joint_vel[env_ids] + self.cfg.reset_dof_vel_noise * dof_vel_noise
+        dof_vel = dof_vel * hand_mask.unsqueeze(0)
 
         self.left_hand_prev_targets[env_ids] = dof_pos
         self.left_hand_curr_targets[env_ids] = dof_pos
@@ -365,19 +311,16 @@ class ShadowHandOverEnv(DirectMARLEnv):
         self._compute_intermediate_values()
 
     def _reset_target_pose(self, env_ids):
-        # reset goal rotation
         rand_floats = sample_uniform(-1.0, 1.0, (len(env_ids), 2), device=self.device)
         new_rot = randomize_rotation(
             rand_floats[:, 0], rand_floats[:, 1], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids]
         )
 
-        # update goal pose and markers
         self.goal_rot[env_ids] = new_rot
         goal_pos = self.goal_pos + self.scene.env_origins
         self.goal_markers.visualize(goal_pos, self.goal_rot)
 
     def _compute_intermediate_values(self):
-        # data for right hand
         self.right_fingertip_pos = self.right_hand.data.body_pos_w[:, self.finger_bodies]
         self.right_fingertip_rot = self.right_hand.data.body_quat_w[:, self.finger_bodies]
         self.right_fingertip_pos -= self.scene.env_origins.repeat((1, self.num_fingertips)).reshape(
@@ -385,10 +328,9 @@ class ShadowHandOverEnv(DirectMARLEnv):
         )
         self.right_fingertip_velocities = self.right_hand.data.body_vel_w[:, self.finger_bodies]
 
-        self.right_hand_dof_pos = self.right_hand.data.joint_pos
-        self.right_hand_dof_vel = self.right_hand.data.joint_vel
+        self.right_hand_dof_pos = self.right_hand.data.joint_pos[:, self._hand_idx_t]
+        self.right_hand_dof_vel = self.right_hand.data.joint_vel[:, self._hand_idx_t]
 
-        # data for left hand
         self.left_fingertip_pos = self.left_hand.data.body_pos_w[:, self.finger_bodies]
         self.left_fingertip_rot = self.left_hand.data.body_quat_w[:, self.finger_bodies]
         self.left_fingertip_pos -= self.scene.env_origins.repeat((1, self.num_fingertips)).reshape(
@@ -396,10 +338,9 @@ class ShadowHandOverEnv(DirectMARLEnv):
         )
         self.left_fingertip_velocities = self.left_hand.data.body_vel_w[:, self.finger_bodies]
 
-        self.left_hand_dof_pos = self.left_hand.data.joint_pos
-        self.left_hand_dof_vel = self.left_hand.data.joint_vel
+        self.left_hand_dof_pos = self.left_hand.data.joint_pos[:, self._hand_idx_t]
+        self.left_hand_dof_vel = self.left_hand.data.joint_vel[:, self._hand_idx_t]
 
-        # data for object
         self.object_pos = self.object.data.root_pos_w - self.scene.env_origins
         self.object_rot = self.object.data.root_quat_w
         self.object_velocities = self.object.data.root_vel_w
