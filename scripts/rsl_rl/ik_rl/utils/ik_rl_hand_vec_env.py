@@ -369,7 +369,11 @@ class ArmIkHandActionExpander:
         ap = torch.zeros_like(p0)
         aq = torch.zeros_like(q0)
 
-        buf = getattr(self._env, "episode_length_buf", torch.zeros(self._num_envs, device=p0.device, dtype=torch.long))
+        buf = getattr(
+            self._env,
+            "episode_length_buf",
+            torch.zeros(self._num_envs, device=p0.device, dtype=torch.long),
+        )
         pid = self._phase_id(buf)
 
         for i, ph in enumerate(self._phases):
@@ -382,7 +386,11 @@ class ArmIkHandActionExpander:
         return ap, aq
 
     def _use_rotation_mask(self) -> torch.Tensor:
-        buf = getattr(self._env, "episode_length_buf", torch.zeros(self._num_envs, device=self._device, dtype=torch.long))
+        buf = getattr(
+            self._env,
+            "episode_length_buf",
+            torch.zeros(self._num_envs, device=self._device, dtype=torch.long),
+        )
         pid = self._phase_id(buf)
         ur = torch.zeros(self._num_envs, dtype=torch.bool, device=self._device)
         for i, ph in enumerate(self._phases):

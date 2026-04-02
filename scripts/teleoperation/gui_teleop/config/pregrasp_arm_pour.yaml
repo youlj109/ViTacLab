@@ -1,0 +1,40 @@
+# # 1.手掌偏高
+# joint_pos:
+#   shoulder_pan_joint: -0.0153656759627203
+#   shoulder_lift_joint: -1.3112476808052809
+#   elbow_joint: 2.5096609493564284
+#   wrist_1_joint: -1.0722718007659391
+#   wrist_2_joint: 1.7729545258277526
+#   wrist_3_joint: -1.6106003043127646
+# # 2.
+# joint_pos:
+#     shoulder_pan_joint: -0.0213471304117989
+#     shoulder_lift_joint: -1.3318579716718317
+#     elbow_joint: 2.4442495114877438
+#     wrist_1_joint: -0.8531141598192882
+#     wrist_2_joint: 1.8287987172167417
+#     wrist_3_joint: -1.5244098266635502
+# 3.效果不错
+joint_pos:
+    shoulder_pan_joint: 0.0304653958619406
+    shoulder_lift_joint: -1.2842236933997171
+    elbow_joint: 2.4326267439820968
+    wrist_1_joint: -0.8852330204021752
+    wrist_2_joint: 1.8788543277068190
+    wrist_3_joint: -1.5104755661661196
+# # 4.效果差
+# joint_pos:
+#     shoulder_pan_joint: 0.0348309312296148
+#     shoulder_lift_joint: -1.3193586795847707
+#     elbow_joint: 2.5319034229332229
+#     wrist_1_joint: -1.0197264756894309
+#     wrist_2_joint: 1.8836205859256641
+#     wrist_3_joint: -1.5117767752041098
+# # 5.
+# joint_pos:
+#     shoulder_pan_joint: 0.0237234786810980
+#     shoulder_lift_joint: -1.3215207920973842
+#     elbow_joint: 2.5356293097459051
+#     wrist_1_joint: -1.0219647385397437
+#     wrist_2_joint: 1.8727182538690692
+#     wrist_3_joint: -1.5140060435174358
