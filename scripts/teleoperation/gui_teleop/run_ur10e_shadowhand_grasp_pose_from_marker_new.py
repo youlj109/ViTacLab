@@ -61,6 +61,13 @@ GRASP_MARKER_PATH = "/World/Debug/GraspClosureTarget"
 ARM_MARKER_PATH = "/World/Debug/GraspArmTarget"
 # Shadow order: thumb = THJ5..THJ1 at indices 19..23
 _THUMB_SLICE = slice(19, 24)
+# Shadow order flex joint slices (FFJ3..1, MFJ3..1, RFJ3..1, LFJ3..1)
+_FF_FLEX_SLICE = slice(3, 6)
+_MF_FLEX_SLICE = slice(7, 10)
+_RF_FLEX_SLICE = slice(11, 14)
+_LF_FLEX_SLICE = slice(16, 19)
+# Pickup-cube thumb target (THJ5..THJ1) used in pickup_cube profile.
+_PICKUP_CUBE_THUMB_CLOSED = np.array([0.10, 0.40, 0.22, 0.55, 0.85], dtype=np.float64)
 
 # Default “closed” template (from recorded_grasp_3); override with --closed-hand-yaml
 _DEFAULT_CLOSED_24: list[float] = [
@@ -272,6 +279,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=("four", "five"),
         default="five",
         help="Four: thumb joints (THJ*) forced to 0 (cup-style preset). Five: thumb joints follow closure alpha.",
+    )
+    p.add_argument(
+        "--grasp-profile",
+        choices=("uniform", "pickup_cube"),
+        default="uniform",
+        help="Hand closure mapping. pickup_cube uses non-uniform finger gains + opposed thumb for cube grasping.",
     )
     p.add_argument(
         "--manual-reset-only",
@@ -595,6 +608,15 @@ def main() -> int:
 
     def _hand_from_alpha(alpha: float) -> np.ndarray:
         h = alpha * closed_ref.copy()
+        if str(args.grasp_profile) == "pickup_cube":
+            # For cube grasping: avoid 4-finger flat pressing by reducing RF/LF closure
+            # and making thumb opposition more active.
+            h[_FF_FLEX_SLICE] *= 1.05
+            h[_MF_FLEX_SLICE] *= 1.00
+            h[_RF_FLEX_SLICE] *= 0.88
+            h[_LF_FLEX_SLICE] *= 0.80
+            if not thumb_zeroed:
+                h[_THUMB_SLICE] = alpha * _PICKUP_CUBE_THUMB_CLOSED
         if thumb_zeroed:
             h[_THUMB_SLICE] = 0.0
         return h
@@ -638,6 +660,7 @@ def main() -> int:
             f"euler={tuple(float(v) for v in args.wrist_euler_in_cup_frame)}"
         )
     print(f"[INFO] Move cyan cube '{GRASP_MARKER_PATH}'; axis={args.closure_axis!r} maps [{lo:.3f},{hi:.3f}] → alpha.")
+    print(f"[INFO] grasp_profile={args.grasp_profile!r}, finger_mode={args.finger_mode!r}")
     print("[INFO] Suggested flow: move cyan cube -> press [f] lock fingers -> verify cup lift/move -> press [r] reset.")
     if save_path:
         print(f"[INFO] On exit, writing grasp YAML → {save_path}")

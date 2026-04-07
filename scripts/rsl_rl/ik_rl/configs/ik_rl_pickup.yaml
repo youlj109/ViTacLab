@@ -24,3 +24,8 @@ palm_euler_in_anchor: [0.0, 0.0, 0.0]
 ee_body: wrist_3_link
 ik_method: dls
 ik_lambda: null
+
+# Freeze hand joints to a fixed grasp pose (hand joints override policy output).
+# The GUI script can write this file; see `scripts/teleoperation/gui_teleop/run_ur10e_shadowhand_grasp_pose_from_marker.py`.
+hand_freeze_phase_target: goal
+hand_freeze_yaml: scripts/teleoperation/gui_teleop/config/recorded_grasp.yaml

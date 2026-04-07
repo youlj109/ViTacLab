@@ -1,24 +1,24 @@
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Play / eval a **hand-only** RSL-RL policy with GPU differential IK arm (same stack as ``train_ik_rl_single.py``).
+"""Play / eval RSL-RL policy with the same **full_ik** stack as ``train_full_ik_single.py`` (phased hand + GPU IK arm).
 
 Examples::
 
-    # Absolute path to checkpoint
-    ./isaaclab.sh -p scripts/rsl_rl/ik_rl/play_ik_rl_single.py --task Isaac-UR10eShadowHand-Pickup-Direct-v0 \\
-        --num_envs 64 --checkpoint logs/rsl_rl/Isaac-UR10eShadowHand-Pickup-Direct-v0/2026-03-21_19-31-05/model_1000.pt
+    ./isaaclab.sh -p scripts/rsl_rl/full_ik/play_full_ik_single.py --task Isaac-UR10eShadowHand-Pickup-Direct-v0 \\
+        --num_envs 64 --checkpoint PATH/model_1000.pt \\
+        --full-ik-config scripts/rsl_rl/full_ik/configs/full_ik_pickup_fixed_hand.yaml
 
-    # Resolve under logs/rsl_rl/<task>/ (same as training resume)
-    ./isaaclab.sh -p scripts/rsl_rl/ik_rl/play_ik_rl_single.py --task Isaac-UR10eShadowHand-Pickup-Direct-v0 \\
-        --num_envs 4096 --headless --resume --load_run 2026-03-21_19-31-05 --checkpoint model_61250.pt
-
-IK / trajectory flags should match training; defaults mirror ``train_ik_rl_single.py``.
+IK / trajectory / ``--full-ik-config`` should match training.
 
 Optional **data recording**: ``--record_data`` saves policy observations, **hand** actions, rewards, and dones for
 ``--record_env_index`` to ``--record_path`` (default: ``./play_records/<task>_<timestamp>/``), one compressed
 ``.npz`` per completed episode (plus ``*_partial.npz`` if play stops mid-episode). Use ``--record_max_episodes N``
 to stop after ``N`` saved episodes.
+
+**No trained policy**: with ``--no-checkpoint``, the script does not load ``model_*.pt``; it feeds **zero** policy
+actions into the wrapper so **arm + scripted/frozen hand** come entirely from full_ik (IK + phases). Use this for
+rollout / data collection when you did not train.
 """
 
 """Launch Isaac Sim Simulator first."""
@@ -28,19 +28,31 @@ import json
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
 
-# Local imports: ``utils/`` next to this file (``scripts/rsl_rl/ik_rl/utils``)
-_IK_RL_DIR = os.path.dirname(os.path.abspath(__file__))
-_IK_UTILS = os.path.join(_IK_RL_DIR, "utils")
-if _IK_UTILS not in sys.path:
-    sys.path.insert(0, _IK_UTILS)
+_FULL_IK_DIR = os.path.dirname(os.path.abspath(__file__))
+_FULL_IK_UTILS = os.path.join(_FULL_IK_DIR, "utils")
+_IK_RL_UTILS = os.path.join(_FULL_IK_DIR, "..", "ik_rl", "utils")
+for _p in (_FULL_IK_UTILS, _IK_RL_UTILS):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+_DEFAULT_FULL_IK_YAML = Path(_FULL_IK_DIR) / "configs" / "full_ik_pour.yaml"
+FULL_IK_PHASE_SCHEDULE: list = []
+RESOLVED_FULL_IK_YAML: Path | None = None
+FULL_IK_FREEZE_HAND: bool = False
+FULL_IK_FREEZE_HAND_YAML: str | None = None
+FULL_IK_CUP_REL_STABLE_CUP_ROT: bool = True
+FULL_IK_WAIT_HAND_CONV: bool = False
+FULL_IK_HAND_CONV_TOL_RAD: float = 0.08
+FULL_IK_HAND_CONV_MAX_HOLD: int = 500
 
 from isaaclab.app import AppLauncher
 
 import cli_args  # isort: skip
 import numpy as np
 
-parser = argparse.ArgumentParser(description="Play hand-only RSL-RL policy with GPU IK arm (single-arm setup).")
+parser = argparse.ArgumentParser(description="Play RSL-RL policy with full_ik (phased hand + GPU IK arm).")
 parser.add_argument("--task", type=str, default=None, help="Registered Gym task (e.g. Isaac-UR10eShadowHand-Pickup-Direct-v0).")
 parser.add_argument(
     "--agent", type=str, default="rsl_rl_cfg_entry_point", help="RL agent config entry point (registry key)."
@@ -79,6 +91,12 @@ parser.add_argument(
     help="Stop after saving this many completed episodes (0 = no episode limit; still respects --max_play_steps).",
 )
 parser.add_argument(
+    "--no-checkpoint",
+    action="store_true",
+    help="Do not load RSL-RL weights: use zero policy actions (arm/hand from full_ik expander only). "
+    "For scripted or freeze_hand rollout and data collection without training.",
+)
+parser.add_argument(
     "--play_success_interval",
     type=float,
     default=2.0,
@@ -88,7 +106,7 @@ parser.add_argument("--show_rgb", action="store_true", help="Show tactile RGB (i
 parser.add_argument("--show_ff", action="store_true", help="Show tactile force-field RGB (implies --enable_cameras).")
 parser.add_argument("--env_index", type=int, default=0, help="Which env index to visualize for tactile plots (default: 0).")
 parser.add_argument("--fps", type=float, default=20.0, help="Target display FPS when --show_rgb / --show_ff (default: 20).")
-# Palm + IK (keep in sync with train_ik_rl_single.py)
+# Palm + IK (keep in sync with train_full_ik_single.py)
 parser.add_argument(
     "--trajectory",
     type=str,
@@ -127,40 +145,101 @@ parser.add_argument("--ee-body", type=str, default="wrist_3_link")
 parser.add_argument("--ik-method", type=str, choices=("pinv", "svd", "trans", "dls"), default="dls")
 parser.add_argument("--ik-lambda", type=float, default=None)
 parser.add_argument(
-    "--hand-freeze-phase-target",
-    type=str,
-    default=None,
-    help="When set along with --hand-freeze-yaml: freeze hand joints during trajectory phases whose target matches this string (e.g. pickup: 'goal').",
-)
-parser.add_argument(
-    "--hand-freeze-yaml",
-    type=str,
-    default=None,
-    help="YAML with hand_joint_pos_shadow_order (24 floats) to freeze hand joints to during grasp phase.",
-)
-parser.add_argument(
     "--ik-config",
     type=str,
     default=None,
-    help="YAML with task + palm/IK/trajectory (see configs/ik_rl_pickup.yaml). Omitted: auto-load if present. 'none' = off.",
+    help="Optional extra IK YAML merge. Pass 'none' to skip.",
+)
+parser.add_argument(
+    "--full-ik-config",
+    type=str,
+    default=str(_DEFAULT_FULL_IK_YAML),
+    help="YAML with phase_schedule + palm/IK (see full_ik/configs/full_ik_pour.yaml).",
 )
 
 cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 
-from ik_rl_load_config import (
-    apply_sys_argv_ik_yaml_defaults,
-    default_pickup_ik_yaml_path,
+import yaml
+
+from full_ik_load_config import (
+    IK_YAML_KEYS,
+    _coerce,
+    load_ik_yaml_into_parser,
     resolve_ik_config_path,
     warn_if_task_mismatch_with_ik_yaml,
 )
 
-apply_sys_argv_ik_yaml_defaults(parser)
+
+def _merge_optional_ik_config_cli_only(parser: argparse.ArgumentParser) -> None:
+    load_ik_yaml_into_parser(parser, resolve_ik_config_path(sys.argv, None))
+
+
+def _apply_full_ik_yaml_defaults(parser: argparse.ArgumentParser) -> None:
+    global FULL_IK_PHASE_SCHEDULE, RESOLVED_FULL_IK_YAML, FULL_IK_FREEZE_HAND, FULL_IK_FREEZE_HAND_YAML, FULL_IK_CUP_REL_STABLE_CUP_ROT
+    global FULL_IK_WAIT_HAND_CONV, FULL_IK_HAND_CONV_TOL_RAD, FULL_IK_HAND_CONV_MAX_HOLD
+    p = _DEFAULT_FULL_IK_YAML
+    if "--full-ik-config" in sys.argv:
+        i = sys.argv.index("--full-ik-config")
+        if i + 1 < len(sys.argv):
+            raw = sys.argv[i + 1].strip()
+            low = raw.lower()
+            if low in ("none", "false", ""):
+                FULL_IK_PHASE_SCHEDULE = []
+                RESOLVED_FULL_IK_YAML = None
+                FULL_IK_FREEZE_HAND = False
+                FULL_IK_FREEZE_HAND_YAML = None
+                FULL_IK_CUP_REL_STABLE_CUP_ROT = True
+                FULL_IK_WAIT_HAND_CONV = False
+                FULL_IK_HAND_CONV_TOL_RAD = 0.08
+                FULL_IK_HAND_CONV_MAX_HOLD = 500
+                _merge_optional_ik_config_cli_only(parser)
+                return
+            p = Path(raw).expanduser()
+    if not p.is_file():
+        FULL_IK_PHASE_SCHEDULE = []
+        RESOLVED_FULL_IK_YAML = None
+        FULL_IK_FREEZE_HAND = False
+        FULL_IK_FREEZE_HAND_YAML = None
+        FULL_IK_CUP_REL_STABLE_CUP_ROT = True
+        FULL_IK_WAIT_HAND_CONV = False
+        FULL_IK_HAND_CONV_TOL_RAD = 0.08
+        FULL_IK_HAND_CONV_MAX_HOLD = 500
+        _merge_optional_ik_config_cli_only(parser)
+        return
+    RESOLVED_FULL_IK_YAML = p.resolve()
+    data = yaml.safe_load(p.read_text()) or {}
+    FULL_IK_PHASE_SCHEDULE = list(data.get("phase_schedule") or [])
+    FULL_IK_FREEZE_HAND = bool(data.get("freeze_hand_after_script", False))
+    _fhy = data.get("freeze_hand_yaml")
+    FULL_IK_FREEZE_HAND_YAML = str(_fhy).strip() if _fhy else None
+    FULL_IK_CUP_REL_STABLE_CUP_ROT = bool(data.get("cup_relative_stable_cup_rotation", True))
+    FULL_IK_WAIT_HAND_CONV = bool(data.get("wait_hand_convergence_before_goal", False))
+    FULL_IK_HAND_CONV_TOL_RAD = float(data.get("hand_convergence_pos_tol_rad", 0.08))
+    FULL_IK_HAND_CONV_MAX_HOLD = int(data.get("hand_convergence_max_hold_steps", 500))
+    kwargs: dict = {}
+    for k in IK_YAML_KEYS:
+        if k in data and data[k] is not None:
+            kwargs[k] = _coerce(k, data[k])
+    if kwargs:
+        parser.set_defaults(**kwargs)
+    _merge_optional_ik_config_cli_only(parser)
+
+
+_apply_full_ik_yaml_defaults(parser)
 args_cli, hydra_args = parser.parse_known_args()
-_cfg_path = resolve_ik_config_path(sys.argv, default_pickup_ik_yaml_path())
-if _cfg_path is not None:
-    print(f"[INFO] IK palm/trajectory defaults merged from YAML: {_cfg_path}")
-warn_if_task_mismatch_with_ik_yaml(_cfg_path, args_cli.task)
+_extra_ik = resolve_ik_config_path(sys.argv, None)
+if _extra_ik is not None and _extra_ik.is_file():
+    _exd = yaml.safe_load(_extra_ik.read_text()) or {}
+    for _k in IK_YAML_KEYS:
+        if _k not in _exd or _exd[_k] is None:
+            continue
+        if hasattr(args_cli, _k):
+            setattr(args_cli, _k, _coerce(_k, _exd[_k]))
+
+if RESOLVED_FULL_IK_YAML is not None:
+    print(f"[INFO] full_ik defaults merged from YAML: {RESOLVED_FULL_IK_YAML}")
+warn_if_task_mismatch_with_ik_yaml(RESOLVED_FULL_IK_YAML, args_cli.task)
 
 # Tactile viewer needs scene cameras / sensors (match scripts/debug/run_ur10e_shadowhand_single.py).
 if getattr(args_cli, "show_rgb", False) or getattr(args_cli, "show_ff", False):
@@ -192,7 +271,6 @@ if version.parse(installed_version) < version.parse(RSL_RL_VERSION):
     exit(1)
 
 import gymnasium as gym
-import numpy as np
 import torch
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.envs import DirectMARLEnv, DirectMARLEnvCfg, DirectRLEnv, DirectRLEnvCfg, ManagerBasedRLEnvCfg, multi_agent_to_single_agent
@@ -205,8 +283,31 @@ import isaaclab_tasks  # noqa: F401
 
 import ViTacLab.tasks  # noqa: F401
 
+import logging
+
 from rsl_rl_log_utils import get_rsl_rl_log_root
-from ik_rl_hand_vec_env import ArmIkHandActionExpander, IkHandRslRlVecEnvWrapper, IkRlHandArmCfg, parse_trajectory_phases
+from full_ik_arm_ik_expander import IkRlHandArmCfg, parse_trajectory_phases
+from full_ik_hand_vec_env import PhasedArmIkHandExpander, PhasedIkHandRslRlVecEnvWrapper
+
+logger = logging.getLogger(__name__)
+
+
+def _apply_env_overrides_from_full_ik_yaml(env_cfg: object) -> None:
+    if RESOLVED_FULL_IK_YAML is None or not RESOLVED_FULL_IK_YAML.is_file():
+        return
+    try:
+        data = yaml.safe_load(RESOLVED_FULL_IK_YAML.read_text()) or {}
+    except OSError:
+        return
+    ovr = data.get("train_env_overrides")
+    if not isinstance(ovr, dict) or not ovr:
+        return
+    for k, v in ovr.items():
+        if hasattr(env_cfg, k):
+            setattr(env_cfg, k, v)
+            logger.info("[full_ik] train_env_overrides: %s = %r", k, v)
+        else:
+            logger.warning("[full_ik] train_env_overrides: env_cfg has no attribute %r — skipped", k)
 
 # Tactile visualization (aligned with scripts/debug/run_ur10e_shadowhand_single.py)
 TACTILE_SENSOR_NAMES = (
@@ -295,6 +396,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     _enable_cams = bool(getattr(args_cli, "enable_cameras", False)) or bool(int(os.environ.get("ENABLE_CAMERAS", "0")))
     setattr(env_cfg, "enable_cameras", _enable_cams)
 
+    _apply_env_overrides_from_full_ik_yaml(env_cfg)
+
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if getattr(args_cli, "enable_cameras", False) else None)
 
     if isinstance(env.unwrapped, DirectMARLEnv):
@@ -319,34 +422,73 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         ee_body_name=str(args_cli.ee_body),
         ik_method=args_cli.ik_method,
         ik_lambda=args_cli.ik_lambda,
-        hand_freeze_phase_target=args_cli.hand_freeze_phase_target,
-        hand_freeze_yaml=args_cli.hand_freeze_yaml,
     )
-    expander = ArmIkHandActionExpander(base, ik_cfg)
+    if not FULL_IK_PHASE_SCHEDULE:
+        raise RuntimeError(
+            "full_ik play: phase_schedule is empty. Pass --full-ik-config PATH with phase_schedule "
+            "(see scripts/rsl_rl/full_ik/configs/full_ik_pour.yaml)."
+        )
+    _proj_root = Path(__file__).resolve().parents[3]
+    expander = PhasedArmIkHandExpander(
+        base,
+        ik_cfg,
+        FULL_IK_PHASE_SCHEDULE,
+        project_root=_proj_root,
+        freeze_hand_after_script=FULL_IK_FREEZE_HAND,
+        freeze_hand_yaml=FULL_IK_FREEZE_HAND_YAML,
+        cup_relative_stable_cup_rotation=FULL_IK_CUP_REL_STABLE_CUP_ROT,
+        wait_hand_convergence_before_goal=FULL_IK_WAIT_HAND_CONV,
+        hand_convergence_pos_tol_rad=FULL_IK_HAND_CONV_TOL_RAD,
+        hand_convergence_max_hold_steps=FULL_IK_HAND_CONV_MAX_HOLD,
+    )
+    _pol_dim = 1 if FULL_IK_FREEZE_HAND else expander.num_hand
     print(
-        f"[INFO] IK play: hand actions={expander.num_hand}, full actuated={expander.num_actuated}, "
-        f"trajectory={args_cli.trajectory}"
+        f"[INFO] full_ik play: policy_action_dim={_pol_dim} scripted_steps="
+        f"{sum(int(p.get('env_steps', 0)) for p in FULL_IK_PHASE_SCHEDULE)} "
+        f"full_actuated={expander.num_actuated} trajectory={args_cli.trajectory!r} freeze_hand={FULL_IK_FREEZE_HAND}"
     )
 
-    wrapped = IkHandRslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions, expander=expander)
+    wrapped = PhasedIkHandRslRlVecEnvWrapper(
+        env,
+        clip_actions=agent_cfg.clip_actions,
+        expander=expander,
+        freeze_hand_after_script=FULL_IK_FREEZE_HAND,
+    )
 
-    resume_path = _resolve_checkpoint_path()
-    print(f"[INFO] Loading checkpoint: {resume_path}")
-
-    if agent_cfg.class_name == "OnPolicyRunner":
-        runner = OnPolicyRunner(wrapped, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
-    elif agent_cfg.class_name == "DistillationRunner":
-        runner = DistillationRunner(wrapped, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
-    else:
-        raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
-
-    runner.load(resume_path)
-    policy = runner.get_inference_policy(device=wrapped.device)
+    no_ckpt = bool(getattr(args_cli, "no_checkpoint", False))
+    resume_path: str | None = None
     policy_nn = None
-    try:
-        policy_nn = runner.alg.policy
-    except AttributeError:
-        policy_nn = getattr(runner.alg, "actor_critic", None)
+    if no_ckpt:
+        if agent_cfg.class_name != "OnPolicyRunner":
+            raise SystemExit("--no-checkpoint is only supported with OnPolicyRunner (default rsl_rl agent).")
+        na = int(wrapped.num_actions)
+        dev = wrapped.device
+
+        def policy(obs: dict) -> torch.Tensor:
+            b = int(obs["policy"].shape[0])
+            return torch.zeros((b, na), device=dev, dtype=torch.float32)
+
+        print(
+            f"[INFO] --no-checkpoint: no model_*.pt loaded; policy actions are zeros "
+            f"(batch, {na}) — arm IK + scripted/frozen hand from full_ik only."
+        )
+    else:
+        resume_path = _resolve_checkpoint_path()
+        print(f"[INFO] Loading checkpoint: {resume_path}")
+
+        if agent_cfg.class_name == "OnPolicyRunner":
+            runner = OnPolicyRunner(wrapped, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+        elif agent_cfg.class_name == "DistillationRunner":
+            runner = DistillationRunner(wrapped, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+        else:
+            raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
+
+        runner.load(resume_path)
+        policy = runner.get_inference_policy(device=wrapped.device)
+        try:
+            policy_nn = runner.alg.policy
+        except AttributeError:
+            policy_nn = getattr(runner.alg, "actor_critic", None)
 
     obs = wrapped.get_observations()
     print(f"[INFO] Policy obs batch shape: {tuple(obs['policy'].shape) if 'policy' in obs else obs}")
@@ -366,6 +508,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         meta = {
             "task": args_cli.task,
             "checkpoint": resume_path,
+            "no_checkpoint": bool(no_ckpt),
             "record_env_index": int(args_cli.record_env_index),
             "trajectory": args_cli.trajectory,
             "num_envs": int(wrapped.num_envs),

@@ -29,9 +29,27 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.utils.math import euler_xyz_from_quat, quat_apply, quat_from_euler_xyz, quat_mul
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
 
-from ik_rl_hand_vec_env import ArmIkHandActionExpander, IkRlHandArmCfg
+from full_ik_arm_ik_expander import (
+    ArmIkHandActionExpander,
+    IkRlHandArmCfg,
+    TrajectoryGateByHandConvergenceExpander,
+    TrajectoryPhase,
+    first_goal_segment_start_env_step,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _pickup_object_phase_steps(traj: tuple[TrajectoryPhase, ...]) -> int | None:
+    """If trajectory is ``object:N:...,goal:-1:...`` (ik_rl pickup style), return ``N``; else None."""
+    if len(traj) != 2:
+        return None
+    a, b = traj[0], traj[1]
+    if str(a.target) != "object" or int(a.env_steps) < 0:
+        return None
+    if int(b.env_steps) >= 0:
+        return None
+    return int(a.env_steps)
 
 
 class _PhaseSpec(NamedTuple):
@@ -63,7 +81,7 @@ def _root_pose_w_to_T_44(pq: torch.Tensor) -> np.ndarray:
 class TimeOffsetArmIkHandExpander(ArmIkHandActionExpander):
     """Same as :class:`ArmIkHandActionExpander`, but IK trajectory phase index uses ``episode_length_buf - offset``.
 
-    Kept in ``full_ik`` so ``ik_rl`` stays unchanged; used after scripted pregrasp/grasp steps.
+    Offsets IK trajectory time index after scripted pregrasp/grasp steps.
     """
 
     def __init__(self, env: DirectRLEnv, cfg: IkRlHandArmCfg, trajectory_step_offset: int) -> None:
@@ -229,6 +247,9 @@ class PhasedArmIkHandExpander:
         freeze_hand_after_script: bool = False,
         freeze_hand_yaml: str | None = None,
         cup_relative_stable_cup_rotation: bool = True,
+        wait_hand_convergence_before_goal: bool = False,
+        hand_convergence_pos_tol_rad: float = 0.08,
+        hand_convergence_max_hold_steps: int = 500,
     ) -> None:
         self._env = env
         self._device = env.device
@@ -367,6 +388,19 @@ class PhasedArmIkHandExpander:
         if self._scripted_total < 0:
             raise RuntimeError("invalid scripted horizon")
 
+        # Pickup (object → goal): scripted ik_trajectory steps must cover the full `object:` segment (same as ik_rl horizon).
+        n_obj = _pickup_object_phase_steps(ik_cfg.trajectory)
+        if n_obj is not None and self._arm_override_total == 0:
+            sum_ik_scripted = int(sum(p.n_steps for p in phase_specs if p.ik_trajectory_hand_only))
+            if sum_ik_scripted != n_obj:
+                logger.warning(
+                    "[full_ik] Pickup-style trajectory object phase = %d env steps, but phase_schedule "
+                    "ik_trajectory steps sum to %d (open+grasp). They must match so scripted hand phases align with "
+                    "IK anchor `object` vs `goal` switching at the same step as train_ik_rl_single.py.",
+                    n_obj,
+                    sum_ik_scripted,
+                )
+
         if any_cup_rel:
             self._cup_ik_prev_arm = [None] * self._num_envs
             if self._cup_relative_stable_cup_rotation:
@@ -383,8 +417,51 @@ class PhasedArmIkHandExpander:
                 "[full_ik] cup_relative runs CPU ikpy once per env per step — prefer small --num_envs (e.g. ≤16)"
             )
 
+        g_ik = first_goal_segment_start_env_step(ik_cfg.trajectory)
+        gate_env = None if g_ik is None else int(g_ik) + int(self._arm_override_total)
+        hvec_gate: np.ndarray | None = None
+        for _ph in reversed(phase_schedule):
+            _hy = _ph.get("hand_yaml")
+            if _hy:
+                hvec_gate = _load_hand_shadow_order(_resolve_path(project_root, str(_hy)))
+                break
+
+        _want_gate = bool(wait_hand_convergence_before_goal)
+        use_gate = bool(
+            _want_gate
+            and gate_env is not None
+            and hvec_gate is not None
+            and self._arm_override_total == 0
+        )
+        if _want_gate and self._arm_override_total > 0:
+            logger.warning(
+                "[full_ik] wait_hand_convergence_before_goal is not supported with joint_targets/cup_relative "
+                "scripted arm override (TimeOffset); using normal IK expander without hand gate"
+            )
+        elif _want_gate and not use_gate:
+            if hvec_gate is None:
+                logger.warning(
+                    "[full_ik] wait_hand_convergence_before_goal set but no phase_schedule entry has hand_yaml; "
+                    "gate disabled"
+                )
+            elif gate_env is None:
+                logger.warning(
+                    "[full_ik] wait_hand_convergence_before_goal set but trajectory has no env_steps==-1 segment; "
+                    "gate disabled"
+                )
+
         if self._arm_override_total > 0:
             self._base = TimeOffsetArmIkHandExpander(env, ik_cfg, self._arm_override_total)
+        elif use_gate:
+            self._base = TrajectoryGateByHandConvergenceExpander(
+                env,
+                ik_cfg,
+                goal_start_env_step=int(gate_env),
+                hand_vec24=hvec_gate,
+                shadow_hand_joint_names=list(self._sh_names),
+                max_hold_steps=int(hand_convergence_max_hold_steps),
+                pos_tol_rad=float(hand_convergence_pos_tol_rad),
+            )
         else:
             self._base = ArmIkHandActionExpander(env, ik_cfg)
         self.num_hand = self._base.num_hand
@@ -558,7 +635,9 @@ class PhasedArmIkHandExpander:
                 assert ph.static_tensor is not None
                 row = ph.static_tensor.to(device=self._device, dtype=torch.float32).expand(n_env, -1)
                 out = torch.where(m.unsqueeze(-1), row, out)
-            if ph.cup_relative or (ph.static_tensor is not None):
+            # ik_trajectory_hand_only: arm comes from IK; hand slots were patched above — must not
+            # restore full ik_out here or policy hand would overwrite scripted open/grasp targets.
+            if ph.cup_relative or (ph.static_tensor is not None) or ph.ik_trajectory_hand_only:
                 in_ik = in_ik & ~m
 
         out = torch.where(in_ik.unsqueeze(-1), ik_out, out)

@@ -1,11 +1,12 @@
-# Full-IK pour: arm follows ik_rl-style trajectory from step 0; hand is staged by phases then frozen.
+# Full-IK pour: same overall rhythm as ik_rl pour — arm follows GPU IK + `trajectory` (cup / goal_cup / ...).
+# Only the grasp-related hand shape is special: phase_schedule opens hand while approaching, then applies
+# `hand_yaml` at the grasp moment; freeze_hand_after_script keeps that pose for the pour segment.
 # Paths are relative to the ViTacLab repo root (same as train_full_ik_single.py project_root).
 #
-# New scheme:
+# Scheme:
 # 1) Arm: always GPU differential IK + trajectory (same semantics as ik_rl_pour.yaml).
-# 2) Hand: phase_schedule with ``mode: ik_trajectory`` to set fixed hand targets by time.
-#    First phase keeps hand open while arm approaches cup; second phase applies recorded grasp.
-# 3) Set freeze_hand_after_script=true so hand remains fixed after scripted hand phases during pour.
+# 2) Hand: phase_schedule — open during approach; brief step(s) to apply recorded grasp YAML; optional freeze.
+# 3) freeze_hand_after_script=true: fingers fixed from grasp YAML during remaining IK; PPO may use 1-d dummy.
 #
 # ``train_env_overrides.reset_cup_pos_noise`` can be >0; arm still tracks cup anchor via trajectory.
 #
@@ -31,7 +32,7 @@ phase_schedule:
   - name: apply_grasp_hand
     mode: ik_trajectory
     env_steps: 1
-    hand_yaml: scripts/teleoperation/gui_teleop/config/recorded_grasp.yaml
+    hand_yaml: scripts/teleoperation/gui_teleop/config/recorded_pickup_grasp_1.yaml
 
 trajectory: "cup:200:0,goal_cup:200:0,goal_cup:-1:1"
 

@@ -20,12 +20,12 @@ import os
 import sys
 from pathlib import Path
 
-# ``ik_rl/utils`` (IK expander) + ``full_ik/utils`` (phased wrapper)
+# ``full_ik/utils`` — vendored IK + phased wrapper (no import of ``ik_rl`` IK modules).
+# ``ik_rl/utils`` — shared ``cli_args`` / ``rsl_rl_log_utils`` (same as ``train_ik_rl_single.py``).
 _FULL_IK_DIR = os.path.dirname(os.path.abspath(__file__))
-_IK_RL_DIR = os.path.join(_FULL_IK_DIR, "..", "ik_rl")
-_IK_UTILS = os.path.join(_IK_RL_DIR, "utils")
 _FULL_IK_UTILS = os.path.join(_FULL_IK_DIR, "utils")
-for _p in (_FULL_IK_UTILS, _IK_UTILS):
+_IK_RL_UTILS = os.path.join(_FULL_IK_DIR, "..", "ik_rl", "utils")
+for _p in (_FULL_IK_UTILS, _IK_RL_UTILS):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -35,6 +35,9 @@ RESOLVED_FULL_IK_YAML: Path | None = None
 FULL_IK_FREEZE_HAND: bool = False
 FULL_IK_FREEZE_HAND_YAML: str | None = None
 FULL_IK_CUP_REL_STABLE_CUP_ROT: bool = True
+FULL_IK_WAIT_HAND_CONV: bool = False
+FULL_IK_HAND_CONV_TOL_RAD: float = 0.08
+FULL_IK_HAND_CONV_MAX_HOLD: int = 500
 
 from isaaclab.app import AppLauncher
 
@@ -176,7 +179,7 @@ AppLauncher.add_app_launcher_args(parser)
 
 import yaml
 
-from ik_rl_load_config import (
+from full_ik_load_config import (
     IK_YAML_KEYS,
     _coerce,
     load_ik_yaml_into_parser,
@@ -196,6 +199,7 @@ def _merge_optional_ik_config_cli_only(parser: argparse.ArgumentParser) -> None:
 
 def _apply_full_ik_yaml_defaults(parser: argparse.ArgumentParser) -> None:
     global FULL_IK_PHASE_SCHEDULE, RESOLVED_FULL_IK_YAML, FULL_IK_FREEZE_HAND, FULL_IK_FREEZE_HAND_YAML, FULL_IK_CUP_REL_STABLE_CUP_ROT
+    global FULL_IK_WAIT_HAND_CONV, FULL_IK_HAND_CONV_TOL_RAD, FULL_IK_HAND_CONV_MAX_HOLD
     p = _DEFAULT_FULL_IK_YAML
     if "--full-ik-config" in sys.argv:
         i = sys.argv.index("--full-ik-config")
@@ -208,6 +212,9 @@ def _apply_full_ik_yaml_defaults(parser: argparse.ArgumentParser) -> None:
                 FULL_IK_FREEZE_HAND = False
                 FULL_IK_FREEZE_HAND_YAML = None
                 FULL_IK_CUP_REL_STABLE_CUP_ROT = True
+                FULL_IK_WAIT_HAND_CONV = False
+                FULL_IK_HAND_CONV_TOL_RAD = 0.08
+                FULL_IK_HAND_CONV_MAX_HOLD = 500
                 _merge_optional_ik_config_cli_only(parser)
                 return
             p = Path(raw).expanduser()
@@ -217,6 +224,9 @@ def _apply_full_ik_yaml_defaults(parser: argparse.ArgumentParser) -> None:
         FULL_IK_FREEZE_HAND = False
         FULL_IK_FREEZE_HAND_YAML = None
         FULL_IK_CUP_REL_STABLE_CUP_ROT = True
+        FULL_IK_WAIT_HAND_CONV = False
+        FULL_IK_HAND_CONV_TOL_RAD = 0.08
+        FULL_IK_HAND_CONV_MAX_HOLD = 500
         _merge_optional_ik_config_cli_only(parser)
         return
     RESOLVED_FULL_IK_YAML = p.resolve()
@@ -226,6 +236,9 @@ def _apply_full_ik_yaml_defaults(parser: argparse.ArgumentParser) -> None:
     _fhy = data.get("freeze_hand_yaml")
     FULL_IK_FREEZE_HAND_YAML = str(_fhy).strip() if _fhy else None
     FULL_IK_CUP_REL_STABLE_CUP_ROT = bool(data.get("cup_relative_stable_cup_rotation", True))
+    FULL_IK_WAIT_HAND_CONV = bool(data.get("wait_hand_convergence_before_goal", False))
+    FULL_IK_HAND_CONV_TOL_RAD = float(data.get("hand_convergence_pos_tol_rad", 0.08))
+    FULL_IK_HAND_CONV_MAX_HOLD = int(data.get("hand_convergence_max_hold_steps", 500))
     kwargs: dict = {}
     for k in IK_YAML_KEYS:
         if k in data and data[k] is not None:
@@ -308,8 +321,8 @@ from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 from rsl_rl_log_utils import get_rsl_rl_log_root
+from full_ik_arm_ik_expander import IkRlHandArmCfg, parse_trajectory_phases
 from full_ik_hand_vec_env import PhasedArmIkHandExpander, PhasedIkHandRslRlVecEnvWrapper
-from ik_rl_hand_vec_env import IkRlHandArmCfg, parse_trajectory_phases
 
 logger = logging.getLogger(__name__)
 
@@ -342,7 +355,7 @@ torch.backends.cudnn.benchmark = False
 
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
-    """Train hand-only policy with GPU differential IK arm."""
+    """Train with full_ik: phased hand staging + GPU differential IK arm."""
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
@@ -359,14 +372,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             step_dt = float(env_cfg.sim.dt) * int(env_cfg.decimation)
             env_cfg.episode_length_s = float(n) * step_dt
             logger.info(
-                "[train_ik_rl_single] --max_episode_length=%d → episode_length_s=%.6f (step_dt=%.6f)",
+                "[train_full_ik_single] --max_episode_length=%d → episode_length_s=%.6f (step_dt=%.6f)",
                 n,
                 env_cfg.episode_length_s,
                 step_dt,
             )
         else:
             logger.warning(
-                "[train_ik_rl_single] --max_episode_length ignored: env_cfg has no usable max_episode_length / "
+                "[train_full_ik_single] --max_episode_length ignored: env_cfg has no usable max_episode_length / "
                 "episode_length_s + sim + decimation."
             )
 
@@ -451,6 +464,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         freeze_hand_after_script=FULL_IK_FREEZE_HAND,
         freeze_hand_yaml=FULL_IK_FREEZE_HAND_YAML,
         cup_relative_stable_cup_rotation=FULL_IK_CUP_REL_STABLE_CUP_ROT,
+        wait_hand_convergence_before_goal=FULL_IK_WAIT_HAND_CONV,
+        hand_convergence_pos_tol_rad=FULL_IK_HAND_CONV_TOL_RAD,
+        hand_convergence_max_hold_steps=FULL_IK_HAND_CONV_MAX_HOLD,
     )
     _scripted_h = int(sum(int(p.get("env_steps", 0)) for p in FULL_IK_PHASE_SCHEDULE))
     _pol_dim = 1 if FULL_IK_FREEZE_HAND else expander.num_hand
@@ -463,6 +479,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "[WARN] full_ik: freeze_hand_after_script=True → hand fixed from YAML during IK; "
             "PPO action does not move fingers (1-d dummy). Useful for critic-only / smoke tests; "
             "disable in full_ik YAML to learn hand control."
+        )
+    if FULL_IK_WAIT_HAND_CONV:
+        print(
+            f"[INFO] full_ik: wait_hand_convergence_before_goal=True "
+            f"(tol={FULL_IK_HAND_CONV_TOL_RAD} rad, max_hold={FULL_IK_HAND_CONV_MAX_HOLD} steps past goal start)"
         )
 
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
@@ -511,7 +532,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         except OSError:
             pass
     dump_yaml(
-        os.path.join(log_dir, "params", "ik_rl_hand.yaml"),
+        os.path.join(log_dir, "params", "full_ik_hand.yaml"),
         {
             "task": args_cli.task,
             "ik_config_source_yaml": str(RESOLVED_IK_CONFIG_YAML) if RESOLVED_IK_CONFIG_YAML else None,
@@ -531,6 +552,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "num_hand_actions": expander.num_hand,
             "freeze_hand_after_script": FULL_IK_FREEZE_HAND,
             "freeze_hand_yaml": FULL_IK_FREEZE_HAND_YAML,
+            "wait_hand_convergence_before_goal": FULL_IK_WAIT_HAND_CONV,
+            "hand_convergence_pos_tol_rad": FULL_IK_HAND_CONV_TOL_RAD,
+            "hand_convergence_max_hold_steps": FULL_IK_HAND_CONV_MAX_HOLD,
         },
     )
 

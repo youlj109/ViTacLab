@@ -152,6 +152,18 @@ parser.add_argument(
     help="dls damping lambda override; default = Isaac controller.",
 )
 parser.add_argument(
+    "--hand-freeze-phase-target",
+    type=str,
+    default=None,
+    help="When set along with --hand-freeze-yaml: freeze hand joints during trajectory phases whose target matches this string (e.g. pickup: 'goal').",
+)
+parser.add_argument(
+    "--hand-freeze-yaml",
+    type=str,
+    default=None,
+    help="YAML with hand_joint_pos_shadow_order (24 floats) to freeze hand joints to during grasp phase.",
+)
+parser.add_argument(
     "--ik-config",
     type=str,
     default=None,
@@ -345,6 +357,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         ee_body_name=str(args_cli.ee_body),
         ik_method=args_cli.ik_method,
         ik_lambda=args_cli.ik_lambda,
+        hand_freeze_phase_target=args_cli.hand_freeze_phase_target,
+        hand_freeze_yaml=args_cli.hand_freeze_yaml,
     )
     expander = ArmIkHandActionExpander(base, ik_cfg)
     print(
