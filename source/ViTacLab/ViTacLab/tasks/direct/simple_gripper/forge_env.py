@@ -2,6 +2,7 @@
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
+import json
 import os
 import random
 import warnings
@@ -9,10 +10,12 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+import carb
 import isaacsim.core.utils.torch as torch_utils
 
+import isaaclab.sim as sim_utils
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.utils.math import axis_angle_from_quat
+from isaaclab.utils.math import axis_angle_from_quat, transform_points, unproject_depth
 
 from isaaclab_tasks.direct.factory import factory_utils
 from isaaclab_tasks.direct.factory.factory_env import FactoryEnv
@@ -205,11 +208,80 @@ class ForgeEnv(FactoryEnv):
         self.pos_threshold = self.default_pos_threshold.clone()
         self.rot_threshold = self.default_rot_threshold.clone()
 
+        # True: RL action control (EE space); False: DP joint pose control via apply_joint_targets()
+        self._use_rl_control = True
+        # Arm DOF indices (panda_joint1–7) for DP mode; PD gains from franka_drive_params.json
+        self._arm_dof_indices = list(range(7))
+        self._dp_arm_stiffness, self._dp_arm_damping = self._load_dp_arm_gains_from_json()
+
+    def _load_dp_arm_gains_from_json(self):
+        """Load arm stiffness and damping per joint from franka_drive_params.json. Returns (stiffness, damping) tensors of shape (7,) on self.device."""
+        this_dir = os.path.dirname(os.path.abspath(__file__))
+        # Package root is .../ViTacLab/ViTacLab (contains assets/); three levels up from simple_gripper, not four.
+        path = os.path.normpath(
+            os.path.join(
+                this_dir,
+                "..",
+                "..",
+                "..",
+                "assets",
+                "data",
+                "Robots",
+                "Franka",
+                "Franka_R15",
+                "franka_drive_params.json",
+            )
+        )
+        if not os.path.isfile(path):
+            path = os.path.join(os.getcwd(), "franka_drive_params.json")
+        default_stiffness = torch.zeros(7, device=self.device, dtype=torch.float)
+        default_damping = torch.zeros(7, device=self.device, dtype=torch.float)
+        if not os.path.isfile(path):
+            return default_stiffness, default_damping
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return default_stiffness, default_damping
+        arm = data.get("arm_joints", [])
+        if len(arm) != 7:
+            return default_stiffness, default_damping
+        stiffness = torch.tensor([arm[i]["stiffness"] for i in range(7)], device=self.device, dtype=torch.float)
+        damping = torch.tensor([arm[i]["damping"] for i in range(7)], device=self.device, dtype=torch.float)
+        return stiffness, damping
+
+    def set_stiffness_damping(self, enable: bool):
+        """Set arm joint stiffness/damping for DP mode from franka_drive_params.json. When enable=False, set to 0 for RL mode."""
+        if not hasattr(self._robot, "write_joint_stiffness_to_sim"):
+            return
+        n_arm = len(self._arm_dof_indices)
+        if enable:
+            stiffness = self._dp_arm_stiffness.unsqueeze(0).expand(self.num_envs, n_arm)
+            damping = self._dp_arm_damping.unsqueeze(0).expand(self.num_envs, n_arm)
+        else:
+            stiffness = torch.zeros((self.num_envs, n_arm), device=self.device, dtype=torch.float)
+            damping = torch.zeros((self.num_envs, n_arm), device=self.device, dtype=torch.float)
+        self._robot.write_joint_stiffness_to_sim(stiffness, joint_ids=self._arm_dof_indices)
+        self._robot.write_joint_damping_to_sim(damping, joint_ids=self._arm_dof_indices)
+
     def _setup_scene(self):
         """Setup scene - tactile sensors are automatically created from ForgeSceneCfg."""
         # Call parent setup first - this will create the scene with tactile sensors from ForgeSceneCfg
         super()._setup_scene()
-        
+        if self._forge_render_sensors_enabled:
+            from isaaclab.sensors.camera import TiledCamera, TiledCameraCfg
+
+            twist_cam = TiledCamera(
+                TiledCameraCfg(
+                    prim_path="/World/envs/env_.*/Robot/panda_hand/twist_camera",
+                    data_types=["rgb", "distance_to_image_plane"],
+                    spawn=None,
+                    width=640,
+                    height=480,
+                    update_latest_camera_pose=True,
+                )
+            )
+            self.scene.sensors["twist_camera"] = twist_cam
         # Initialize nominal tactile render for camera-based tactile sensing
         # This must be called after sim.reset() but before the first scene.update()
         # According to reference code, get_initial_render() should be called after sim.reset()
@@ -297,8 +369,8 @@ class ForgeEnv(FactoryEnv):
             if tactile_data_left.tactile_shear_force is not None and tactile_data_right.tactile_shear_force is not None:
                 self.tactile_shear_force = torch.cat(
                     [
-                        tactile_data_left.tactile_shear_force.view(self.num_envs, -1),
-                        tactile_data_right.tactile_shear_force.view(self.num_envs, -1),
+                        tactile_data_left.tactile_shear_force,
+                        tactile_data_right.tactile_shear_force,
                     ],
                     dim=1,
                 )
@@ -310,8 +382,8 @@ class ForgeEnv(FactoryEnv):
             if tactile_data_left.tactile_rgb_image is not None and tactile_data_right.tactile_rgb_image is not None:
                 self.tactile_rgb_image = torch.cat(
                     [
-                        tactile_data_left.tactile_rgb_image.view(self.num_envs, -1),
-                        tactile_data_right.tactile_rgb_image.view(self.num_envs, -1),
+                        tactile_data_left.tactile_rgb_image,
+                        tactile_data_right.tactile_rgb_image
                     ],
                     dim=1,
                 )
@@ -430,7 +502,44 @@ class ForgeEnv(FactoryEnv):
 
         obs_tensors = factory_utils.collapse_obs_dict(obs_dict, self.cfg.obs_order + ["prev_actions"])
         state_tensors = factory_utils.collapse_obs_dict(state_dict, self.cfg.state_order + ["prev_actions"])
-        return {"policy": obs_tensors, "critic": state_tensors}
+        
+        ee_idx = self.fingertip_body_idx
+        ee_pos_env = self._robot.data.body_pos_w[:, ee_idx] - self.scene.env_origins
+        record_dict = {
+            "joint_pos": self._robot.data.joint_pos.detach().cpu(),
+            "tactile_normal_force": self.tactile_normal_force.detach().cpu().reshape(self.num_envs, 2, self.tactile_array_size[0], self.tactile_array_size[1], 1),
+            "tactile_shear_force": self.tactile_shear_force.detach().cpu().reshape(self.num_envs, 2, self.tactile_array_size[0], self.tactile_array_size[1], 2),
+            "tactile_rgb_image": (self.tactile_rgb_image.detach().cpu().reshape(self.num_envs, 2, self.tactile_image_height, self.tactile_image_width, 3) * 255.0).to(torch.uint8),
+            # Env-local: parallel to root_pos_w - env_origins; quat unchanged (env axes || world).
+            "ee_pos_env": ee_pos_env.detach().cpu(),
+            "ee_quat_env": self._robot.data.body_quat_w[:, ee_idx].detach().cpu(),
+        }
+        if "third_person_camera" in self.scene.sensors:
+            third_person_camera = self.scene["third_person_camera"]
+            cam_out = third_person_camera.data.output
+            record_dict["third_person_camera"] = cam_out["rgb"].detach().cpu()
+            record_dict["third_person_camera_depth"] = cam_out["distance_to_image_plane"].detach().cpu()
+            
+        if "twist_camera" in self.scene.sensors:
+            twist_camera = self.scene["twist_camera"]
+            twist_cam_out = twist_camera.data.output
+            record_dict["twist_camera"] = twist_cam_out["rgb"].detach().cpu()
+            record_dict["twist_camera_depth"] = twist_cam_out["distance_to_image_plane"].detach().cpu()
+        
+        
+        return {"policy": obs_tensors, "critic": state_tensors, "record": record_dict}
+
+    def apply_joint_targets(self, joint_pos: torch.Tensor):
+        """
+        Set robot joint position targets directly (for IL policy play).
+        joint_pos: (num_envs, 7) for arm only, or (num_envs, num_dofs) for all DOFs.
+        """
+        joint_pos[:, -2:] = 0.0 # close gripper
+        n_dofs = self._robot.data.joint_pos.shape[1]
+        n_cmd = joint_pos.shape[1]
+        joint_pos = joint_pos.to(device=self.device, dtype=self._robot.data.joint_pos.dtype)
+        assert n_cmd == n_dofs, "Joint position command dimension mismatch"
+        self._robot.set_joint_position_target(joint_pos)
 
     def _apply_action(self):
         """FORGE actions are defined as targets relative to the fixed asset."""
@@ -509,6 +618,9 @@ class ForgeEnv(FactoryEnv):
         ctrl_target_fingertip_midpoint_quat = torch_utils.quat_from_euler_xyz(
             roll=desired_xyz[:, 0], pitch=desired_xyz[:, 1], yaw=desired_xyz[:, 2]
         )
+        
+        if not self._use_rl_control:
+            return
 
         self.generate_ctrl_signals(
             ctrl_target_fingertip_midpoint_pos=ctrl_target_fingertip_midpoint_pos,
@@ -562,7 +674,98 @@ class ForgeEnv(FactoryEnv):
             rew_buf += rew_dict[rew_name] * rew_scales[rew_name]
 
         self._log_forge_metrics(rew_dict, policy_success_pred)
+        
+        self.extras["curr_success_per_env"] = true_successes
         return rew_buf
+
+    def randomize_initial_state(self, env_ids):
+        """Runs Factory pose randomization, then optionally pins fingertip position to one env-local point on all ``env_ids``."""
+        super().randomize_initial_state(env_ids)
+        _pin = bool(getattr(self.cfg, "reset_ee_constant_env_local_pose", False))
+        if not _pin:
+            # 兼容已保存的旧 Hydra/配置名
+            _pin = bool(getattr(self.cfg, "reset_ee_constant_world_pose", False))
+        if not _pin:
+            return
+        pos_env = torch.tensor(
+            getattr(
+                self.cfg,
+                "reset_ee_pos_env",
+                getattr(self.cfg, "reset_ee_pos_w", (0.6, 0.0, 0.15)),
+            ),
+            device=self.device,
+            dtype=torch.float32,
+        )
+        pos_tgt = self.fingertip_midpoint_pos.clone()
+        quat_tgt = self.fingertip_midpoint_quat.clone()
+        n_sel = int(env_ids.shape[0])
+        # IK 与 factory_env._compute_intermediate_values 一致：位置用 env-local（非世界系）
+        pos_tgt[env_ids] = pos_env.unsqueeze(0).expand(n_sel, 3)
+        # 朝向仅用 super() 结果，不覆盖，避免与 hand_init_orn 不一致导致塌臂。
+        # super() 已在末尾恢复重力；额外 IK 与 Factory (2) 段一致，在无重力下做完再恢复。
+        physics_sim_view = sim_utils.SimulationContext.instance().physics_sim_view
+        physics_sim_view.set_gravity(carb.Float3(0.0, 0.0, 0.0))
+        try:
+            self.set_pos_inverse_kinematics(pos_tgt, quat_tgt, env_ids=env_ids)
+            self.step_sim_no_action()
+            self._forge_reattach_held_and_grasp(env_ids)
+        finally:
+            physics_sim_view.set_gravity(carb.Float3(*self.cfg.sim.gravity))
+
+    def _forge_reattach_held_and_grasp(self, env_ids: torch.Tensor) -> None:
+        """Re-attach held asset and close gripper after fingertip moved (FactoryEnv.randomize_initial_state §3+)."""
+        flip_z_quat = torch.tensor([0.0, 0.0, 1.0, 0.0], device=self.device).unsqueeze(0).repeat(self.num_envs, 1)
+        fingertip_flipped_quat, fingertip_flipped_pos = torch_utils.tf_combine(
+            q1=self.fingertip_midpoint_quat,
+            t1=self.fingertip_midpoint_pos,
+            q2=flip_z_quat,
+            t2=torch.zeros((self.num_envs, 3), device=self.device),
+        )
+        held_asset_relative_pos, held_asset_relative_quat = self.get_handheld_asset_relative_pose()
+        asset_in_hand_quat, asset_in_hand_pos = torch_utils.tf_inverse(
+            held_asset_relative_quat, held_asset_relative_pos
+        )
+        translated_held_asset_quat, translated_held_asset_pos = torch_utils.tf_combine(
+            q1=fingertip_flipped_quat, t1=fingertip_flipped_pos, q2=asset_in_hand_quat, t2=asset_in_hand_pos
+        )
+        rand_sample = torch.rand((self.num_envs, 3), dtype=torch.float32, device=self.device)
+        held_asset_pos_noise = 2 * (rand_sample - 0.5)
+        if self.cfg_task.name == "gear_mesh":
+            held_asset_pos_noise[:, 2] = -rand_sample[:, 2]
+        held_asset_pos_noise_level = torch.tensor(self.cfg_task.held_asset_pos_noise, device=self.device)
+        held_asset_pos_noise = held_asset_pos_noise @ torch.diag(held_asset_pos_noise_level)
+        translated_held_asset_quat, translated_held_asset_pos = torch_utils.tf_combine(
+            q1=translated_held_asset_quat,
+            t1=translated_held_asset_pos,
+            q2=torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).unsqueeze(0).repeat(self.num_envs, 1),
+            t2=held_asset_pos_noise,
+        )
+        held_state = self._held_asset.data.default_root_state.clone()
+        held_state[:, 0:3] = translated_held_asset_pos + self.scene.env_origins
+        held_state[:, 3:7] = translated_held_asset_quat
+        held_state[:, 7:] = 0.0
+        self._held_asset.write_root_pose_to_sim(held_state[:, 0:7])
+        self._held_asset.write_root_velocity_to_sim(held_state[:, 7:])
+        self._held_asset.reset()
+        reset_task_prop_gains = torch.tensor(self.cfg.ctrl.reset_task_prop_gains, device=self.device).repeat(
+            (self.num_envs, 1)
+        )
+        self.task_prop_gains = reset_task_prop_gains
+        self.task_deriv_gains = factory_utils.get_deriv_gains(
+            reset_task_prop_gains, self.cfg.ctrl.reset_rot_deriv_scale
+        )
+        self.step_sim_no_action()
+        grasp_time = 0.0
+        while grasp_time < 0.25:
+            self.ctrl_target_joint_pos[env_ids, 7:] = 0.0
+            self.close_gripper_in_place()
+            self.step_sim_no_action()
+            grasp_time += self.sim.get_physics_dt()
+        self.task_prop_gains = self.default_gains
+        self.task_deriv_gains = factory_utils.get_deriv_gains(self.default_gains)
+        self.prev_joint_pos = self.joint_pos[:, 0:7].clone()
+        self.prev_fingertip_pos = self.fingertip_midpoint_pos.clone()
+        self.prev_fingertip_quat = self.fingertip_midpoint_quat.clone()
 
     def _reset_idx(self, env_ids):
         """Perform additional randomizations."""

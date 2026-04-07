@@ -195,7 +195,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 from isaaclab.utils.assets import retrieve_file_path
-from isaaclab.envs import DirectMARLEnv, DirectMARLEnvCfg, DirectRLEnv, DirectRLEnvCfg, ManagerBasedRLEnvCfg, multi_agent_to_single_agent
+from isaaclab.envs import DirectMARLEnv, DirectMARLEnvCfg, DirectRLEnv, DirectRLEnvCfg, ManagerBasedRLEnvCfg
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg
@@ -204,6 +204,7 @@ from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 import isaaclab_tasks  # noqa: F401
 
 import ViTacLab.tasks  # noqa: F401
+from ViTacLab.utils.vitaclab_marl_rsl import multi_agent_to_single_agent
 
 from rsl_rl_log_utils import get_rsl_rl_log_root
 from ik_rl_hand_vec_env import ArmIkHandActionExpander, IkHandRslRlVecEnvWrapper, IkRlHandArmCfg, parse_trajectory_phases
@@ -399,12 +400,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     _scene_env = wrapped.unwrapped
     if show_tactile:
-        for name in TACTILE_SENSOR_NAMES:
-            if name in _scene_env.scene.sensors:
-                try:
-                    _scene_env.scene[name].get_initial_render()
-                except Exception:
-                    pass
+        # TacSL ``get_initial_render()`` runs in UR10eShadowHandDirectBaseEnv._setup_scene when enable_cameras.
 
         if args_cli.show_ff and fig is not None:
             for name in TACTILE_SENSOR_NAMES:

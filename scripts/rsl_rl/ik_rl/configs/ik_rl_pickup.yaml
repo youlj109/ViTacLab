@@ -14,8 +14,10 @@ palm_in_wrist_pos: [0.0, 0.0, 0.35]
 palm_in_wrist_euler: [1.5707963267948966, -1.5707963267948966, 1.5707963267948966]
 
 palm_orient: pickup_down
-palm_normal_local: [0.0, 1.0, 0.0]
+
 palm_yaw_offset: 0.0
+
+palm_normal_local: [0.0, 1.0, 0.0]
 world_down: [0.0, 0.0, -1.0]
 
 palm_euler: [0.0, 2.2, 0.0]

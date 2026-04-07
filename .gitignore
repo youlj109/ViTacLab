@@ -68,6 +68,9 @@ _build
 /data/
 /source/ViTacLab/ViTacLab/assets/data/
 
+# Large/binary simulation assets under package (textures, MDL, etc.)
+source/ViTacLab/ViTacLab/assets/data/
+
 # Tests
 tests/
 
