@@ -1,13 +1,12 @@
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Hand-only RL: map hand actions to full robot commands via GPU batched differential IK (UR10e arm).
+"""GPU differential IK arm + hand actions (vendored for ``full_ik``; fork of ik_rl ``ik_rl_hand_vec_env``).
 
-For environments that **only** expose hand joints in ``actuated_dof_indices`` (e.g. in-hand manipulation with a
-fixed arm pose), :class:`ArmIkHandActionExpander` skips IK and passes actions through unchanged.
+For environments that **only** expose hand joints in ``actuated_dof_indices``, :class:`ArmIkHandActionExpander`
+skips IK and passes actions through unchanged.
 
-Task-agnostic trajectory: phases ``target:env_steps:use_rotation`` (see :class:`TrajectoryPhase`) — used only when
-the arm is part of the action space (pickup / pour style).
+Task-agnostic trajectory: ``target:env_steps:use_rotation`` (see :class:`TrajectoryPhase`).
 """
 
 from __future__ import annotations
@@ -84,6 +83,16 @@ def parse_trajectory_phases(spec: str) -> tuple["TrajectoryPhase", ...]:
     if not phases:
         raise ValueError("trajectory must contain at least one phase")
     return tuple(phases)
+
+
+def first_goal_segment_start_env_step(trajectory: tuple[TrajectoryPhase, ...]) -> int | None:
+    """First ``episode_length_buf`` where the first ``env_steps==-1`` segment begins (IK trajectory time)."""
+    cum = 0
+    for p in trajectory:
+        if p.env_steps < 0:
+            return cum
+        cum += int(p.env_steps)
+    return None
 
 
 @dataclass(frozen=True)
@@ -248,7 +257,7 @@ class ArmIkHandActionExpander:
             self._lower = lower[:, actuated].clone()
             self._upper = upper[:, actuated].clone()
             logger.info(
-                "[ik_rl] ArmIkHandActionExpander: hand-only actuated DOFs (no arm in action space); "
+                "[full_ik] ArmIkHandActionExpander: hand-only actuated DOFs (no arm in action space); "
                 "skipping differential IK — use train.py for pure joint-space in-hand if preferred."
             )
             return
@@ -328,26 +337,26 @@ class ArmIkHandActionExpander:
             }
             if not self._hand_freeze_phase_ids:
                 logger.warning(
-                    "[ik_rl] hand_freeze_phase_target=%r did not match any trajectory phase targets: %s",
+                    "[full_ik] hand_freeze_phase_target=%r did not match any trajectory phase targets: %s",
                     hand_freeze_phase_target,
                     [p.target for p in self._phases],
                 )
             else:
                 yaml_path = Path(hand_freeze_yaml).expanduser()
                 if not yaml_path.is_absolute():
-                    # scripts/rsl_rl/ik_rl/utils/ -> parents[4] = repo root
+                    # scripts/rsl_rl/full_ik/utils/ -> parents[4] = repo root
                     project_root = Path(__file__).resolve().parents[4]
                     yaml_path = (project_root / yaml_path).resolve()
                 if not yaml_path.is_file():
                     raise FileNotFoundError(
-                        f"[ik_rl] hand_freeze_yaml not found: {yaml_path} (from {hand_freeze_yaml!r})"
+                        f"[full_ik] hand_freeze_yaml not found: {yaml_path} (from {hand_freeze_yaml!r})"
                     )
 
                 data = yaml.safe_load(yaml_path.read_text()) or {}
                 seq = data.get("hand_joint_pos_shadow_order")
                 if not isinstance(seq, list) or len(seq) != 24:
                     raise ValueError(
-                        f"[ik_rl] hand_freeze_yaml={yaml_path} requires hand_joint_pos_shadow_order: [24 floats]"
+                        f"[full_ik] hand_freeze_yaml={yaml_path} requires hand_joint_pos_shadow_order: [24 floats]"
                     )
                 hand_vec24 = np.array([float(x) for x in seq], dtype=np.float64)
 
@@ -393,7 +402,7 @@ class ArmIkHandActionExpander:
             except RuntimeError as e:
                 raise RuntimeError(f"Trajectory phase target={p.target!r} is invalid: {e}") from e
         if getattr(self._env, "episode_length_buf", None) is None:
-            logger.warning("[ik_rl] env has no episode_length_buf; trajectory timing may be wrong.")
+            logger.warning("[full_ik] env has no episode_length_buf; trajectory timing may be wrong.")
 
     def _resolve_anchor_world(self, target_name: str) -> tuple[torch.Tensor, torch.Tensor]:
         """World-frame anchor (N,3), (N,4) wxyz from env by ``target_name`` (see :class:`TrajectoryPhase`)."""
@@ -597,6 +606,96 @@ class ArmIkHandActionExpander:
             hand_actions = torch.where(freeze_mask.unsqueeze(-1), self._fixed_hand_actions, hand_actions)
         out[:, h_slots] = hand_actions
         return self._expand_diff_ik(out)
+
+
+def _hand_joint_from_shadow_vec(joint_name: str, hand_joints24: np.ndarray, sh_names: list[str]) -> float:
+    for sh_idx, sh_name in enumerate(sh_names):
+        if sh_name in joint_name or joint_name.endswith(sh_name):
+            return float(hand_joints24[sh_idx])
+    return 0.0
+
+
+class TrajectoryGateByHandConvergenceExpander(ArmIkHandActionExpander):
+    """Keep IK trajectory in the last finite segment until actuated hand joints reach ``hand_yaml`` targets.
+
+    When ``episode_length_buf`` reaches the start of the first ``env_steps==-1`` trajectory segment, if the
+    real hand joints are still away from the commanded grasp pose, clamp the trajectory clock to the last
+    object (finite) step so the arm anchor does not switch to ``goal`` yet.
+    """
+
+    def __init__(
+        self,
+        env: DirectRLEnv,
+        cfg: IkRlHandArmCfg,
+        *,
+        goal_start_env_step: int,
+        hand_vec24: np.ndarray,
+        shadow_hand_joint_names: list[str],
+        max_hold_steps: int = 500,
+        pos_tol_rad: float = 0.08,
+    ) -> None:
+        super().__init__(env, cfg)
+        self._g_goal_start = max(1, int(goal_start_env_step))
+        self._g_last_finite = self._g_goal_start - 1
+        self._g_max_hold = max(1, int(max_hold_steps))
+        self._g_tol = float(pos_tol_rad)
+        h = np.asarray(hand_vec24, dtype=np.float64).ravel()
+        if h.size != 24:
+            raise ValueError(f"hand_vec24 must have length 24, got {h.size}")
+        names = list(env.robot.joint_names)
+        tgt = [
+            _hand_joint_from_shadow_vec(names[ji], h, shadow_hand_joint_names)
+            for ji in self._hand_joint_indices
+        ]
+        t = torch.tensor(tgt, device=self._device, dtype=torch.float32).view(1, -1).expand(self._num_envs, -1)
+        self._hand_tgt_rad = t
+        logger.info(
+            "[full_ik] TrajectoryGateByHandConvergence: hold anchor until hand max|q-q*|≤%.4f rad "
+            "(or %d steps past goal_start=%d); target from grasp hand_yaml",
+            self._g_tol,
+            self._g_max_hold,
+            self._g_goal_start,
+        )
+
+    def _effective_traj_buf(self) -> torch.Tensor:
+        buf = getattr(
+            self._env,
+            "episode_length_buf",
+            torch.zeros(self._num_envs, device=self._device, dtype=torch.long),
+        )
+        ji = torch.tensor(self._hand_joint_indices, device=self._device, dtype=torch.long)
+        jp = self._env.robot.data.joint_pos[:, ji]
+        err = (jp - self._hand_tgt_rad).abs().max(dim=-1).values
+        converged = err <= self._g_tol
+        overdue = (buf - self._g_goal_start) >= self._g_max_hold
+        waiting = (buf >= self._g_goal_start) & (~converged) & (~overdue)
+        hold = torch.full_like(buf, self._g_last_finite)
+        return torch.where(waiting, hold, buf)
+
+    def _anchor_pos_quat(self) -> tuple[torch.Tensor, torch.Tensor]:
+        p0, q0 = self._resolve_anchor_world(self._phases[0].target)
+        ap = torch.zeros_like(p0)
+        aq = torch.zeros_like(q0)
+        buf = self._effective_traj_buf()
+        pid = self._phase_id(buf)
+        for i, ph in enumerate(self._phases):
+            m = pid == i
+            if not m.any():
+                continue
+            pos_i, quat_i = self._resolve_anchor_world(ph.target)
+            ap = torch.where(m.unsqueeze(-1), pos_i, ap)
+            aq = torch.where(m.unsqueeze(-1), quat_i, aq)
+        return ap, aq
+
+    def _use_rotation_mask(self) -> torch.Tensor:
+        buf = self._effective_traj_buf()
+        pid = self._phase_id(buf)
+        ur = torch.zeros(self._num_envs, dtype=torch.bool, device=self._device)
+        for i, ph in enumerate(self._phases):
+            m = pid == i
+            if ph.use_rotation:
+                ur = ur | m
+        return ur
 
 
 class IkHandRslRlVecEnvWrapper(RslRlVecEnvWrapper):

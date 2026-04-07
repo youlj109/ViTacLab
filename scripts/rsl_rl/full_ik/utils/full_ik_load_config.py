@@ -1,7 +1,7 @@
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Load palm/IK trajectory defaults from YAML for ``train_ik_rl_single`` / ``play_ik_rl_single``."""
+"""Load palm/IK trajectory defaults from YAML for ``train_full_ik_single`` / ``play_full_ik_single``."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from typing import Any
 import yaml
 
 # Keys must match argparse ``dest`` names (underscores) for train/play IK arguments.
-# ``task`` = registered Gym id this preset is intended for (merged as default ``--task``; CLI overrides).
 IK_YAML_KEYS = (
     "task",
     "trajectory",
@@ -28,17 +27,14 @@ IK_YAML_KEYS = (
     "ee_body",
     "ik_method",
     "ik_lambda",
-    # Optional: freeze hand joints to a fixed grasp pose during pickup.
-    # (Used by ik_rl pickup only; full_ik has its own hand staging.)
     "hand_freeze_phase_target",
     "hand_freeze_yaml",
 )
 
 
-def default_pickup_ik_yaml_path() -> Path:
-    """``ik_rl/configs/ik_rl_pickup.yaml`` (``utils`` → parent ``ik_rl``)."""
-    # This file lives in ``.../ik_rl/utils/``; configs are in ``.../ik_rl/configs/``.
-    return Path(__file__).resolve().parent.parent / "configs" / "ik_rl_pickup.yaml"
+def default_full_ik_yaml_path() -> Path:
+    """``full_ik/configs/full_ik_pour.yaml`` (``utils`` → parent ``full_ik``)."""
+    return Path(__file__).resolve().parent.parent / "configs" / "full_ik_pour.yaml"
 
 
 def _coerce(name: str, val: Any) -> Any:
@@ -95,10 +91,10 @@ def load_ik_yaml_into_parser(parser: Any, yaml_path: Path | None) -> None:
         parser.set_defaults(**kwargs)
 
 
-def apply_sys_argv_ik_yaml_defaults(parser: Any, default_file: Path | None = None) -> Path | None:
+def apply_sys_argv_full_ik_yaml_defaults(parser: Any, default_file: Path | None = None) -> Path | None:
     """Resolve path from ``sys.argv`` + default file, apply to ``parser``, return resolved path (or None)."""
     if default_file is None:
-        default_file = default_pickup_ik_yaml_path()
+        default_file = default_full_ik_yaml_path()
     resolved = resolve_ik_config_path(sys.argv, default_file)
     load_ik_yaml_into_parser(parser, resolved)
     return resolved
@@ -116,6 +112,6 @@ def warn_if_task_mismatch_with_ik_yaml(resolved_yaml_path: Path | None, cli_task
     cs = str(cli_task).strip()
     if ys and cs and ys != cs:
         print(
-            f"[WARN] IK config YAML task={ys!r} does not match CLI --task={cs!r}. "
+            f"[WARN] full_ik YAML task={ys!r} does not match CLI --task={cs!r}. "
             "Using CLI task; check that palm/IK settings suit this environment."
         )

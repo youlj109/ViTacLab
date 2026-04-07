@@ -9,7 +9,7 @@ task: Isaac-UR10eShadowHand-PourDeformable-Direct-v0
 
 trajectory: "cup:200:0,goal_cup:200:0,goal_cup:-1:1"
 
-# 手腕到手掌
+object_to_palm_offset: [0.0, 0.05, -0.03]
 palm_in_wrist_pos: [0.0, 0.0, 0.35]
 # rad; ~ (pi/2, -pi/2, pi/2)
 palm_in_wrist_euler: [1.5707963267948966, -1.5707963267948966, 1.5707963267948966]

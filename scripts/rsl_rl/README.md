@@ -1,9 +1,10 @@
 # `scripts/rsl_rl` — RSL-RL 训练与回放
 
-本目录提供两类入口：
+本目录提供三类入口：
 
 1. **`full_rl/`** — **全关节**策略：UR10e 臂 + Shadow Hand 同时由 RL 输出（与常见 Isaac Lab `train.py` 一致）。
 2. **`ik_rl/`** — **仅手部**策略 + **差分 IK** 驱动机械臂 + **脚本化掌心轨迹**（跟物体 / 目标锚点）。适用于 Pickup、Pour；**In-hand**（仅手）时 expander 会退化为直通、不跑 IK。
+3. **`full_ik/`** — 与 `ik_rl` **同一套回合节奏**：仍是「**仅手策略位 + GPU 差分 IK 臂 + `--trajectory` 分段**」（例如 Pickup：`object` 段接近物体 → `goal` 段搬向目标）。**差别只在抓握相关环节**：在需要闭合/定型手型的时刻，用 GUI 录制的 **`hand_yaml` 固定手型**，并可用 **`freeze_hand_after_script`** 在后续步数里**保持该手型不变**，由 IK 继续驱动手臂完成后半段；**不是**整回合都与 `ik_rl` 不同。Pour 任务同理，用 `phase_schedule` 描述「接近 → 抓手型 → 倒出」等阶段。**实现独立**：不 import `ik_rl`，IK 核心在 `full_ik/utils/full_ik_arm_ik_expander.py`。
 
 **环境要求**：须在 **已安装 Isaac Lab / Isaac Sim** 的 Python 中运行。文档示例统一写为：
 
@@ -33,18 +34,29 @@ scripts/rsl_rl/
 ├── full_rl/
 │   ├── train.py
 │   └── play.py
-└── ik_rl/
-    ├── train_ik_rl_single.py
-    ├── play_ik_rl_single.py
+├── ik_rl/
+│   ├── train_ik_rl_single.py
+│   ├── play_ik_rl_single.py
+│   ├── configs/
+│   │   ├── ik_rl_pickup.yaml
+│   │   ├── ik_rl_pour.yaml
+│   │   └── README.md
+│   └── utils/
+│       ├── cli_args.py
+│       ├── ik_rl_hand_vec_env.py
+│       ├── ik_rl_load_config.py
+│       └── rsl_rl_log_utils.py
+└── full_ik/
+    ├── train_full_ik_single.py
+    ├── play_full_ik_single.py
     ├── configs/
-    │   ├── ik_rl_pickup.yaml
-    │   ├── ik_rl_pour.yaml
-    │   └── README.md
+    │   ├── full_ik_pour.yaml
+    │   ├── full_ik_pour_cup_relative.yaml
+    │   └── full_ik_pickup_fixed_hand.yaml
     └── utils/
-        ├── cli_args.py
-        ├── ik_rl_hand_vec_env.py
-        ├── ik_rl_load_config.py
-        └── rsl_rl_log_utils.py
+        ├── full_ik_arm_ik_expander.py   # 与 ik_rl 中 ArmIkHandActionExpander 等价的 vendored 副本
+        ├── full_ik_hand_vec_env.py    # 分阶段脚本 + Phased wrapper
+        └── full_ik_load_config.py       # full_ik 专用 YAML 合并（IK 键与 ik_rl 对齐）
 ```
 
 ---
@@ -183,6 +195,38 @@ Checkpoint 解析逻辑与训练一致：可直接 **`--checkpoint /绝对路径
 
 ---
 
+## `full_ik/train_full_ik_single.py` / `full_ik/play_full_ik_single.py`
+
+与 `ik_rl` 共用 **Hydra、`cli_args`、AppLauncher** 等用法；**手掌 / IK / `--trajectory`** 的 CLI 含义与 `train_ik_rl_single` 相同。
+
+### 回合步骤（以 Pickup 为例，与 `ik_rl` 对齐）
+
+- **`--trajectory`** 与 `ik_rl_pickup` 类似：`object:N` 段内锚在 **物体**上，`goal` 段跟目标完成后半段。`ik_rl` 常用 `N=150`；**`full_ik_pickup_fixed_hand.yaml` 里 `N` 必须 ≥ `phase_schedule` 里「仍在物体旁抓握」的步数之和**（例如先开手接近 150 步，再 **多步**保持 `hand_yaml` 抓握且仍跟 `object`，然后才进入 `goal`）。若 `N` 与脚本阶段对齐错误，会在 **切入 `goal` 抬升的同时** 才切换手型，出现「边上升边闭合」。
+- **`full_ik` 的特化**：在 **`phase_schedule`** 里「接近」段 **开手**，随后一段 **在物体锚点未结束前** 切换到 **`hand_yaml`** 并保持若干步，让抓握在 **仍在 `object` 段** 时完成；**`freeze_hand_after_script`** 则让之后 **`goal`** 段手指固定、只由 IK 动手臂。与 `ik_rl` 的 `hand_freeze_phase_target` + `hand_freeze_yaml` 同类目的，`full_ik` 用 `phase_schedule` 表达时机。
+- **Pour**：逻辑类似——接近杯、再施加抓取手型、再倒出等，具体步数与模式见 `full_ik_pour.yaml` 等配置。
+
+### `--full-ik-config`（主配置）
+
+| 参数 | 说明 |
+|------|------|
+| `--full-ik-config PATH` | 默认 `full_ik/configs/full_ik_pour.yaml`。含 `phase_schedule`（脚本阶段：关节回放、`ik_trajectory` 开手/抓手型、`cup_relative` 等）、`freeze_hand_after_script`、`freeze_hand_yaml`、`cup_relative_stable_cup_rotation`、`train_env_overrides` 等。 |
+| `none` / `false` / 空 | 不读文件 → **`phase_schedule` 为空会报错**（与 ik_rl 不同，full_ik 依赖分阶段脚本）。 |
+
+可选 **`--ik-config PATH`**：仅合并 **IK 键**（`trajectory`、`palm_*`、`ee_body`、`ik_method` 等，见 `full_ik_load_config.IK_YAML_KEYS`），**不**替代 `phase_schedule`；与训练时一致即可。
+
+**手部收敛门控（可选，YAML）**：`wait_hand_convergence_before_goal: true` 时，在 **`trajectory` 第一段结束、即将切入带 `env_steps:-1` 的段** 时，若手指关节尚未到达 `phase_schedule` 里最后一个 `hand_yaml` 的关节目标，则 **IK 仍按上一段的物体锚点** 计算，直到 `max|q-q*| ≤ hand_convergence_pos_tol_rad` 或超过 `hand_convergence_max_hold_steps`（避免死等）。与带 `TimeOffset` 的 scripted 臂阶段（`joint_targets` / `cup_relative`）**不兼容**，该情况下会自动关闭门控并打日志。
+
+### 训练日志
+
+单次 run 的 `params/` 下会写入 **`full_ik_hand.yaml`**（记录轨迹、palm、是否冻结手型等），**不是** `ik_rl_hand.yaml`。
+
+### 回放 `play_full_ik_single.py`
+
+- 必须使用与训练 **相同的 `--full-ik-config`**（及一致的 `--task`、palm/trajectory），否则动作展开与训练不一致。
+- 其余与 `ik_rl/play_ik_rl_single.py` 相同：`--max_play_steps`、`--record_data`、`--show_rgb` / `--show_ff` 等。
+
+---
+
 ## 任务 ID 参考（ViTacLab 常见）
 
 | 任务 | Gym ID |
@@ -195,6 +239,6 @@ Checkpoint 解析逻辑与训练一致：可直接 **`--checkpoint /绝对路径
 
 ## 日志与 checkpoint 路径
 
-`rsl_rl_log_utils.get_rsl_rl_log_root` 决定日志根目录（通常含任务名）。训练产生的 `model_*.pt` 位于对应时间戳子目录下；**IK 与 full 的实验不要混用 checkpoint**（动作维度与控制方式不同）。
+`rsl_rl_log_utils.get_rsl_rl_log_root` 决定日志根目录（通常含任务名）。训练产生的 `model_*.pt` 位于对应时间戳子目录下；**`full_rl`、`ik_rl`、`full_ik` 之间不要混用 checkpoint**（动作维度与控制栈不同）。
 
 ---
