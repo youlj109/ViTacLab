@@ -21,7 +21,7 @@ from isaaclab.utils.noise import GaussianNoiseCfg, NoiseModelWithAdditiveBiasCfg
 
 from isaaclab_assets.robots.shadow_hand import SHADOW_HAND_CFG
 from isaaclab_assets.sensors import GELSIGHT_R15_CFG
-from isaaclab_contrib.sensors.tacsl_sensor import VisuoTactileSensorCfg
+from isaaclab_contrib.sensors.tacsl_sensor import VisuoTactileSensorV2Cfg as VisuoTactileSensorCfg
 
 # Tactile: 5 GelSight sensors (ff, lf, mf, rf, th). For the Shadow Hand elastomer
 # geometry we obtain 490 valid ray-cast intersections, so we use a 14 x 35 grid.

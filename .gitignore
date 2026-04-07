@@ -67,6 +67,9 @@ _build
 # Local run/play data (checkpoints, recordings)
 /data/
 
+# Large/binary simulation assets under package (textures, MDL, etc.)
+source/ViTacLab/ViTacLab/assets/data/
+
 # Tests
 tests/
 

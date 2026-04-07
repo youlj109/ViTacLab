@@ -95,7 +95,6 @@ from isaaclab.envs import (
     DirectMARLEnvCfg,
     DirectRLEnvCfg,
     ManagerBasedRLEnvCfg,
-    multi_agent_to_single_agent,
 )
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_yaml
@@ -112,6 +111,7 @@ from rsl_rl_log_utils import get_rsl_rl_log_root
 logger = logging.getLogger(__name__)
 
 import ViTacLab.tasks  # noqa: F401
+from ViTacLab.utils.vitaclab_marl_rsl import multi_agent_to_single_agent
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
