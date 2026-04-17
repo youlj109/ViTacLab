@@ -61,8 +61,8 @@ def _load_symbol(entry: str):
 
 _TASK_PRESETS = {
     "pour": {
-        "env": "ViTacLab.tasks.direct.difficult_dexhand.ur10e_shadowhand_pour_env:UR10eShadowHandPourEnv",
-        "cfg": "ViTacLab.tasks.direct.difficult_dexhand.ur10e_shadowhand_pour_env_cfg:UR10eShadowHandPourEnvCfg",
+        "env": "ViTacLab.tasks.direct.simple_dexhand.pour_water.ur10e_shadowhand_pour_env:UR10eShadowHandPourEnv",
+        "cfg": "ViTacLab.tasks.direct.simple_dexhand.pour_water.ur10e_shadowhand_pour_env_cfg:UR10eShadowHandPourEnvCfg",
     },
     "pickup": {
         "env": "ViTacLab.tasks.direct.simple_dexhand.hand_pickup.hand_pickup_env:UR10eShadowHandPickupEnv",

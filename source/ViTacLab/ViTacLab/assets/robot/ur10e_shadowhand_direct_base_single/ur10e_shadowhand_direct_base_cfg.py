@@ -33,7 +33,7 @@ UR10E_SHADOWHAND_LEFT_CFG: ArticulationCfg = ArticulationCfg(
             sleep_threshold=0.005,
             stabilization_threshold=0.0005,
         ),
-        collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.001, rest_offset=-0.001),
+        collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=-0.002),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
         # fixed offset w.r.t. Forge/Factory table placement

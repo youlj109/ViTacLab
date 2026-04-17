@@ -63,15 +63,16 @@
 
 ---
 
-### 2.4 IK-RL 专用：轨迹、锚点名、`--ik-config` YAML
+### 2.4 IK-RL 专用：EE 轨迹列表、`--ik-config` YAML
 
-**实现参考**：`scripts/rsl_rl/ik_rl/utils/ik_rl_hand_vec_env.py`（`TrajectoryPhase`、锚点解析）。
+**实现参考**：`scripts/rsl_rl/ik_rl/utils/ik_rl_hand_vec_env.py`（`EeWaypoint`、`ArmIkHandActionExpander`）。
 
 | 目标 | 改动位置 | 规范与注意 |
 |------|----------|------------|
-| 改「先跟谁、再跟谁」的分段 | CLI `--trajectory` 或 `ik_rl_*.yaml` 的 `trajectory` | 格式：`名称:环境步数:use_rotation`，逗号分隔。名称必须是环境里能解析的锚点（`env.<name>` 资产或 `name_pos`/`name_rot` 或 legacy `goal`）。 |
-| 改掌心偏移、腕部 palm 姿态、IK 阻尼等 | `configs/ik_rl_pickup.yaml`、`ik_rl_pour.yaml` 或 CLI `--object-to-palm-offset`、`--palm-in-wrist-*` 等 | **训练与回放必须一致**：否则分布偏移，评测无效。Play 时用 `--record_data` 会在 `meta.json` 里写 `trajectory`，但**不替代**你对齐 checkpoint 与 YAML 的责任。 |
-| 新任务接入 IK-RL | 新任务 `Env` 暴露轨迹所需锚点；新增 `ik_rl_xxx.yaml`；在 `README` / `configs/README.md` 中登记 | Pour 类任务**必须**显式 `--ik-config`（Pickup 默认可能自动合并 `ik_rl_pickup.yaml`）。 |
+| 改分段与末端位姿 | `ik_rl_*.yaml` 的 `trajectory`（或双臂 `trajectory_right` / `trajectory_left`） | 每段：`pos` [m]、`quat` wxyz、`steps`（环境步；`-1` 表示到回合结束）。姿态为 **EE 连杆**（`ee_body`，默认 `wrist_3_link`）在 **世界系** 下的目标。 |
+| 与物体随机位姿对齐 | 任务 env 在 reset 时设置 `ik_rl_trajectory_xyz_offset`（与物体/bottle 位置噪声一致） | IK 层会把该向量**加在**所有 waypoint 的 `pos` 上（见拧瓶盖 env）。 |
+| IK 阻尼等 | `ee_body`、`ik_method`、`ik_lambda` 于 YAML 或 CLI | **训练与回放必须一致**。 |
+| 新任务接入 IK-RL | 新增 `ik_rl_xxx.yaml`；文档见 `ik_rl/configs/README.md` | Pour 类任务常需显式 `--ik-config`。 |
 
 ---
 
@@ -126,7 +127,8 @@
 | YAML 合并 | `scripts/rsl_rl/ik_rl/utils/ik_rl_load_config.py` |
 | CLI 共用 | `scripts/rsl_rl/ik_rl/utils/cli_args.py` |
 | UR10e 基类（相机/触觉门控） | `source/ViTacLab/.../ur10e_shadowhand_direct_base_single/ur10e_shadowhand_direct_base_env.py` |
-| Pickup / Pour 等任务 | `source/ViTacLab/ViTacLab/tasks/direct/simple_dexhand/`、`.../difficult_dexhand/` |
+| Pickup / Pour / 双机械臂倒水 等 | `source/ViTacLab/ViTacLab/tasks/direct/simple_dexhand/`（含 `pour_water/`、`dual_pour_water/`） |
+| Forge dexhand / 拧瓶盖 等 | `source/ViTacLab/ViTacLab/tasks/direct/medium_dexhand/` |
 
 ---
 

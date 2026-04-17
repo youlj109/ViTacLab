@@ -117,41 +117,24 @@ Checkpoint：通常 `--checkpoint` 为 **绝对路径** 的 `model_*.pt`，或�
 
 ## `ik_rl/train_ik_rl_single.py` — 参数说明
 
-在 **`full_rl/train`** 的共有参数之外，增加 **手掌 / IK / 轨迹** 相关项；并与 **`ik_rl/configs/*.yaml`** 合并（CLI 优先）。
+在 **`full_rl/train`** 的共有参数之外，增加 **IK / 末端轨迹**；并与 **`ik_rl/configs/*.yaml`** 合并（CLI 覆盖 YAML）。
 
 ### IK 配置文件
 
 | 参数 | 说明 |
 |------|------|
 | `--ik-config PATH` | 指定 YAML；`none` / `false` 表示不读文件。 |
-| （默认） | 若未指定且存在 `ik_rl/configs/ik_rl_pickup.yaml`，会作为默认合并（用于 Pickup 习惯 workflow）。Pour 建议 **显式** `--ik-config scripts/rsl_rl/ik_rl/configs/ik_rl_pour.yaml`。 |
+| （默认） | 若未指定且存在 `ik_rl/configs/ik_rl_pickup.yaml`，会作为默认合并。Pour 建议 **显式** `--ik-config scripts/rsl_rl/ik_rl/configs/ik_rl_pour.yaml`。 |
 
-YAML 内常见键与 CLI 同名：`task`、`trajectory`、`object_to_palm_offset`、`palm_in_wrist_pos`、`palm_in_wrist_euler`、`palm_orient`、`palm_normal_local`、`palm_yaw_offset`、`world_down`、`palm_euler`、`palm_euler_in_anchor`、`ee_body`、`ik_method`、`ik_lambda`。详见 `ik_rl/configs/README.md` 与各 yaml 注释。
+YAML 内常见键：`task`、`trajectory`（**列表**），双臂另有 `trajectory_right` / `trajectory_left`；以及 `ee_body`、`ik_method`、`ik_lambda`。详见 `ik_rl/configs/README.md`。
 
-### 轨迹 `--trajectory`
+**轨迹**：`trajectory` 为若干段，每段 `{pos: [x,y,z], quat: [w,x,y,z], steps: int}` — `quat` 为 **Isaac Lab wxyz**（标量在前）；world 系下 **EE 连杆**（默认 `wrist_3_link`）目标位姿；`steps` 为环境步数；`-1` 表示持续到回合结束。若环境在 reset 时写入 `ik_rl_trajectory_xyz_offset`（例如 bottle 位置随机），则该偏移会**加在**所有段的 `pos` 上。
 
-格式：逗号分隔多段，每段 `名称:环境步数:是否用旋转`，例如：
-
-`object:150:0,goal:-1:0`
-
-- **名称**：环境中锚点——刚性/可变形资产的 `env.<name>`，或 `env.<name>_pos` / `<name>_rot`，或 legacy `goal`。
-- **步数**：`-1` 表示直到本回合结束。
-- **use_rotation**：`0` 或 `1`；`1` 时在锚点坐标系内施加偏移并对齐掌心姿态。
-
-### 手掌与 IK（与 YAML 键一一对应，CLI 为 `--kebab-case`）
+### 可选 CLI（覆盖 YAML）
 
 | CLI | 含义 |
 |-----|------|
-| `--object-to-palm-offset OX OY OZ` | 锚点到掌心原点的偏移（米）；是否随锚点旋转由当前段 `use_rotation` 决定。 |
-| `--palm-in-wrist-pos` | 掌心在 `wrist_3` 坐标系中的位置。 |
-| `--palm-in-wrist-euler` | 掌心相对腕的欧拉角（弧度）。 |
-| `--palm-orient` | `fixed` 或 `pickup_down`（手掌朝下抓取类姿态）。 |
-| `--palm-normal-local` | `pickup_down` 时掌心法向。 |
-| `--palm-yaw-offset` | 世界系绕竖直轴额外 yaw（弧度）。 |
-| `--world-down` | 世界“向下”方向。 |
-| `--palm-euler` | `palm-orient fixed` 时掌心世界欧拉角。 |
-| `--palm-euler-in-anchor` | 段内 `use_rotation=1` 时相对锚点的欧拉角。 |
-| `--ee-body` | Jacobian 末端 link，默认 `wrist_3_link`。 |
+| `--ee-body` | EE link 名，默认 `wrist_3_link`。 |
 | `--ik-method` | `pinv` / `svd` / `trans` / `dls`。 |
 | `--ik-lambda` | `dls` 阻尼 λ；默认用控制器内置。 |
 
@@ -165,7 +148,7 @@ YAML 内常见键与 CLI 同名：`task`、`trajectory`、`object_to_palm_offset
 
 ## `ik_rl/play_ik_rl_single.py` — 额外参数
 
-继承 `train_ik_rl_single` 的 palm/IK/trajectory/`ik-config`，并增加：
+继承 `train_ik_rl_single` 的 IK/trajectory/`ik-config`，并增加：
 
 | 参数 | 说明 |
 |------|------|

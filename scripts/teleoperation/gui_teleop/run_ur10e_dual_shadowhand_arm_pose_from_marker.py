@@ -17,6 +17,19 @@ Examples (Isaac Sim python from ViTacLab repo root):
 
     ./python.sh scripts/teleoperation/gui_teleop/run_ur10e_dual_shadowhand_arm_pose_from_marker.py \\
         --marker-right-pos 0.55 1.0 0.65 --marker-left-pos 0.55 1.3 0.65
+
+    Bottle-cap unscrew (arm+hand = 30 DoF per agent; same as ``--task unscrew`` or full Gym id):
+
+    ./python.sh scripts/teleoperation/gui_teleop/run_ur10e_dual_shadowhand_arm_pose_from_marker.py \\
+        --task unscrew --num_envs 1 --enable_cameras
+
+    ./python.sh scripts/teleoperation/gui_teleop/run_ur10e_dual_shadowhand_arm_pose_from_marker.py \\
+        --task Isaac-UR10e-Dual-Shadow-Hand-UnscrewBottleCap-Direct-v0 --num_envs 1 --enable_cameras
+
+    Paste into ``ik_rl`` YAML (same convention as ``ik_rl_hand_vec_env``): world ``pos`` + Isaac Lab ``quat`` **wxyz**:
+
+    ./python.sh scripts/teleoperation/gui_teleop/run_ur10e_dual_shadowhand_arm_pose_from_marker.py \\
+        --task unscrew --print-every 30 --print-ee-yaml
 """
 
 from __future__ import annotations
@@ -36,9 +49,17 @@ from scipy.spatial.transform import Rotation as R
 
 from isaaclab.app import AppLauncher
 
-# Default env: dual-arm hand-over (hand-only policy in RL; this script drives arm via IK).
-_DEFAULT_ENV = "ViTacLab.tasks.direct.simple_dexhand.hand_over.hand_over_env:UR10eDualShadowHandOverEnv"
-_DEFAULT_CFG = "ViTacLab.tasks.direct.simple_dexhand.hand_over.hand_over_env_cfg:UR10eDualShadowHandOverEnvCfg"
+# Presets (same idea as ``run_ur10e_shadowhand_arm_pose_from_marker.py``): short names, not only Gym ids.
+_TASK_PRESETS: dict[str, dict[str, str]] = {
+    "hand_over": {
+        "env": "ViTacLab.tasks.direct.simple_dexhand.hand_over.hand_over_env:UR10eDualShadowHandOverEnv",
+        "cfg": "ViTacLab.tasks.direct.simple_dexhand.hand_over.hand_over_env_cfg:UR10eDualShadowHandOverEnvCfg",
+    },
+    "unscrew": {
+        "env": "ViTacLab.tasks.direct.medium_dexhand.unscrewing_bottle_cap.unscrewing_bottle_cap_env:UR10eDualShadowHandUnscrewBottleCapEnv",
+        "cfg": "ViTacLab.tasks.direct.medium_dexhand.unscrewing_bottle_cap.unscrewing_bottle_cap_env_cfg:UR10eDualShadowHandUnscrewBottleCapEnvCfg",
+    },
+}
 
 MARKER_RIGHT_PRIM_PATH = "/World/Debug/ArmIkTargetRight"
 MARKER_LEFT_PRIM_PATH = "/World/Debug/ArmIkTargetLeft"
@@ -90,11 +111,58 @@ def _load_symbol(entry: str) -> Any:
     return getattr(mod, sym_name)
 
 
+def _entries_from_gym_registry(task_id: str) -> tuple[str, str]:
+    """Resolve ``module:EnvClass`` and ``env_cfg_entry_point`` from a registered Gymnasium id."""
+
+    import gymnasium as gym
+
+    tid = task_id.split(":")[-1].strip()
+    spec = gym.spec(tid)
+    ep = spec.entry_point
+    if callable(ep):
+        env_entry = f"{ep.__module__}:{ep.__name__}"
+    else:
+        env_entry = str(ep)
+    kwargs = spec.kwargs or {}
+    cfg_ep = kwargs.get("env_cfg_entry_point")
+    if not cfg_ep:
+        raise ValueError(f"Registry task {tid!r} has no env_cfg_entry_point.")
+    return env_entry, cfg_ep
+
+
+def _resolve_env_cfg_entries(args: argparse.Namespace) -> tuple[str, str]:
+    """``--env`` + ``--cfg`` overrides ``--task``; ``--task`` may be a preset key or full Gym id."""
+
+    env_s = str(getattr(args, "env", "") or "").strip()
+    cfg_s = str(getattr(args, "cfg", "") or "").strip()
+    if env_s and cfg_s:
+        return env_s, cfg_s
+    if env_s or cfg_s:
+        raise SystemExit("Provide both --env and --cfg, or neither and use --task.")
+
+    task = str(getattr(args, "task", "") or "").strip()
+    if task in _TASK_PRESETS:
+        p = _TASK_PRESETS[task]
+        return p["env"], p["cfg"]
+    try:
+        return _entries_from_gym_registry(task)
+    except Exception as e:
+        raise SystemExit(
+            f"Unknown --task {task!r}. Use one of {sorted(_TASK_PRESETS)} or a registered Gym id "
+            f"(e.g. Isaac-UR10e-Dual-Shadow-Hand-UnscrewBottleCap-Direct-v0). ({e})"
+        ) from e
+
+
 def _make_T(pos_xyz: np.ndarray, euler_xyz: np.ndarray) -> np.ndarray:
     T = np.eye(4, dtype=np.float64)
     T[:3, :3] = R.from_euler("xyz", np.asarray(euler_xyz, dtype=np.float64), degrees=False).as_matrix()
     T[:3, 3] = np.asarray(pos_xyz, dtype=np.float64)
     return T
+
+
+def _format_float_list_1d(arr: np.ndarray, *, precision: int = 6) -> str:
+    a = np.asarray(arr, dtype=np.float64).ravel()
+    return "[" + ", ".join(f"{float(x):.{precision}f}" for x in a) + "]"
 
 
 def _quat_wxyz_to_euler_xyz(quat: np.ndarray) -> np.ndarray:
@@ -148,15 +216,21 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Dual UR10e + Shadow Hand: two markers -> IK -> arm targets; hand via MARL actions.",
     )
-    p.add_argument("--env", type=str, default=_DEFAULT_ENV, help="Env entry module:Class.")
-    p.add_argument("--cfg", type=str, default=_DEFAULT_CFG, help="Cfg entry module:Class.")
+    p.add_argument(
+        "--task",
+        type=str,
+        default="hand_over",
+        help="Preset (hand_over, unscrew) or registered Gym id (e.g. Isaac-...-v0). Ignored if --env and --cfg are set.",
+    )
+    p.add_argument("--env", type=str, default="", help="Env entry module:Class (overrides --task).")
+    p.add_argument("--cfg", type=str, default="", help="Cfg entry module:Class (overrides --task).")
     p.add_argument("--num_envs", type=int, default=1, help="Number of envs (default: 1).")
     p.add_argument("--fps", type=float, default=30.0, help="Simulation loop target FPS.")
     p.add_argument(
         "--marker-right-pos",
         type=float,
         nargs=3,
-        default=(0.55, 1.0, 0.62),
+        default=(0.3, 0.0, 0.7),
         metavar=("X", "Y", "Z"),
         help="Initial right marker position (world, m).",
     )
@@ -164,7 +238,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--marker-right-euler",
         type=float,
         nargs=3,
-        default=(0.0, 2.2, 0.0),
+        default=(0.0, 3.1415926/2, 0.0),
         metavar=("RX", "RY", "RZ"),
         help="Initial right marker euler xyz (rad).",
     )
@@ -172,7 +246,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--marker-left-pos",
         type=float,
         nargs=3,
-        default=(0.55, 1.3, 0.62),
+        default=(0.65, 0.3, 0.15),
         metavar=("X", "Y", "Z"),
         help="Initial left marker position (world, m).",
     )
@@ -180,7 +254,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--marker-left-euler",
         type=float,
         nargs=3,
-        default=(0.0, 2.2, 0.0),
+        default=(3.1415926/2, -0.1, -3.1415926),
         metavar=("RX", "RY", "RZ"),
         help="Initial left marker euler xyz (rad).",
     )
@@ -194,13 +268,43 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default="sim",
         help="When GUI off: initial/fallback hand vector per arm.",
     )
-    p.add_argument("--print-every", type=int, default=30, help="Print arm joint dicts every N steps (0=off).")
+    p.add_argument(
+        "--print-every",
+        type=int,
+        default=30,
+        help="Every N steps (0=off): print arm IK joint_pos blocks + both hands' joint_pos from sim (rad).",
+    )
+    p.add_argument(
+        "--print-ee-yaml",
+        action="store_true",
+        help=(
+            "After each physics step, on the same schedule as --print-every: print both arms' "
+            "world-frame EE pose (default link wrist_3_link) as ik_rl trajectory_right / trajectory_left YAML "
+            "(pos + quat wxyz). Requires --print-every N>0; hands print on the same schedule (after --print-every block)."
+        ),
+    )
+    p.add_argument(
+        "--ee-body",
+        type=str,
+        default="wrist_3_link",
+        help="Body name for --print-ee-yaml (default matches ik_rl ee_body).",
+    )
+    p.add_argument(
+        "--ee-yaml-steps",
+        type=int,
+        default=-1,
+        help="Printed ``steps:`` placeholder per segment for --print-ee-yaml (default -1 = rest of episode).",
+    )
     p.add_argument(
         "--print-on-change",
         action="store_true",
         help="Print when IK arm joints change (thresholded).",
     )
-    p.add_argument("--print-hand-rad", action="store_true", help="Also print hand joint_pos (rad) blocks.")
+    p.add_argument(
+        "--print-hand-rad",
+        action="store_true",
+        help="With --print-every: also print pre-step GUI/command hand joint vectors (Right/Left cmd/GUI).",
+    )
     p.add_argument("--max-steps", type=int, default=0, help="Stop after N steps (0 = run until close).")
     p.add_argument("--show_rgb", action="store_true", help="Matplotlib GelSight RGB (needs --enable_cameras).")
     p.add_argument("--show_ff", action="store_true", help="Matplotlib tactile FF RGB (needs --enable_cameras).")
@@ -233,8 +337,10 @@ def main() -> int:
     from video_teleop.core.video_teleop_control import VideoTeleopControl
     from video_teleop.core.shadowhand_joints import shadowhand_joint_names
 
-    EnvCls = _load_symbol(str(args.env).strip())
-    CfgCls = _load_symbol(str(args.cfg).strip())
+    env_entry, cfg_entry = _resolve_env_cfg_entries(args)
+    print(f"[INFO] env={env_entry}\n[INFO] cfg={cfg_entry}")
+    EnvCls = _load_symbol(env_entry)
+    CfgCls = _load_symbol(cfg_entry)
 
     tactile_prefix = f"{args.tactile_arm}_"
 
@@ -288,6 +394,24 @@ def main() -> int:
         f"[INFO] arm_indices={len(arm_indices)} hand_indices={len(hand_indices)} "
         f"actuated (env)={len(env.actuated_dof_indices)}",
     )
+
+    ee_body_name = str(getattr(args, "ee_body", "") or "").strip() or "wrist_3_link"
+    ee_yaml_idx_r: int | None = None
+    ee_yaml_idx_l: int | None = None
+    if getattr(args, "print_ee_yaml", False):
+        br, _ = right.find_bodies(ee_body_name)
+        bl, _ = left.find_bodies(ee_body_name)
+        if len(br) < 1 or len(bl) < 1:
+            print(
+                f"[WARN] --print-ee-yaml: body {ee_body_name!r} not found "
+                f"(right={len(br)}, left={len(bl)}); disabling EE YAML prints.",
+            )
+        else:
+            ee_yaml_idx_r = int(br[0])
+            ee_yaml_idx_l = int(bl[0])
+            print(f"[INFO] --print-ee-yaml: using body {ee_body_name!r} (matches ik_rl ee_body when set to same name).")
+    if getattr(args, "print_ee_yaml", False) and int(args.print_every) <= 0:
+        print("[WARN] --print-ee-yaml: use --print-every N with N > 0 (same interval as other prints).")
 
     _scene_env = env
     if args.show_ff and fig is not None:
@@ -400,6 +524,39 @@ def main() -> int:
         eps = 1e-6
         out = np.where(upper - lower > eps, 2.0 * (hand_rad - lower) / (upper - lower) - 1.0, 0.0)
         return np.clip(out, -1.0, 1.0)
+
+    def _actuated_actions_from_rad(
+        arm_rad_6: np.ndarray | None,
+        hand_rad_24: np.ndarray,
+        robot,
+    ) -> np.ndarray:
+        """Build normalized actions matching :attr:`env.actuated_dof_indices` (e.g. 6 arm + 24 hand)."""
+        act = env.actuated_dof_indices
+        jp = robot.data.joint_pos[int(env_idx)].detach().cpu().numpy()
+        lo = env.robot_dof_lower_limits[int(env_idx)].detach().cpu().numpy()
+        hi = env.robot_dof_upper_limits[int(env_idx)].detach().cpu().numpy()
+        hand_rad_by_joint: dict[int, float] = {}
+        for sh_i, sh_name in enumerate(sh_names):
+            for idx in hand_indices:
+                n = joint_names[idx]
+                if sh_name in n or n.endswith(sh_name):
+                    hand_rad_by_joint[idx] = float(hand_rad_24[sh_i])
+                    break
+        out = np.zeros(len(act), dtype=np.float64)
+        eps = 1e-6
+        for out_i, dof_idx in enumerate(act):
+            if dof_idx in arm_indices:
+                ai = arm_indices.index(dof_idx)
+                rad = float(arm_rad_6[ai]) if arm_rad_6 is not None and len(arm_rad_6) > ai else float(jp[dof_idx])
+            else:
+                rad = float(hand_rad_by_joint.get(dof_idx, 0.0))
+            d_lo, d_hi = float(lo[dof_idx]), float(hi[dof_idx])
+            out[out_i] = (
+                0.0
+                if d_hi - d_lo <= eps
+                else float(np.clip(2.0 * (rad - d_lo) / (d_hi - d_lo) - 1.0, -1.0, 1.0))
+            )
+        return out
 
     def _print_arm_block(label: str, arm_j: np.ndarray) -> None:
         print(f"[INFO] {label} arm joint_pos (rad) for cfg:")
@@ -565,12 +722,20 @@ def main() -> int:
         if tgt_l is not None:
             _set_arm_ik(left, tgt_l.arm_joints)
 
-        ar = _hand_actions_from_rad(h_r)
-        al = _hand_actions_from_rad(h_l)
+        if len(env.actuated_dof_indices) == 24:
+            ar = _hand_actions_from_rad(h_r)
+            al = _hand_actions_from_rad(h_l)
+        else:
+            arm_r = tgt_r.arm_joints if tgt_r is not None else None
+            arm_l = tgt_l.arm_joints if tgt_l is not None else None
+            ar = _actuated_actions_from_rad(arm_r, h_r, right)
+            al = _actuated_actions_from_rad(arm_l, h_l, left)
         actions = {
             "right_hand": torch.tensor(ar, dtype=torch.float32, device=env.device).unsqueeze(0).expand(env.num_envs, -1),
             "left_hand": torch.tensor(al, dtype=torch.float32, device=env.device).unsqueeze(0).expand(env.num_envs, -1),
         }
+
+        env.step(actions)
 
         if args.print_every > 0 and step % int(args.print_every) == 0:
             if tgt_r is not None:
@@ -581,9 +746,13 @@ def main() -> int:
                 _print_arm_block("Left", tgt_l.arm_joints)
             else:
                 print("[WARN] Left IK failed; not printing left arm dict.")
+            sim_hr = _hand_joints_from_robot(right, env_idx)
+            sim_hl = _hand_joints_from_robot(left, env_idx)
+            _print_hand_rad_block("Right hand (sim)", sim_hr)
+            _print_hand_rad_block("Left hand (sim)", sim_hl)
             if args.print_hand_rad:
-                _print_hand_rad_block("Right", h_r)
-                _print_hand_rad_block("Left", h_l)
+                _print_hand_rad_block("Right hand (cmd/GUI)", h_r)
+                _print_hand_rad_block("Left hand (cmd/GUI)", h_l)
 
         if args.print_on_change:
             if tgt_r is not None and (last_arm_r is None or np.max(np.abs(tgt_r.arm_joints - last_arm_r)) > 0.02):
@@ -593,7 +762,28 @@ def main() -> int:
                 _print_arm_block("Left", tgt_l.arm_joints)
                 last_arm_l = tgt_l.arm_joints.copy()
 
-        env.step(actions)
+        if (
+            getattr(args, "print_ee_yaml", False)
+            and ee_yaml_idx_r is not None
+            and ee_yaml_idx_l is not None
+            and int(args.print_every) > 0
+            and step % int(args.print_every) == 0
+        ):
+            pr = right.data.body_pos_w[env_idx, ee_yaml_idx_r].detach().cpu().numpy().ravel()[:3]
+            qr = right.data.body_quat_w[env_idx, ee_yaml_idx_r].detach().cpu().numpy().ravel()[:4]
+            pl = left.data.body_pos_w[env_idx, ee_yaml_idx_l].detach().cpu().numpy().ravel()[:3]
+            ql = left.data.body_quat_w[env_idx, ee_yaml_idx_l].detach().cpu().numpy().ravel()[:4]
+            st = int(args.ee_yaml_steps)
+            print(f"[INFO] IK+RL EE snapshot (world, Isaac Lab wxyz); step={step} env={env_idx} link={ee_body_name}")
+            print("# trajectory_right / trajectory_left — paste under ik_rl YAML keys")
+            print("trajectory_right:")
+            print(f"  - pos: {_format_float_list_1d(pr)}")
+            print(f"    quat: {_format_float_list_1d(qr)}")
+            print(f"    steps: {st}")
+            print("trajectory_left:")
+            print(f"  - pos: {_format_float_list_1d(pl)}")
+            print(f"    quat: {_format_float_list_1d(ql)}")
+            print(f"    steps: {st}")
 
         if fig is not None and (rgb_ims or ff_ims):
             import matplotlib.pyplot as plt

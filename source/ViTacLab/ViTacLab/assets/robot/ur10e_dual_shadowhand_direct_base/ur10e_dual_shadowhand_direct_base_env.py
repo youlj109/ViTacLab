@@ -41,7 +41,7 @@ class UR10eDualShadowHandDirectMARLBaseEnv(DirectMARLEnv):
         self.scene.articulations["left_robot"] = self.left_hand
 
         if getattr(self.cfg, "enable_cameras", False):
-            if "third_person_camera" not in self.scene.sensors:
+            if getattr(self.cfg, "enable_third_person_camera", True) and "third_person_camera" not in self.scene.sensors:
                 cam_cfg = build_ur10e_dual_shadowhand_third_person_camera_cfg()
                 self.scene.sensors["third_person_camera"] = cam_cfg.class_type(cam_cfg)
 
