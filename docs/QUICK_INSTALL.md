@@ -4,7 +4,7 @@
 
 ## 前置条件
 
-1. **Isaac Sim 5.1.0** 与 **Isaac Lab** 按官方文档装好，且终端里能调用带 
+1. **Isaac Sim 5.1.0** 与 **Isaac Lab 2.3.2** 按官方文档装好，且终端里能调用带 
 Isaac 的 Python。  
    官方安装索引：<https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html>
 
