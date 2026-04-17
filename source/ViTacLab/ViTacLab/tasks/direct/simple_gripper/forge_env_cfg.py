@@ -183,21 +183,20 @@ class ForgeSceneCfg(InteractiveSceneCfg):
         offset=TiledCameraCfg.OffsetCfg(
             # pos=(1.51596, -0.0097, 0.2),
             # rot=(0, 0, 0, 1),
-            pos=(1.35521, -0.03639, 0.66108),
-            rot=(0.59765, 0.38546, 0.38104, 0.5908),
+            pos=(1.0, 0.0, 0.5),
+            rot=(0.65328, 0.27060, 0.27060, 0.65328),
             convention="None",
         ),
-        data_types=["rgb"],
+        data_types=["rgb", "distance_to_image_plane"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0,
             focus_distance=400.0,
             horizontal_aperture=20.955,
             clipping_range=(0.1, 20.0),
         ),
-        width=480,
-        height=640,
+        width=640,
+        height=480,
     )
-    
 
 
 @configclass
@@ -215,14 +214,21 @@ class ForgeEnvCfg(FactoryEnvCfg):
     ctrl: ForgeCtrlCfg = ForgeCtrlCfg()
     task: ForgeTask = ForgeTask()
     events: EventCfg = EventCfg()
-    scene: ForgeSceneCfg = ForgeSceneCfg(num_envs=128, env_spacing=2.0, replicate_physics=True)
+    scene: ForgeSceneCfg = ForgeSceneCfg(num_envs=128, env_spacing=5.0, replicate_physics=True)
     
     # Observation mode: "reduce" (without tactile) or "full" (with tactile)
     obs_mode: str = "reduce"  # Options: "reduce", "full"
 
-    # When False (default for headless RL), Forge strips tactile + third-person camera from the scene.
-    # Set True via train/play (from --enable_cameras / ENABLE_CAMERAS) or in cfg for debugging / video.
     enable_cameras: bool = False
+
+    # 若 True：在 Factory reset 之后，将指尖中点（位置）钉到「各环境局部坐标」下的同一点：
+    # 与 Factory 一致：位置 = body_pos_w - env_origins；所有并行 env 使用同一 (x,y,z)，故相对各自 env 原点一致，全球坐标仍随 env 平移。
+    # reset_ee_pos_env：env-local（body_pos_w - env_origins）
+    # - x,y：与 PegInsert.fixed_asset 默认根位置均值对齐 init_state pos=(0.6, 0.0)，即 Fixed 位置随机分布中心（非桌子 spawn 0.55）。
+    # - z：fixed root z=0.05 + ForgePegInsert.hand_init_pos[2]=0.1。
+    reset_ee_constant_env_local_pose: bool = True
+    reset_ee_pos_env: tuple[float, float, float] = (0.6, 0.0, 0.18)
+    # 钉点时末端朝向始终沿用 Factory randomize_initial_state 的 IK 结果，不由本 env cfg 覆盖。
 
     # Visual disturbance: when True, apply Gaussian noise or Gaussian blur to third_person_camera images
     visual_disturbance: bool = False

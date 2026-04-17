@@ -1,0 +1,54 @@
+# Pour + **cup-relative** scripted phases: wrist target follows deformable cup **position** each step.
+# Lets you keep ``reset_cup_pos_noise`` > 0 while maintaining a **consistent grasp geometry in cup frame**.
+#
+# ``cup_relative_stable_cup_rotation`` (default true): freeze ``sim_element_quat_w[:,0]`` at each episode reset.
+# That tet orientation jitters every sim step on soft cups; tracking it makes the arm oscillate. Position still
+# tracks ``root_pos_w`` every step. Set ``false`` only for debugging / if you add rigid-cup support.
+#
+# Tune ``wrist_pos_in_cup_frame`` / ``wrist_euler_in_cup_frame`` in the viewport (Pour + GUI arm script helps).
+# Axes: offset position is expressed in the cup root rotation frame (first sim element orientation).
+#
+# Compare: ``full_ik_pour.yaml`` uses fixed ``arm_yaml`` (world-open-loop) — incompatible with random cup XY unless noise=0.
+
+task: Isaac-UR10eShadowHand-PourDeformable-Direct-v0
+
+freeze_hand_after_script: true
+
+cup_relative_stable_cup_rotation: true
+
+# Keep cup randomization on (remove this block or set noise 0 to match joint-target workflow).
+train_env_overrides:
+  reset_cup_pos_noise: 0.02
+
+phase_schedule:
+  - name: pregrasp_rel
+    env_steps: 55
+    mode: cup_relative
+    wrist_pos_in_cup_frame: [0.0, 0.0, 0.14]
+    wrist_euler_in_cup_frame: [0.0, 0.0, 0.0]
+    hand: open
+  - name: grasp_rel
+    env_steps: 55
+    mode: cup_relative
+    wrist_pos_in_cup_frame: [0.03, 0.0, 0.11]
+    wrist_euler_in_cup_frame: [0.0, 0.0, 0.0]
+    hand_yaml: scripts/teleoperation/gui_teleop/config/recorded_grasp_3.yaml
+
+trajectory: "cup:200:0,goal_cup:200:0,goal_cup:-1:1"
+
+object_to_palm_offset: [0.0, 0.05, -0.03]
+palm_in_wrist_pos: [0.0, 0.0, 0.35]
+palm_in_wrist_euler: [1.5707963267948966, -1.5707963267948966, 1.5707963267948966]
+
+palm_orient: pickup_down
+palm_normal_local: [0.0, 0.0, 1.0]
+palm_yaw_offset: 3.141592653589793
+world_down: [0.0, 0.0, -1.0]
+
+palm_euler: [0.0, 2.2, 0.0]
+
+palm_euler_in_anchor: [0.0, 0.0, 3.141592653589793]
+
+ee_body: wrist_3_link
+ik_method: dls
+ik_lambda: null

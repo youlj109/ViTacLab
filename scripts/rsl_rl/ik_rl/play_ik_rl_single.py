@@ -101,6 +101,18 @@ parser.add_argument(
     help="YAML pos is global sim world (do not add env_origins).",
 )
 parser.add_argument(
+    "--hand-freeze-phase-target",
+    type=str,
+    default=None,
+    help="When set along with --hand-freeze-yaml: freeze hand joints during trajectory phases whose target matches this string (e.g. pickup: 'goal').",
+)
+parser.add_argument(
+    "--hand-freeze-yaml",
+    type=str,
+    default=None,
+    help="YAML with hand_joint_pos_shadow_order (24 floats) to freeze hand joints to during grasp phase.",
+)
+parser.add_argument(
     "--ik-config",
     type=str,
     default=None,
