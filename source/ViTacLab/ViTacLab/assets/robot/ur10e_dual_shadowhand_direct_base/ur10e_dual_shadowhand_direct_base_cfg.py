@@ -45,7 +45,7 @@ _SHARED_USD_KWARGS = dict(
         sleep_threshold=0.005,
         stabilization_threshold=0.0005,
     ),
-    collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.001, rest_offset=-0.001),
+    collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=-0.002),
 )
 
 _SHARED_ACTUATORS = {

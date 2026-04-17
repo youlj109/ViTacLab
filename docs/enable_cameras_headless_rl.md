@@ -42,7 +42,7 @@ env_cfg.enable_cameras = (CLI --enable_cameras) OR (环境变量 ENABLE_CAMERAS=
 
 - `inhand_manipulation_env_cfg.py`（`UR10eShadowHandInHandEnvCfg` 及子类）
 - `hand_pickup_env_cfg.py`
-- `ur10e_shadowhand_pour_env_cfg.py`
+- `simple_dexhand/pour_water/ur10e_shadowhand_pour_env_cfg.py`
 
 ### 5. `ShadowHandVisionEnv`（视觉 + CNN）
 

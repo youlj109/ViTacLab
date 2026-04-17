@@ -181,7 +181,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     setattr(env_cfg, "enable_cameras", _enable_cams)
 
     # create isaac environment
+    print(
+        f"[TRAIN][DEBUG] gym.make(task={args_cli.task!r}, num_envs={env_cfg.scene.num_envs}, "
+        f"enable_cameras={getattr(env_cfg, 'enable_cameras', None)}) ...",
+        flush=True,
+    )
+    _t_make = time.time()
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    print(f"[TRAIN][DEBUG] gym.make finished in {time.time() - _t_make:.2f}s", flush=True)
 
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
@@ -206,13 +213,22 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     start_time = time.time()
 
     # wrap around environment for rsl-rl
+    print("[TRAIN][DEBUG] RslRlVecEnvWrapper(...)", flush=True)
+    _t_wrap = time.time()
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+    print(f"[TRAIN][DEBUG] RslRlVecEnvWrapper done in {time.time() - _t_wrap:.2f}s", flush=True)
 
     # create runner from rsl-rl
     if agent_cfg.class_name == "OnPolicyRunner":
+        print("[TRAIN][DEBUG] OnPolicyRunner(...)", flush=True)
+        _t_run = time.time()
         runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+        print(f"[TRAIN][DEBUG] OnPolicyRunner ctor done in {time.time() - _t_run:.2f}s", flush=True)
     elif agent_cfg.class_name == "DistillationRunner":
+        print("[TRAIN][DEBUG] DistillationRunner(...)", flush=True)
+        _t_run = time.time()
         runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+        print(f"[TRAIN][DEBUG] DistillationRunner ctor done in {time.time() - _t_run:.2f}s", flush=True)
     else:
         raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
     # write git state to logs
@@ -228,7 +244,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
 
     # run training
+    print(
+        f"[TRAIN][DEBUG] runner.learn(max_iterations={agent_cfg.max_iterations}) starting ...",
+        flush=True,
+    )
+    _t_learn = time.time()
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
+    print(f"[TRAIN][DEBUG] runner.learn finished in {time.time() - _t_learn:.2f}s", flush=True)
 
     print(f"Training time: {round(time.time() - start_time, 2)} seconds")
 

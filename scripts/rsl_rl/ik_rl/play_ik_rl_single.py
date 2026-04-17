@@ -13,7 +13,7 @@ Examples::
     ./isaaclab.sh -p scripts/rsl_rl/ik_rl/play_ik_rl_single.py --task Isaac-UR10eShadowHand-Pickup-Direct-v0 \\
         --num_envs 4096 --headless --resume --load_run 2026-03-21_19-31-05 --checkpoint model_61250.pt
 
-IK / trajectory flags should match training; defaults mirror ``train_ik_rl_single.py``.
+IK / EE waypoint YAML should match training; defaults mirror ``train_ik_rl_single.py``.
 
 Optional **data recording**: ``--record_data`` saves policy observations, **hand** actions, rewards, and dones for
 ``--record_env_index`` to ``--record_path`` (default: ``./play_records/<task>_<timestamp>/``), one compressed
@@ -38,7 +38,6 @@ if _IK_UTILS not in sys.path:
 from isaaclab.app import AppLauncher
 
 import cli_args  # isort: skip
-import numpy as np
 
 parser = argparse.ArgumentParser(description="Play hand-only RSL-RL policy with GPU IK arm (single-arm setup).")
 parser.add_argument("--task", type=str, default=None, help="Registered Gym task (e.g. Isaac-UR10eShadowHand-Pickup-Direct-v0).")
@@ -88,44 +87,19 @@ parser.add_argument("--show_rgb", action="store_true", help="Show tactile RGB (i
 parser.add_argument("--show_ff", action="store_true", help="Show tactile force-field RGB (implies --enable_cameras).")
 parser.add_argument("--env_index", type=int, default=0, help="Which env index to visualize for tactile plots (default: 0).")
 parser.add_argument("--fps", type=float, default=20.0, help="Target display FPS when --show_rgb / --show_ff (default: 20).")
-# Palm + IK (keep in sync with train_ik_rl_single.py)
-parser.add_argument(
-    "--trajectory",
-    type=str,
-    default="object:150:0,goal:-1:0",
-    help="name:env_steps:use_rot — name resolves to env.<name> (asset) or <name>_pos/_rot (tensors), or goal (legacy). "
-    "Pour example: cup:150:0,goal_cup:-1:0",
-)
-parser.add_argument(
-    "--object-to-palm-offset",
-    type=float,
-    nargs=3,
-    default=(0.0, 0.0, 0.05),
-    metavar=("OX", "OY", "OZ"),
-)
-parser.add_argument(
-    "--palm-in-wrist-pos",
-    type=float,
-    nargs=3,
-    default=(0.0, 0.0, 0.35),
-    metavar=("PX", "PY", "PZ"),
-)
-parser.add_argument(
-    "--palm-in-wrist-euler",
-    type=float,
-    nargs=3,
-    default=(np.pi / 2.0, -np.pi / 2.0, np.pi / 2.0),
-    metavar=("RX", "RY", "RZ"),
-)
-parser.add_argument("--palm-orient", type=str, choices=("fixed", "pickup_down"), default="pickup_down")
-parser.add_argument("--palm-normal-local", type=float, nargs=3, default=(0.0, 1.0, 0.0))
-parser.add_argument("--palm-yaw-offset", type=float, default=0.0)
-parser.add_argument("--world-down", type=float, nargs=3, default=(0.0, 0.0, -1.0))
-parser.add_argument("--palm-euler", type=float, nargs=3, default=(0.0, 2.2, 0.0))
-parser.add_argument("--palm-euler-in-anchor", type=float, nargs=3, default=(0.0, 0.0, 0.0))
-parser.add_argument("--ee-body", type=str, default="wrist_3_link")
+# IK (YAML list); optional overrides
+parser.add_argument("--trajectory", default=None, help=argparse.SUPPRESS)
+parser.add_argument("--ee-body", type=str, default=None, dest="ee_body", help="EE link for IK.")
 parser.add_argument("--ik-method", type=str, choices=("pinv", "svd", "trans", "dls"), default="dls")
 parser.add_argument("--ik-lambda", type=float, default=None)
+parser.add_argument("--ik-k-val", type=float, default=None, dest="ik_k_val")
+parser.add_argument("--ik-delta-scale", type=float, default=1.0, dest="ik_delta_scale")
+parser.add_argument(
+    "--ik-waypoints-world-frame",
+    action="store_true",
+    dest="ik_waypoints_world_frame",
+    help="YAML pos is global sim world (do not add env_origins).",
+)
 parser.add_argument(
     "--hand-freeze-phase-target",
     type=str,
@@ -142,7 +116,7 @@ parser.add_argument(
     "--ik-config",
     type=str,
     default=None,
-    help="YAML with task + palm/IK/trajectory (see configs/ik_rl_pickup.yaml). Omitted: auto-load if present. 'none' = off.",
+    help="YAML with task + trajectory (see configs/ik_rl_pickup.yaml). Omitted: auto-load. 'none' = off.",
 )
 
 cli_args.add_rsl_rl_args(parser)
@@ -159,7 +133,7 @@ apply_sys_argv_ik_yaml_defaults(parser)
 args_cli, hydra_args = parser.parse_known_args()
 _cfg_path = resolve_ik_config_path(sys.argv, default_pickup_ik_yaml_path())
 if _cfg_path is not None:
-    print(f"[INFO] IK palm/trajectory defaults merged from YAML: {_cfg_path}")
+    print(f"[INFO] IK trajectory defaults merged from YAML: {_cfg_path}")
 warn_if_task_mismatch_with_ik_yaml(_cfg_path, args_cli.task)
 
 # Tactile viewer needs scene cameras / sensors (match scripts/debug/run_ur10e_shadowhand_single.py).
@@ -171,25 +145,7 @@ sys.argv = [sys.argv[0]] + hydra_args
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
-import importlib.metadata as metadata
-import platform
 import time
-
-from packaging import version
-
-RSL_RL_VERSION = "3.0.1"
-installed_version = metadata.version("rsl-rl-lib")
-if version.parse(installed_version) < version.parse(RSL_RL_VERSION):
-    if platform.system() == "Windows":
-        cmd = [r".\isaaclab.bat", "-p", "-m", "pip", "install", f"rsl-rl-lib=={RSL_RL_VERSION}"]
-    else:
-        cmd = ["./isaaclab.sh", "-p", "-m", "pip", "install", f"rsl-rl-lib=={RSL_RL_VERSION}"]
-    print(
-        f"Please install the correct version of RSL-RL.\nExisting version is: '{installed_version}'"
-        f" and required version is: '{RSL_RL_VERSION}'.\nTo install the correct version, run:"
-        f"\n\n\t{' '.join(cmd)}\n"
-    )
-    exit(1)
 
 import gymnasium as gym
 import numpy as np
@@ -206,8 +162,10 @@ import isaaclab_tasks  # noqa: F401
 import ViTacLab.tasks  # noqa: F401
 from ViTacLab.utils.vitaclab_marl_rsl import multi_agent_to_single_agent
 
-from rsl_rl_log_utils import get_rsl_rl_log_root
-from ik_rl_hand_vec_env import ArmIkHandActionExpander, IkHandRslRlVecEnvWrapper, IkRlHandArmCfg, parse_trajectory_phases
+from rsl_rl_log_utils import check_rsl_rl_lib_version, get_rsl_rl_log_root
+from ik_rl_hand_vec_env import ArmIkHandActionExpander, IkHandRslRlVecEnvWrapper, build_ik_cfg_from_trajectory_args
+
+check_rsl_rl_lib_version()
 
 # Tactile visualization (aligned with scripts/debug/run_ur10e_shadowhand_single.py)
 TACTILE_SENSOR_NAMES = (
@@ -305,28 +263,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     env.reset()
 
-    traj = parse_trajectory_phases(args_cli.trajectory)
-    ik_cfg = IkRlHandArmCfg(
-        object_to_palm_offset=tuple(args_cli.object_to_palm_offset),
-        palm_in_wrist_pos=tuple(args_cli.palm_in_wrist_pos),
-        palm_in_wrist_euler_xyz=tuple(args_cli.palm_in_wrist_euler),
-        palm_orientation_mode=args_cli.palm_orient,
-        palm_euler_xyz=tuple(args_cli.palm_euler),
-        palm_normal_in_palm_frame=tuple(args_cli.palm_normal_local),
-        world_down=tuple(args_cli.world_down),
-        palm_yaw_offset_rad=float(args_cli.palm_yaw_offset),
-        palm_euler_in_anchor_frame=tuple(args_cli.palm_euler_in_anchor),
-        trajectory=traj,
-        ee_body_name=str(args_cli.ee_body),
-        ik_method=args_cli.ik_method,
-        ik_lambda=args_cli.ik_lambda,
-        hand_freeze_phase_target=args_cli.hand_freeze_phase_target,
-        hand_freeze_yaml=args_cli.hand_freeze_yaml,
-    )
+    ik_cfg = build_ik_cfg_from_trajectory_args(args_cli, arm="single")
     expander = ArmIkHandActionExpander(base, ik_cfg)
     print(
         f"[INFO] IK play: hand actions={expander.num_hand}, full actuated={expander.num_actuated}, "
-        f"trajectory={args_cli.trajectory}"
+        f"EE waypoints={len(ik_cfg.waypoints)}"
     )
 
     wrapped = IkHandRslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions, expander=expander)

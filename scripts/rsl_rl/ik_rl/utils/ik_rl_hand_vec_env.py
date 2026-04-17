@@ -3,11 +3,21 @@
 
 """Hand-only RL: map hand actions to full robot commands via GPU batched differential IK (UR10e arm).
 
-For environments that **only** expose hand joints in ``actuated_dof_indices`` (e.g. in-hand manipulation with a
-fixed arm pose), :class:`ArmIkHandActionExpander` skips IK and passes actions through unchanged.
+Each arm follows waypoints for ``ee_body_name`` (e.g. ``wrist_3_link``): ``pos`` (m), ``quat`` (**Isaac Lab wxyz**),
+``steps`` (env steps; ``-1`` = until episode end).
 
-Task-agnostic trajectory: phases ``target:env_steps:use_rotation`` (see :class:`TrajectoryPhase`) — used only when
-the arm is part of the action space (pickup / pour style).
+**Multi-env:** by default ``pos`` is **env-local** (same convention as task obs: root at ``scene.env_origins``). The
+expander adds ``env.scene.env_origins`` to obtain **simulation world** targets for differential IK. Set
+``IkRlHandArmCfg.add_env_origins_to_waypoint_pos=False`` only if your YAML stores **global** world ``pos`` (single-env
+debug).
+
+If the env exposes ``ik_rl_trajectory_xyz_offset`` (N,3), it is **added** in env-local space before the origins shift.
+
+Waypoint phase uses ``env.episode_length_buf`` (steps since reset). IK+RL training scripts set
+``init_at_random_ep_len=False`` so RSL-RL does not randomize that buffer at rollout start (which would desync phases).
+
+**IK speed:** `dls` uses damping ``lambda_val`` (ik_rl default **0.005** when `ik_lambda` is unset; Isaac Lab **0.01**).
+Use `ik_delta_scale` > 1 in YAML for an extra per-step joint-space gain.
 """
 
 from __future__ import annotations
@@ -17,191 +27,73 @@ import re
 import sys
 from pathlib import Path
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import gymnasium as gym
 import numpy as np
 import torch
-import yaml
-from scipy.spatial.transform import Rotation as SciR
 
-from isaaclab.utils.math import (
-    matrix_from_quat,
-    quat_apply,
-    quat_from_euler_xyz,
-    quat_from_matrix,
-    quat_inv,
-    quat_mul,
-    subtract_frame_transforms,
-)
+from isaaclab.utils.math import matrix_from_quat, quat_inv, subtract_frame_transforms
 
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
 
 if TYPE_CHECKING:
+    from isaaclab.assets import Articulation
     from isaaclab.envs import DirectRLEnv
 
 logger = logging.getLogger(__name__)
 
 
-_TRAJ_TARGET_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-
-
-def _ensure_source_on_path() -> None:
-    """Ensure `<repo>/source` is importable so `video_teleop` can be resolved."""
-    project_root = Path(__file__).resolve().parents[4]
-    source_dir = project_root / "source"
-    if source_dir.is_dir():
-        s = str(source_dir)
-        if s not in sys.path:
-            sys.path.insert(0, s)
-
-
-_ensure_source_on_path()
-
-
-def parse_trajectory_phases(spec: str) -> tuple["TrajectoryPhase", ...]:
-    """Parse ``"object:80:0,goal:-1:0"`` or ``"cup:150:0,goal_cup:-1:0"`` → tuple of :class:`TrajectoryPhase`.
-
-    ``target`` is an env field name (see :class:`TrajectoryPhase`). ``env_steps`` ``-1`` means until episode end.
-    ``use_rotation`` is ``0``/``1``.
-    """
-    phases: list[TrajectoryPhase] = []
-    for part in spec.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        bits = part.split(":")
-        if len(bits) != 3:
-            raise ValueError(f"Bad trajectory segment {part!r}; expected target:steps:use_rot")
-        target, steps_s, rot_s = bits[0].strip(), bits[1].strip(), bits[2].strip()
-        steps = int(steps_s)
-        use_rot = bool(int(rot_s))
-        if not _TRAJ_TARGET_RE.match(target):
-            raise ValueError(
-                f"Invalid trajectory target {target!r}; use a Python identifier (e.g. object, cup, goal_cup)."
-            )
-        phases.append(TrajectoryPhase(target=target, env_steps=steps, use_rotation=use_rot))
-    if not phases:
-        raise ValueError("trajectory must contain at least one phase")
-    return tuple(phases)
-
-
 @dataclass(frozen=True)
-class TrajectoryPhase:
-    """One segment of the EE schedule.
+class EeWaypoint:
+    """One EE target segment: ``ee_body`` pose; ``quat_wxyz`` is Isaac Lab (w,x,y,z); ``pos`` is env-local unless cfg disables origins."""
 
-    ``target``: name used to resolve **world-frame** anchor position & orientation:
-
-    1. **Rigid / deformable asset** — if ``env.<target>`` exists and has ``.data.root_pos_w`` /
-       ``.data.root_quat_w``, those are used (e.g. ``object``, ``cup``, ``target``).
-    2. **Tensor pair (env-local position)** — else if ``env.<target>_pos`` and ``env.<target>_rot`` exist,
-       position is ``<target>_pos + env_origins``; rotation is world ``<target>_rot`` (e.g. ``goal_cup``).
-    3. **Legacy** — if ``target == "goal"`` and (2) fails, use ``goal_object_pos`` / ``goal_object_rot``.
-
-    ``env_steps``: duration in env steps (``DirectRLEnv.episode_length_buf``); ``-1`` = hold until reset.
-    ``use_rotation``: if True, offset is applied in anchor frame and palm orientation includes anchor rotation;
-    if False, offset is world + default palm orientation (fixed / pickup_down).
-    """
-
-    target: str
+    pos_xyz: tuple[float, float, float]
+    quat_wxyz: tuple[float, float, float, float]
     env_steps: int
-    use_rotation: bool
+
+
+def parse_waypoints_list(raw: list | tuple) -> tuple[EeWaypoint, ...]:
+    """Parse YAML trajectory: list of ``{pos: [x,y,z], quat: [w,x,y,z], steps: int}`` with **wxyz** quaternions."""
+
+    if not raw:
+        raise ValueError("trajectory must be a non-empty list of {pos, quat, steps}")
+    out: list[EeWaypoint] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise TypeError(f"trajectory[{i}] must be a dict, got {type(item)}")
+        pos = item.get("pos")
+        quat = item.get("quat")
+        steps = item.get("steps")
+        if pos is None or quat is None or steps is None:
+            raise KeyError(f"trajectory[{i}] needs keys pos, quat, steps")
+        pos_t = tuple(float(x) for x in pos)
+        quat_t = tuple(float(x) for x in quat)
+        if len(pos_t) != 3:
+            raise ValueError(f"trajectory[{i}].pos must have length 3")
+        if len(quat_t) != 4:
+            raise ValueError(f"trajectory[{i}].quat must be length-4 Isaac Lab wxyz [w,x,y,z]")
+        qn = np.asarray(quat_t, dtype=np.float64).ravel()
+        qn = qn / (np.linalg.norm(qn) + 1e-12)
+        quat_n = tuple(float(x) for x in qn.tolist())
+        out.append(EeWaypoint(pos_xyz=pos_t, quat_wxyz=quat_n, env_steps=int(steps)))
+    return tuple(out)
 
 
 @dataclass
 class IkRlHandArmCfg:
-    """Minimal IK + palm configuration for :class:`ArmIkHandActionExpander`."""
+    """Differential IK: EE targets from explicit waypoints only."""
 
-    # --- palm chain
-    # World offset when ``use_rotation`` is False; anchor-frame offset when True (same numeric tuple).
-    object_to_palm_offset: tuple[float, float, float] = (0.0, 0.0, 0.05)
-    # Palm origin expressed in wrist_3 (tool) frame: translation (m) + euler xyz (rad).
-    palm_in_wrist_pos: tuple[float, float, float] = (0.0, 0.0, 0.08)
-    palm_in_wrist_euler_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0)
-
-    # Default palm orientation when phase ``use_rotation`` is False.
-    palm_orientation_mode: Literal["fixed", "pickup_down"] = "pickup_down"
-    palm_euler_xyz: tuple[float, float, float] = (0.0, 2.2, 0.0)
-    palm_normal_in_palm_frame: tuple[float, float, float] = (0.0, 1.0, 0.0)
-    world_down: tuple[float, float, float] = (0.0, 0.0, -1.0)
-    palm_yaw_offset_rad: float = 0.0
-
-    # When phase ``use_rotation`` is True: palm orientation = anchor_quat * euler(palm_euler_in_anchor_frame).
-    palm_euler_in_anchor_frame: tuple[float, float, float] = (0.0, 0.0, 0.0)
-
-    # --- trajectory (task-agnostic; pickup: object then goal)
-    trajectory: tuple[TrajectoryPhase, ...] = (
-        TrajectoryPhase("object", 80, False),
-        TrajectoryPhase("goal", -1, False),
-    )
-
-    # --- differential IK (GPU)
+    waypoints: tuple[EeWaypoint, ...]
+    #: If True (default), waypoint ``pos`` is env-local; add ``env.scene.env_origins`` for world-frame IK.
+    add_env_origins_to_waypoint_pos: bool = True
     ee_body_name: str = "wrist_3_link"
     ik_method: Literal["pinv", "svd", "trans", "dls"] = "dls"
     ik_lambda: float | None = None
-
-    # Optional: during pickup, freeze hand joints to a fixed grasp pose.
-    # - ``hand_freeze_phase_target`` is matched against trajectory phase targets (e.g. pickup: "goal").
-    # - ``hand_freeze_yaml`` must contain ``hand_joint_pos_shadow_order`` (24 floats; see GUI YAML).
-    hand_freeze_phase_target: str | None = None
-    hand_freeze_yaml: str | None = None
-
-
-def _euler_palm_pickup_down(
-    palm_normal_in_palm_frame: np.ndarray,
-    world_down: np.ndarray,
-    yaw_about_world_z: float,
-) -> np.ndarray:
-    n = np.asarray(palm_normal_in_palm_frame, dtype=np.float64).ravel()
-    n = n / (np.linalg.norm(n) + 1e-12)
-    d = np.asarray(world_down, dtype=np.float64).ravel()
-    d = d / (np.linalg.norm(d) + 1e-12)
-    _ret = SciR.align_vectors(d.reshape(1, 3), n.reshape(1, 3))
-    r_align = _ret[0] if isinstance(_ret, tuple) else _ret
-    r_yaw = SciR.from_euler("z", float(yaw_about_world_z), degrees=False)
-    r_total = r_yaw * r_align
-    return r_total.as_euler("xyz")
-
-
-def _se3_from_pos_quat(pos: torch.Tensor, quat_wxyz: torch.Tensor) -> torch.Tensor:
-    r = matrix_from_quat(quat_wxyz)
-    n_b = pos.shape[0]
-    t = torch.zeros((n_b, 4, 4), device=pos.device, dtype=pos.dtype)
-    t[:, :3, :3] = r
-    t[:, :3, 3] = pos
-    t[:, 3, 3] = 1.0
-    return t
-
-
-def _se3_inv(T: torch.Tensor) -> torch.Tensor:
-    r = T[:, :3, :3]
-    p = T[:, :3, 3]
-    rt = r.transpose(-1, -2)
-    pinv = -torch.bmm(rt, p.unsqueeze(-1)).squeeze(-1)
-    out = torch.zeros_like(T)
-    out[:, :3, :3] = rt
-    out[:, :3, 3] = pinv
-    out[:, 3, 3] = 1.0
-    return out
-
-
-def _wrist_pose_from_palm_batch(
-    palm_pos_w: torch.Tensor,
-    palm_quat_w: torch.Tensor,
-    wrist_in_palm_pos: torch.Tensor,
-    wrist_in_palm_quat: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """``T_world_wrist = T_world_palm @ inv(T_wrist_palm)``."""
-    t_wp = _se3_from_pos_quat(
-        wrist_in_palm_pos.expand(palm_pos_w.shape[0], -1),
-        wrist_in_palm_quat.expand(palm_pos_w.shape[0], -1),
-    )
-    t_pw = _se3_inv(t_wp)
-    t_wp_world = _se3_from_pos_quat(palm_pos_w, palm_quat_w)
-    t_ww = torch.bmm(t_wp_world, t_pw)
-    wpos = t_ww[:, :3, 3]
-    wquat = quat_from_matrix(t_ww[:, :3, :3])
-    return wpos, wquat
+    #: pinv / svd / trans: scales Jacobian output (Isaac default ``k_val`` = 1.0). Ignored for ``dls``.
+    ik_k_val: float | None = None
+    #: Multiplies the joint-space delta from the controller each step (>1 = faster tracking, may overshoot).
+    ik_delta_scale: float = 1.0
 
 
 class ArmIkHandActionExpander:
@@ -211,21 +103,29 @@ class ArmIkHandActionExpander:
     :meth:`expand` returns ``hand_actions`` unchanged.
     """
 
-    def __init__(self, env: DirectRLEnv, cfg: IkRlHandArmCfg):
+    def __init__(self, env: DirectRLEnv, cfg: IkRlHandArmCfg, robot: "Articulation | None" = None):
         self._env = env
         self._cfg = cfg
+        self._robot = robot if robot is not None else getattr(env, "robot", None)
+        if self._robot is None:
+            raise RuntimeError(
+                "ArmIkHandActionExpander: env has no `robot`; pass robot=<Articulation> "
+                "(e.g. env.right_hand / env.left_hand after multi_agent_to_single_agent)."
+            )
         self._device = env.device
         self._num_envs = env.num_envs
 
+        if not cfg.waypoints:
+            raise ValueError("IkRlHandArmCfg.waypoints must be non-empty")
+
         arm_re = re.compile(env.cfg.arm_joint_expr)
         hand_re = re.compile(env.cfg.hand_joint_expr)
-        names = env.robot.joint_names
+        names = self._robot.joint_names
         actuated = list(env.actuated_dof_indices)
 
         self._arm_slots: list[int] = []
         self._hand_slots: list[int] = []
         self._arm_joint_indices: list[int] = []
-        self._hand_joint_indices: list[int] = []
 
         for slot, ji in enumerate(actuated):
             n = names[ji]
@@ -234,26 +134,26 @@ class ArmIkHandActionExpander:
                 self._arm_joint_indices.append(ji)
             elif hand_re.match(n):
                 self._hand_slots.append(slot)
-                self._hand_joint_indices.append(ji)
 
         self.num_hand = len(self._hand_slots)
         self.num_arm = len(self._arm_slots)
         self._full_dim = len(actuated)
 
-        # In-hand tasks: only hand joints are actuated; arm pose is fixed in the scene / default joint targets.
         if self.num_arm == 0 and self.num_hand > 0 and self.num_hand == self._full_dim:
             self._hand_only_mode = True
+            self._hand_slots_t = None
             lower = env.robot_dof_lower_limits
             upper = env.robot_dof_upper_limits
             self._lower = lower[:, actuated].clone()
             self._upper = upper[:, actuated].clone()
             logger.info(
                 "[ik_rl] ArmIkHandActionExpander: hand-only actuated DOFs (no arm in action space); "
-                "skipping differential IK — use train.py for pure joint-space in-hand if preferred."
+                "skipping differential IK."
             )
             return
 
         self._hand_only_mode = False
+        self._hand_slots_t = torch.tensor(self._hand_slots, device=self._device, dtype=torch.long)
         if self.num_hand == 0 or self.num_arm != 6:
             raise RuntimeError(
                 f"ArmIkHandActionExpander: expected 6 arm DOFs and >0 hand DOFs; "
@@ -267,9 +167,13 @@ class ArmIkHandActionExpander:
 
         from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
 
-        ik_params = None
-        if cfg.ik_method == "dls" and cfg.ik_lambda is not None:
-            ik_params = {"lambda_val": float(cfg.ik_lambda)}
+        ik_params: dict[str, float] | None = None
+        if cfg.ik_method == "dls":
+            # Lower damping ⇒ larger joint steps per env tick (Isaac default lambda is 0.01).
+            lam = float(cfg.ik_lambda) if cfg.ik_lambda is not None else 0.005
+            ik_params = {"lambda_val": lam}
+        elif cfg.ik_method in ("pinv", "svd", "trans") and cfg.ik_k_val is not None:
+            ik_params = {"k_val": float(cfg.ik_k_val)}
         diff_cfg = DifferentialIKControllerCfg(
             command_type="pose",
             use_relative_mode=False,
@@ -279,19 +183,19 @@ class ArmIkHandActionExpander:
         self._diff_ik_controller = DifferentialIKController(
             diff_cfg, num_envs=self._num_envs, device=str(self._device)
         )
-        body_ids, _ = env.robot.find_bodies(cfg.ee_body_name)
+        body_ids, _ = self._robot.find_bodies(cfg.ee_body_name)
         if len(body_ids) < 1:
             raise RuntimeError(
-                f"IK: no body matching {cfg.ee_body_name!r}. Sample: {env.robot.body_names[:30]}"
+                f"IK: no body matching {cfg.ee_body_name!r}. Sample: {self._robot.body_names[:30]}"
             )
         self._ee_body_idx = int(body_ids[0])
-        j_ids, j_names = env.robot.find_joints(env.cfg.arm_joint_expr)
+        j_ids, j_names = self._robot.find_joints(env.cfg.arm_joint_expr)
         if len(j_ids) != 6:
             raise RuntimeError(f"IK: expected 6 arm joints, got {len(j_ids)}: {j_names}")
         if set(j_ids) != set(self._arm_joint_indices):
             raise RuntimeError("IK: arm joint indices mismatch between find_joints and actuated list")
 
-        if env.robot.is_fixed_base:
+        if self._robot.is_fixed_base:
             self._ee_jacobi_idx = self._ee_body_idx - 1
             jac_joint_ids = list(j_ids)
         else:
@@ -301,248 +205,74 @@ class ArmIkHandActionExpander:
         self._diff_ik_jac_joint_ids_t = torch.tensor(jac_joint_ids, device=self._device, dtype=torch.long)
         self._diff_ik_slot_per_col = [self._arm_slots[self._arm_joint_indices.index(jid)] for jid in j_ids]
 
-        # Fixed T_wrist_palm (palm origin in wrist frame)
-        pe = torch.tensor(cfg.palm_in_wrist_euler_xyz, device=self._device, dtype=torch.float32).view(1, 3)
-        self._wrist_in_palm_quat = quat_from_euler_xyz(pe[:, 0], pe[:, 1], pe[:, 2])
-        self._wrist_in_palm_pos = torch.tensor(cfg.palm_in_wrist_pos, device=self._device, dtype=torch.float32).view(1, 3)
-
-        self._offset_vec = torch.tensor(cfg.object_to_palm_offset, device=self._device, dtype=torch.float32).view(1, 3)
-
-        self._phases = cfg.trajectory
-        self._validate_trajectory()
-
-        # Optional hand freezing (pickup "grasp" moment).
-        self._hand_freeze_phase_ids: set[int] = set()
-        self._fixed_hand_actions: torch.Tensor | None = None
-        hand_freeze_yaml = None if cfg.hand_freeze_yaml is None else str(cfg.hand_freeze_yaml).strip()
-        hand_freeze_phase_target = None if cfg.hand_freeze_phase_target is None else str(cfg.hand_freeze_phase_target).strip()
-        if (
-            hand_freeze_yaml
-            and hand_freeze_phase_target
-            and hand_freeze_yaml.lower() not in ("none", "false", "")
-            and hand_freeze_phase_target.lower() not in ("none", "false", "")
-        ):
-
-            self._hand_freeze_phase_ids = {
-                i for i, ph in enumerate(self._phases) if str(ph.target).strip() == hand_freeze_phase_target
-            }
-            if not self._hand_freeze_phase_ids:
-                logger.warning(
-                    "[ik_rl] hand_freeze_phase_target=%r did not match any trajectory phase targets: %s",
-                    hand_freeze_phase_target,
-                    [p.target for p in self._phases],
-                )
-            else:
-                yaml_path = Path(hand_freeze_yaml).expanduser()
-                if not yaml_path.is_absolute():
-                    # scripts/rsl_rl/ik_rl/utils/ -> parents[4] = repo root
-                    project_root = Path(__file__).resolve().parents[4]
-                    yaml_path = (project_root / yaml_path).resolve()
-                if not yaml_path.is_file():
-                    raise FileNotFoundError(
-                        f"[ik_rl] hand_freeze_yaml not found: {yaml_path} (from {hand_freeze_yaml!r})"
-                    )
-
-                data = yaml.safe_load(yaml_path.read_text()) or {}
-                seq = data.get("hand_joint_pos_shadow_order")
-                if not isinstance(seq, list) or len(seq) != 24:
-                    raise ValueError(
-                        f"[ik_rl] hand_freeze_yaml={yaml_path} requires hand_joint_pos_shadow_order: [24 floats]"
-                    )
-                hand_vec24 = np.array([float(x) for x in seq], dtype=np.float64)
-
-                from video_teleop.core.shadowhand_joints import shadowhand_joint_names
-
-                sh_names = list(shadowhand_joint_names())
-
-                # Map YAML values (shadow joint order) → robot joint positions for this env hand joints.
-                def _hand_joint_for_robot_name(name: str, hand_joints: np.ndarray, sh_names_: list[str]) -> float:
-                    for sh_idx, sh_name in enumerate(sh_names_):
-                        if sh_name in name or name.endswith(sh_name):
-                            return float(hand_joints[sh_idx])
-                    return 0.0
-
-                desired_q = torch.tensor(
-                    [
-                        _hand_joint_for_robot_name(names[ji], hand_vec24, sh_names)
-                        for ji in self._hand_joint_indices
-                    ],
-                    device=self._device,
-                    dtype=torch.float32,
-                )  # (num_hand,)
-
-                fixed = torch.zeros(
-                    (self._num_envs, self.num_hand),
-                    device=self._device,
-                    dtype=torch.float32,
-                )
-                eps = 1e-6
-                for i, slot in enumerate(self._hand_slots):
-                    lo = self._lower[:, slot]
-                    hi = self._upper[:, slot]
-                    den = hi - lo
-                    q = desired_q[i]
-                    scaled = torch.where(den > eps, 2.0 * (q - lo) / (den + 1e-12) - 1.0, torch.zeros_like(lo))
-                    fixed[:, i] = torch.clamp(scaled, -1.0, 1.0)
-                self._fixed_hand_actions = fixed
-
-    def _validate_trajectory(self) -> None:
-        for p in self._phases:
-            try:
-                self._resolve_anchor_world(p.target)
-            except RuntimeError as e:
-                raise RuntimeError(f"Trajectory phase target={p.target!r} is invalid: {e}") from e
+        self._waypoints = cfg.waypoints
         if getattr(self._env, "episode_length_buf", None) is None:
             logger.warning("[ik_rl] env has no episode_length_buf; trajectory timing may be wrong.")
-
-    def _resolve_anchor_world(self, target_name: str) -> tuple[torch.Tensor, torch.Tensor]:
-        """World-frame anchor (N,3), (N,4) wxyz from env by ``target_name`` (see :class:`TrajectoryPhase`)."""
-        env = self._env
-        origins = env.scene.env_origins
-
-        # 1) Rigid / deformable asset on env
-        if hasattr(env, target_name):
-            obj = getattr(env, target_name)
-            if obj is not None and hasattr(obj, "data"):
-                d = obj.data
-                if hasattr(d, "root_pos_w") and hasattr(d, "root_quat_w"):
-                    return d.root_pos_w, d.root_quat_w
-
-        # 2) Tensor pair: <name>_pos (env-local) + origins, <name>_rot (world quat, optional)
-        pos_attr = f"{target_name}_pos"
-        rot_attr = f"{target_name}_rot"
-        if hasattr(env, pos_attr):
-            pos = getattr(env, pos_attr)
-            gpos = pos.to(device=origins.device, dtype=origins.dtype) + origins
-            if hasattr(env, rot_attr):
-                gquat = getattr(env, rot_attr).to(device=origins.device, dtype=origins.dtype)
-            else:
-                gquat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=gpos.device, dtype=gpos.dtype).expand(
-                    self._num_envs, -1
-                )
-            return gpos, gquat
-
-        # 3) Legacy: "goal" -> goal_object_pos / goal_object_rot (pickup-style)
-        if target_name == "goal":
-            if hasattr(env, "goal_object_pos"):
-                gp = env.goal_object_pos.to(device=origins.device, dtype=origins.dtype) + origins
-                if hasattr(env, "goal_object_rot"):
-                    gq = env.goal_object_rot.to(device=origins.device, dtype=origins.dtype)
-                else:
-                    gq = torch.tensor([1.0, 0.0, 0.0, 0.0], device=gp.device, dtype=gp.dtype).expand(
-                        self._num_envs, -1
-                    )
-                return gp, gq
-
-        raise RuntimeError(
-            f"expected env.{target_name} (asset with .data.root_pos_w / .data.root_quat_w), "
-            f"or env.{pos_attr} [+ env.{rot_attr}], or for target 'goal' use goal_object_pos[/rot]."
-        )
 
     @property
     def num_actuated(self) -> int:
         return self._full_dim
 
     def _phase_id(self, buf: torch.Tensor) -> torch.Tensor:
-        """Map ``episode_length_buf`` → phase index per env."""
+        """Map ``episode_length_buf`` → waypoint index per env.
+
+        Segment ``i`` with finite ``env_steps`` holds for ``buf in [cum, cum + env_steps)`` (half-open).
+        ``env_steps < 0`` means hold that waypoint until episode end.
+
+        **Dual-arm:** same ``episode_length_buf`` for both arms; different ``trajectory_right`` / ``trajectory_left``
+        ``steps`` ⇒ the two arms switch to waypoint 2 at different times.
+        """
         n = buf.shape[0]
         device = buf.device
         pid = torch.zeros(n, dtype=torch.long, device=device)
         cum = 0
-        for i, p in enumerate(self._phases):
-            if p.env_steps < 0:
+        for i, w in enumerate(self._waypoints):
+            if w.env_steps < 0:
                 pid = torch.where(buf >= cum, torch.full_like(pid, i), pid)
                 return pid
-            nxt = cum + int(p.env_steps)
+            seg = int(w.env_steps)
+            if seg <= 0:
+                continue
+            nxt = cum + seg
             m = (buf >= cum) & (buf < nxt)
             pid = torch.where(m, torch.full_like(pid, i), pid)
             cum = nxt
-        pid = torch.where(buf >= cum, torch.full_like(pid, len(self._phases) - 1), pid)
+        pid = torch.where(buf >= cum, torch.full_like(pid, len(self._waypoints) - 1), pid)
         return pid
 
-    def _anchor_pos_quat(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """Full batch anchor poses in world frame (N,3), (N,4)."""
-        p0, q0 = self._resolve_anchor_world(self._phases[0].target)
-        ap = torch.zeros_like(p0)
-        aq = torch.zeros_like(q0)
-
-        buf = getattr(
-            self._env,
-            "episode_length_buf",
-            torch.zeros(self._num_envs, device=p0.device, dtype=torch.long),
-        )
-        pid = self._phase_id(buf)
-
-        for i, ph in enumerate(self._phases):
-            m = pid == i
-            if not m.any():
-                continue
-            pos_i, quat_i = self._resolve_anchor_world(ph.target)
-            ap = torch.where(m.unsqueeze(-1), pos_i, ap)
-            aq = torch.where(m.unsqueeze(-1), quat_i, aq)
-        return ap, aq
-
-    def _use_rotation_mask(self) -> torch.Tensor:
+    def _ee_pose_world_batch(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """World-frame EE pose (N,3), (N,4) wxyz from waypoints + optional per-env xyz offset."""
         buf = getattr(
             self._env,
             "episode_length_buf",
             torch.zeros(self._num_envs, device=self._device, dtype=torch.long),
         )
         pid = self._phase_id(buf)
-        ur = torch.zeros(self._num_envs, dtype=torch.bool, device=self._device)
-        for i, ph in enumerate(self._phases):
+        pos_out = torch.zeros(self._num_envs, 3, device=self._device, dtype=torch.float32)
+        quat_out = torch.zeros(self._num_envs, 4, device=self._device, dtype=torch.float32)
+
+        for i, w in enumerate(self._waypoints):
             m = pid == i
-            if ph.use_rotation:
-                ur = ur | m
-        return ur
+            if not m.any():
+                continue
+            p = torch.tensor(w.pos_xyz, device=self._device, dtype=torch.float32).view(1, 3).expand(self._num_envs, -1)
+            q = torch.tensor(w.quat_wxyz, device=self._device, dtype=torch.float32).view(1, 4).expand(self._num_envs, -1)
+            pos_out = torch.where(m.unsqueeze(-1), p, pos_out)
+            quat_out = torch.where(m.unsqueeze(-1), q, quat_out)
 
-    def _default_palm_quat_world(self) -> torch.Tensor:
-        """(N,4) when not using anchor rotation."""
-        cfg = self._cfg
-        if cfg.palm_orientation_mode == "fixed":
-            e = torch.tensor(cfg.palm_euler_xyz, device=self._device, dtype=torch.float32).view(1, 3)
-            return quat_from_euler_xyz(
-                e[:, 0].expand(self._num_envs),
-                e[:, 1].expand(self._num_envs),
-                e[:, 2].expand(self._num_envs),
-            )
-        euler = _euler_palm_pickup_down(
-            np.array(cfg.palm_normal_in_palm_frame, dtype=np.float64),
-            np.array(cfg.world_down, dtype=np.float64),
-            float(cfg.palm_yaw_offset_rad),
-        )
-        e = torch.tensor(euler, device=self._device, dtype=torch.float32).view(1, 3)
-        return quat_from_euler_xyz(
-            e[:, 0].expand(self._num_envs),
-            e[:, 1].expand(self._num_envs),
-            e[:, 2].expand(self._num_envs),
-        )
-
-    def _compute_wrist_world_batch(self) -> tuple[torch.Tensor, torch.Tensor]:
-        anchor_pos, anchor_quat = self._anchor_pos_quat()
-        use_rot = self._use_rotation_mask()
-        off = self._offset_vec.expand(self._num_envs, 3)
-
-        pos_world = anchor_pos + off
-        pos_body = anchor_pos + quat_apply(anchor_quat, off)
-        palm_pos = torch.where(use_rot.unsqueeze(-1), pos_body, pos_world)
-
-        q_def = self._default_palm_quat_world()
-        e_rel = torch.tensor(self._cfg.palm_euler_in_anchor_frame, device=self._device, dtype=torch.float32).view(1, 3)
-        q_rel = quat_from_euler_xyz(e_rel[:, 0], e_rel[:, 1], e_rel[:, 2])
-        q_rot = quat_mul(anchor_quat, q_rel.expand(self._num_envs, -1))
-        palm_quat = torch.where(use_rot.unsqueeze(-1), q_rot, q_def)
-
-        return _wrist_pose_from_palm_batch(
-            palm_pos,
-            palm_quat,
-            self._wrist_in_palm_pos,
-            self._wrist_in_palm_quat,
-        )
+        offset = getattr(self._env, "ik_rl_trajectory_xyz_offset", None)
+        if offset is not None:
+            pos_out = pos_out + offset.to(device=pos_out.device, dtype=pos_out.dtype)
+        if self._cfg.add_env_origins_to_waypoint_pos:
+            scene = getattr(self._env, "scene", None)
+            origins = getattr(scene, "env_origins", None) if scene is not None else None
+            if origins is not None:
+                pos_out = pos_out + origins.to(device=pos_out.device, dtype=pos_out.dtype)
+        return pos_out, quat_out
 
     def _expand_diff_ik(self, out: torch.Tensor) -> torch.Tensor:
-        wrist_pos_w, wrist_quat_w = self._compute_wrist_world_batch()
-        robot = self._env.robot
+        wrist_pos_w, wrist_quat_w = self._ee_pose_world_batch()
+        robot = self._robot
         root_pose_w = robot.data.root_pose_w
         wrist_pos_b, wrist_quat_cmd = subtract_frame_transforms(
             root_pose_w[:, 0:3], root_pose_w[:, 3:7], wrist_pos_w, wrist_quat_w
@@ -560,6 +290,9 @@ class ArmIkHandActionExpander:
         jac[:, 3:, :] = torch.bmm(base_rot_matrix, jac[:, 3:, :])
         joint_pos = robot.data.joint_pos[:, self._diff_ik_joint_pos_ids_t]
         joint_des = self._diff_ik_controller.compute(ee_pos_b, ee_quat_b, jac, joint_pos)
+        s = float(self._cfg.ik_delta_scale)
+        if abs(s - 1.0) > 1e-9:
+            joint_des = joint_pos + (joint_des - joint_pos) * s
         for col in range(6):
             slot = self._diff_ik_slot_per_col[col]
             lo = self._lower[:, slot]
@@ -569,34 +302,42 @@ class ArmIkHandActionExpander:
 
     def expand(self, hand_actions: torch.Tensor) -> torch.Tensor:
         hand_actions = hand_actions.to(device=self._device, dtype=torch.float32)
-        if getattr(self, "_hand_only_mode", False):
-            if self._fixed_hand_actions is None or not self._hand_freeze_phase_ids:
-                return hand_actions
-            buf = getattr(
-                self._env,
-                "episode_length_buf",
-                torch.zeros(self._num_envs, device=self._device, dtype=torch.long),
-            )
-            pid = self._phase_id(buf)
-            freeze_mask = torch.zeros(self._num_envs, dtype=torch.bool, device=self._device)
-            for i in self._hand_freeze_phase_ids:
-                freeze_mask = freeze_mask | (pid == i)
-            return torch.where(freeze_mask.unsqueeze(-1), self._fixed_hand_actions, hand_actions)
+        if self._hand_only_mode:
+            return hand_actions
+        assert self._hand_slots_t is not None
         out = torch.zeros((self._num_envs, self._full_dim), device=self._device, dtype=torch.float32)
-        h_slots = torch.tensor(self._hand_slots, device=self._device, dtype=torch.long)
-        if self._fixed_hand_actions is not None and self._hand_freeze_phase_ids:
-            buf = getattr(
-                self._env,
-                "episode_length_buf",
-                torch.zeros(self._num_envs, device=self._device, dtype=torch.long),
-            )
-            pid = self._phase_id(buf)
-            freeze_mask = torch.zeros(self._num_envs, dtype=torch.bool, device=self._device)
-            for i in self._hand_freeze_phase_ids:
-                freeze_mask = freeze_mask | (pid == i)
-            hand_actions = torch.where(freeze_mask.unsqueeze(-1), self._fixed_hand_actions, hand_actions)
-        out[:, h_slots] = hand_actions
+        out[:, self._hand_slots_t] = hand_actions
         return self._expand_diff_ik(out)
+
+
+class DualArmIkHandActionExpander:
+    """Two :class:`ArmIkHandActionExpander` (right / left) for MARL dual-arm after ``multi_agent_to_single_agent``."""
+
+    def __init__(self, env: DirectRLEnv, cfg_right: IkRlHandArmCfg, cfg_left: IkRlHandArmCfg):
+        self._right = ArmIkHandActionExpander(env, cfg_right, robot=env.right_hand)
+        self._left = ArmIkHandActionExpander(env, cfg_left, robot=env.left_hand)
+        wr = cfg_right.waypoints
+        wl = cfg_left.waypoints
+        if wr and wl and wr[0].env_steps >= 0 and wl[0].env_steps >= 0 and wr[0].env_steps != wl[0].env_steps:
+            logger.info(
+                "[ik_rl] trajectory_right[0].steps (%s) != trajectory_left[0].steps (%s): "
+                "both arms share episode_length_buf, so they switch to waypoint 2 at different times.",
+                wr[0].env_steps,
+                wl[0].env_steps,
+            )
+        self.num_hand = self._right.num_hand + self._left.num_hand
+        self._num_envs = self._right._num_envs
+
+    @property
+    def num_actuated(self) -> int:
+        return self._right.num_actuated + self._left.num_actuated
+
+    def expand(self, hand_actions: torch.Tensor) -> torch.Tensor:
+        hand_actions = hand_actions.to(device=self._right._device, dtype=torch.float32)
+        nr, nl = self._right.num_hand, self._left.num_hand
+        fr = self._right.expand(hand_actions[:, :nr])
+        fl = self._left.expand(hand_actions[:, nr : nr + nl])
+        return torch.cat([fr, fl], dim=-1)
 
 
 class IkHandRslRlVecEnvWrapper(RslRlVecEnvWrapper):
@@ -606,7 +347,7 @@ class IkHandRslRlVecEnvWrapper(RslRlVecEnvWrapper):
         self,
         env: gym.Env,
         clip_actions: float | None,
-        expander: ArmIkHandActionExpander,
+        expander: ArmIkHandActionExpander | DualArmIkHandActionExpander,
     ):
         self._expander = expander
         self._num_hand = expander.num_hand
@@ -630,3 +371,30 @@ class IkHandRslRlVecEnvWrapper(RslRlVecEnvWrapper):
             actions = torch.clamp(actions, -self.clip_actions, self.clip_actions)
         full = self._expander.expand(actions)
         return super().step(full)
+
+
+def build_ik_cfg_from_trajectory_args(args: Any, *, arm: Literal["single", "right", "left"] = "single") -> IkRlHandArmCfg:
+    """Build :class:`IkRlHandArmCfg` from argparse namespace (YAML-merged)."""
+
+    if arm == "single":
+        raw = getattr(args, "trajectory", None)
+    elif arm == "right":
+        raw = getattr(args, "trajectory_right", None) or getattr(args, "trajectory", None)
+    else:
+        raw = getattr(args, "trajectory_left", None) or getattr(args, "trajectory", None)
+    if raw is None:
+        raise ValueError(
+            "IK trajectory missing: set `trajectory` in the ik_rl YAML (list of {pos, quat, steps}), "
+            "and for dual-arm optionally `trajectory_right` / `trajectory_left`."
+        )
+    waypoints = parse_waypoints_list(raw)
+    ee = getattr(args, "ee_body", None) or "wrist_3_link"
+    return IkRlHandArmCfg(
+        waypoints=waypoints,
+        add_env_origins_to_waypoint_pos=not bool(getattr(args, "ik_waypoints_world_frame", False)),
+        ee_body_name=str(ee),
+        ik_method=getattr(args, "ik_method", "dls"),
+        ik_lambda=getattr(args, "ik_lambda", None),
+        ik_k_val=getattr(args, "ik_k_val", None),
+        ik_delta_scale=float(getattr(args, "ik_delta_scale", 1.0)),
+    )

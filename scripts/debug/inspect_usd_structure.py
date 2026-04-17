@@ -3,17 +3,17 @@
 Inspect USD file prim hierarchy. Run in Isaac Sim Python or any env with pxr (e.g. usd-core).
 
 Usage:
-  python scripts/inspect_usd_structure.py [path_to.usd]
-  Default: source/ViTacLab/ViTacLab/assets/data/Objects/DexCube/dex_cube_sdf.usd
+  python scripts/debug/inspect_usd_structure.py [path_to.usd]
+  Default: source/ViTacLab/ViTacLab/assets/data/Objects/Bottle/3517/mobility.usd
 """
 import os
 import sys
 
-# Default path relative to repo root
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+# This file lives in scripts/debug/ — repo root is two levels up.
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DEFAULT_USD = os.path.join(
     REPO_ROOT,
-    "source/ViTacLab/ViTacLab/assets/data/Sensors/Gelsight_finger/gelsight_r15_finger_short.usd",
+    "source/ViTacLab/ViTacLab/assets/data/Objects/Bottle/3517/mobility.usd",
 )
 
 

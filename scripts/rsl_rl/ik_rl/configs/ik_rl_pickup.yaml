@@ -1,27 +1,16 @@
-# Palm + differential IK defaults for Pickup (registered Gym id below).
-# Used by train_ik_rl_single.py / play_ik_rl_single.py when --ik-config points here (default if file exists).
-#
-# Override any key via CLI (e.g. --task ... --trajectory ...) — CLI wins after merge.
-# Disable file:  --ik-config none
+# IK + EE waypoints for Pickup (train_ik_rl_single.py / play_ik_rl_single.py).
+# Used when this file exists unless --ik-config none. Tune ``pos`` / ``quat`` for your layout.
+# ``quat`` is Isaac Lab order: **wxyz** [w, x, y, z] (not xyzw).
 
 task: Isaac-UR10eShadowHand-Pickup-Direct-v0
 
-trajectory: "object:150:0,goal:-1:0"
-
-object_to_palm_offset: [0.0, 0.0, 0.05]
-palm_in_wrist_pos: [0.0, 0.0, 0.35]
-# rad; ~ (pi/2, -pi/2, pi/2)
-palm_in_wrist_euler: [1.5707963267948966, -1.5707963267948966, 1.5707963267948966]
-
-palm_orient: pickup_down
-
-palm_yaw_offset: 0.0
-
-palm_normal_local: [0.0, 1.0, 0.0]
-world_down: [0.0, 0.0, -1.0]
-
-palm_euler: [0.0, 2.2, 0.0]
-palm_euler_in_anchor: [0.0, 0.0, 0.0]
+trajectory:
+  - pos: [0.5, 0.0, 0.28]
+    quat: [1.0, 0.0, 0.0, 0.0]
+    steps: 150
+  - pos: [0.5, 0.0, 0.48]
+    quat: [1.0, 0.0, 0.0, 0.0]
+    steps: -1
 
 ee_body: wrist_3_link
 ik_method: dls

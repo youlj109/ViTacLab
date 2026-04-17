@@ -1,7 +1,7 @@
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Load palm/IK trajectory defaults from YAML for ``train_ik_rl_single`` / ``play_ik_rl_single``."""
+"""Load IK+RL trajectory defaults from YAML for train/play scripts (single- and dual-arm)."""
 
 from __future__ import annotations
 
@@ -13,56 +13,46 @@ import yaml
 
 # Keys must match argparse ``dest`` names (underscores) for train/play IK arguments.
 # ``task`` = registered Gym id this preset is intended for (merged as default ``--task``; CLI overrides).
+# ``trajectory`` = list of {pos: [x,y,z], quat: [w,x,y,z], steps: int}; quat is Isaac Lab **wxyz**.
 IK_YAML_KEYS = (
     "task",
     "trajectory",
-    "object_to_palm_offset",
-    "palm_in_wrist_pos",
-    "palm_in_wrist_euler",
-    "palm_orient",
-    "palm_normal_local",
-    "palm_yaw_offset",
-    "world_down",
-    "palm_euler",
-    "palm_euler_in_anchor",
+    "trajectory_right",
+    "trajectory_left",
     "ee_body",
     "ik_method",
     "ik_lambda",
-    # Optional: freeze hand joints to a fixed grasp pose during pickup.
-    # (Used by ik_rl pickup only; full_ik has its own hand staging.)
-    "hand_freeze_phase_target",
-    "hand_freeze_yaml",
+    "ik_k_val",
+    "ik_delta_scale",
+    "ik_waypoints_world_frame",
 )
 
 
 def default_pickup_ik_yaml_path() -> Path:
     """``ik_rl/configs/ik_rl_pickup.yaml`` (``utils`` → parent ``ik_rl``)."""
-    # This file lives in ``.../ik_rl/utils/``; configs are in ``.../ik_rl/configs/``.
     return Path(__file__).resolve().parent.parent / "configs" / "ik_rl_pickup.yaml"
 
 
+def default_unscrew_dual_ik_yaml_path() -> Path:
+    """``ik_rl/configs/ik_rl_unscrew_dual.yaml``."""
+    return Path(__file__).resolve().parent.parent / "configs" / "ik_rl_unscrew_dual.yaml"
+
+
 def _coerce(name: str, val: Any) -> Any:
-    if name in (
-        "object_to_palm_offset",
-        "palm_in_wrist_pos",
-        "palm_in_wrist_euler",
-        "palm_normal_local",
-        "world_down",
-        "palm_euler",
-        "palm_euler_in_anchor",
-    ):
-        if isinstance(val, (list, tuple)) and len(val) == 3:
-            return tuple(float(x) for x in val)
-    if name == "palm_yaw_offset":
-        return float(val)
+    if name == "task":
+        return None if val is None else str(val).strip()
     if name == "ik_lambda" and val is None:
         return None
     if name == "ik_lambda" and val is not None:
         return float(val)
-    if name == "task":
-        return None if val is None else str(val).strip()
-    if name in ("hand_freeze_phase_target", "hand_freeze_yaml"):
-        return None if val is None else str(val).strip()
+    if name == "ik_k_val" and val is None:
+        return None
+    if name == "ik_k_val" and val is not None:
+        return float(val)
+    if name == "ik_delta_scale":
+        return 1.0 if val is None else float(val)
+    if name == "ik_waypoints_world_frame":
+        return bool(val) if val is not None else False
     return val
 
 
@@ -83,7 +73,7 @@ def resolve_ik_config_path(argv: list[str], default_file: Path | None) -> Path |
 
 
 def load_ik_yaml_into_parser(parser: Any, yaml_path: Path | None) -> None:
-    """``parser.set_defaults`` from YAML (only known IK keys)."""
+    """``parser.set_defaults`` from YAML (IK keys)."""
     if yaml_path is None or not yaml_path.is_file():
         return
     data = yaml.safe_load(yaml_path.read_text()) or {}
@@ -91,11 +81,20 @@ def load_ik_yaml_into_parser(parser: Any, yaml_path: Path | None) -> None:
     for k in IK_YAML_KEYS:
         if k in data:
             kwargs[k] = _coerce(k, data[k])
+    # Dual: if only ``trajectory`` is set, duplicate to both arms
+    if "trajectory" in data:
+        if "trajectory_right" not in data:
+            kwargs["trajectory_right"] = kwargs["trajectory"]
+        if "trajectory_left" not in data:
+            kwargs["trajectory_left"] = kwargs["trajectory"]
     if kwargs:
         parser.set_defaults(**kwargs)
 
 
-def apply_sys_argv_ik_yaml_defaults(parser: Any, default_file: Path | None = None) -> Path | None:
+def apply_sys_argv_ik_yaml_defaults(
+    parser: Any,
+    default_file: Path | None = None,
+) -> Path | None:
     """Resolve path from ``sys.argv`` + default file, apply to ``parser``, return resolved path (or None)."""
     if default_file is None:
         default_file = default_pickup_ik_yaml_path()
@@ -117,5 +116,5 @@ def warn_if_task_mismatch_with_ik_yaml(resolved_yaml_path: Path | None, cli_task
     if ys and cs and ys != cs:
         print(
             f"[WARN] IK config YAML task={ys!r} does not match CLI --task={cs!r}. "
-            "Using CLI task; check that palm/IK settings suit this environment."
+            "Using CLI task; check that IK trajectories suit this environment."
         )

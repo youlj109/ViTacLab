@@ -128,9 +128,10 @@ class ForgeSceneCfg(InteractiveSceneCfg):
         # Contact object configuration
         contact_object_prim_path_expr="/World/envs/env_.*/HeldAsset",
         # Force field physics parameters
-        normal_contact_stiffness=1.0,
-        friction_coefficient=2.0,
+        normal_contact_stiffness=1,
+        friction_coefficient=0.5,
         tangential_stiffness=0.1,
+        depth_penetration_deadband=0.0001,
         # Camera configuration (must match render_cfg)
         camera_cfg=TiledCameraCfg(
             prim_path="/World/envs/env_.*/Robot/R15_leftfinger/elastomer_tip/cam",
@@ -159,10 +160,11 @@ class ForgeSceneCfg(InteractiveSceneCfg):
         # Contact object configuration
         contact_object_prim_path_expr="/World/envs/env_.*/HeldAsset",
         # Force field physics parameters
-        normal_contact_stiffness=1.0,
-        friction_coefficient=2.0,
+        normal_contact_stiffness=1,
+        friction_coefficient=0.5,
         tangential_stiffness=0.1,
-        # Camera configuration (must match render_cfg)
+        depth_penetration_deadband=0.0001,
+        # Camera configuration 
         camera_cfg=TiledCameraCfg(
             prim_path="/World/envs/env_.*/Robot/R15_rightfinger/elastomer_tip/cam",
             height=GELSIGHT_R15_CFG.image_height,
@@ -269,7 +271,7 @@ class ForgeEnvCfg(FactoryEnvCfg):
                 solver_position_iteration_count=192,
                 solver_velocity_iteration_count=1,
             ),
-            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=-0.001),
+            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=-0.002),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
             joint_pos={
@@ -280,7 +282,8 @@ class ForgeEnvCfg(FactoryEnvCfg):
                 "panda_joint5": -0.00083,
                 "panda_joint6": 1.38774,
                 "panda_joint7": 0.0,
-                "panda_finger_joint2": 0.04,
+                # Open hand at spawn; 0.0 is almost fully closed and preloads GelSight elastomer before TacSL baseline.
+                "panda_finger_joint2": 0.00,
             },
             pos=(0.0, 0.0, 0.0),
             rot=(1.0, 0.0, 0.0, 0.0),

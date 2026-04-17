@@ -30,6 +30,14 @@ Examples (Isaac Sim python):
     # Five-finger TacSL (requires ``--enable_cameras``; for ``--task inhand`` uses tactile cfg if not ``--cfg``):
     ./python.sh scripts/teleoperation/gui_teleop/run_ur10e_shadowhand_arm_pose_from_marker.py \\
         --task inhand --num_envs 1 --enable_cameras --show_rgb --show_ff
+
+    # Factory forge peg (or ``--task Isaac-UR10eShadowHand-ForgePegInsert-Direct-v0``):
+    ./python.sh scripts/teleoperation/gui_teleop/run_ur10e_shadowhand_arm_pose_from_marker.py \\
+        --task forge_peg --num_envs 1 --enable_cameras
+
+    # Any registered single-arm task (reads ``entry_point`` + ``env_cfg_entry_point`` from Gym):
+    ./python.sh scripts/teleoperation/gui_teleop/run_ur10e_shadowhand_arm_pose_from_marker.py \\
+        --task Isaac-UR10eShadowHand-BlindGrasp-Direct-v0 --num_envs 1 --enable_cameras
 """
 
 from __future__ import annotations
@@ -53,8 +61,8 @@ from isaaclab.app import AppLauncher
 # Same presets as scripts/debug/run_ur10e_shadowhand_single.py
 _TASK_PRESETS: dict[str, dict[str, str]] = {
     "pour": {
-        "env": "ViTacLab.tasks.direct.difficult_dexhand.ur10e_shadowhand_pour_env:UR10eShadowHandPourEnv",
-        "cfg": "ViTacLab.tasks.direct.difficult_dexhand.ur10e_shadowhand_pour_env_cfg:UR10eShadowHandPourEnvCfg",
+        "env": "ViTacLab.tasks.direct.simple_dexhand.pour_water.ur10e_shadowhand_pour_env:UR10eShadowHandPourEnv",
+        "cfg": "ViTacLab.tasks.direct.simple_dexhand.pour_water.ur10e_shadowhand_pour_env_cfg:UR10eShadowHandPourEnvCfg",
     },
     "pickup": {
         "env": "ViTacLab.tasks.direct.simple_dexhand.hand_pickup.hand_pickup_env:UR10eShadowHandPickupEnv",
@@ -64,6 +72,25 @@ _TASK_PRESETS: dict[str, dict[str, str]] = {
         "env": "ViTacLab.tasks.direct.simple_dexhand.inhand_manipulation.inhand_manipulation_env:InHandManipulationEnv",
         "cfg": "ViTacLab.tasks.direct.simple_dexhand.inhand_manipulation.inhand_manipulation_env_cfg:UR10eShadowHandInHandEnvCfg",
     },
+    "forge_peg": {
+        "env": "ViTacLab.tasks.direct.medium_dexhand.forge_dexhand.ur10e_shadowhand_forge_env:UR10eShadowHandForgeEnv",
+        "cfg": "ViTacLab.tasks.direct.medium_dexhand.forge_dexhand.ur10e_shadowhand_forge_env_cfg:UR10eShadowHandForgePegInsertEnvCfg",
+    },
+    "forge_gear": {
+        "env": "ViTacLab.tasks.direct.medium_dexhand.forge_dexhand.ur10e_shadowhand_forge_env:UR10eShadowHandForgeEnv",
+        "cfg": "ViTacLab.tasks.direct.medium_dexhand.forge_dexhand.ur10e_shadowhand_forge_env_cfg:UR10eShadowHandForgeGearMeshEnvCfg",
+    },
+    "forge_nut": {
+        "env": "ViTacLab.tasks.direct.medium_dexhand.forge_dexhand.ur10e_shadowhand_forge_env:UR10eShadowHandForgeEnv",
+        "cfg": "ViTacLab.tasks.direct.medium_dexhand.forge_dexhand.ur10e_shadowhand_forge_env_cfg:UR10eShadowHandForgeNutThreadEnvCfg",
+    },
+}
+
+# Registered Gym ids from ``ViTacLab.tasks.direct.medium_dexhand.forge_dexhand`` → preset key.
+_TASK_GYM_ID_ALIASES: dict[str, str] = {
+    "Isaac-UR10eShadowHand-ForgePegInsert-Direct-v0": "forge_peg",
+    "Isaac-UR10eShadowHand-ForgeGearMesh-Direct-v0": "forge_gear",
+    "Isaac-UR10eShadowHand-ForgeNutThread-Direct-v0": "forge_nut",
 }
 
 MARKER_PRIM_PATH = "/World/Debug/ArmIkTarget"
@@ -155,11 +182,72 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def _entries_from_gym_registry(task_id: str) -> tuple[str, str]:
+    """Resolve ``module:EnvClass`` and ``env_cfg_entry_point`` from a registered Gymnasium id."""
+
+    import gymnasium as gym
+
+    tid = task_id.split(":")[-1].strip()
+    spec = gym.spec(tid)
+    ep = spec.entry_point
+    if callable(ep):
+        env_entry = f"{ep.__module__}:{ep.__name__}"
+    else:
+        env_entry = str(ep)
+    kwargs = spec.kwargs or {}
+    cfg_ep = kwargs.get("env_cfg_entry_point")
+    if not cfg_ep:
+        raise ValueError(f"Registry task {tid!r} has no env_cfg_entry_point in spec.kwargs.")
+    return env_entry, cfg_ep
+
+
+def _resolve_env_cfg_entries(args: argparse.Namespace) -> tuple[str, str, str | None]:
+    """Resolve env/cfg entry strings.
+
+    Returns ``(env_entry, cfg_entry, preset_key)`` where ``preset_key`` is set when using a
+    built-in preset name (after forge aliases), else ``None`` (e.g. arbitrary registered Gym id).
+    """
+
+    env_s = str(getattr(args, "env", "") or "").strip()
+    cfg_s = str(getattr(args, "cfg", "") or "").strip()
+    if env_s and cfg_s:
+        return env_s, cfg_s, None
+    if env_s or cfg_s:
+        raise SystemExit("Provide both --env and --cfg, or neither and use --task.")
+
+    task = str(getattr(args, "task", "") or "").strip()
+    if task in _TASK_GYM_ID_ALIASES:
+        task = _TASK_GYM_ID_ALIASES[task]
+    if task in _TASK_PRESETS:
+        p = _TASK_PRESETS[task]
+        return p["env"], p["cfg"], task
+    try:
+        e, c = _entries_from_gym_registry(task)
+        return e, c, None
+    except Exception as exc:
+        keys = ", ".join(sorted(_TASK_PRESETS.keys()))
+        aliases = ", ".join(sorted(_TASK_GYM_ID_ALIASES.keys()))
+        raise SystemExit(
+            f"Unknown --task {task!r}. Use one of: {keys}; a forge Gym id alias ({aliases}); "
+            f"or any registered Gymnasium id whose spec provides env_cfg_entry_point "
+            f"(e.g. Isaac-UR10eShadowHand-BlindGrasp-Direct-v0). ({exc})"
+        ) from exc
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="UR10e arm IK from a visual marker (same task presets as run_ur10e_shadowhand_single.py).",
     )
-    p.add_argument("--task", choices=sorted(_TASK_PRESETS.keys()), default="pickup", help="Preset task.")
+    p.add_argument(
+        "--task",
+        type=str,
+        default="pickup",
+        help=(
+            "Preset key (pickup, pour, inhand, forge_peg, forge_gear, forge_nut), a forge Gym id alias, "
+            "or any registered ViTacLab Gymnasium id (resolved via env_cfg_entry_point), "
+            "e.g. Isaac-UR10eShadowHand-BlindGrasp-Direct-v0."
+        ),
+    )
     p.add_argument("--env", type=str, default="", help="Env entry module:Class (overrides --task).")
     p.add_argument("--cfg", type=str, default="", help="Cfg entry module:Class (overrides --task).")
     p.add_argument("--num_envs", type=int, default=1, help="Number of envs (default: 1).")
@@ -257,10 +345,9 @@ def main() -> int:
     from video_teleop.core.video_teleop_control import ArmHandTargets, VideoTeleopControl
     from video_teleop.core.shadowhand_joints import shadowhand_joint_names
 
-    preset = _TASK_PRESETS[str(args.task)]
-    env_entry = str(args.env).strip() or preset["env"]
-    cfg_entry = str(args.cfg).strip() or preset["cfg"]
-    if (args.show_rgb or args.show_ff) and str(args.task) == "inhand" and not str(args.cfg).strip():
+    env_entry, cfg_entry, preset_key = _resolve_env_cfg_entries(args)
+    print(f"[INFO] env={env_entry}\n[INFO] cfg={cfg_entry}")
+    if (args.show_rgb or args.show_ff) and preset_key == "inhand" and not str(args.cfg).strip():
         cfg_entry = _INHAND_TACTILE_CFG
         print(f"[INFO] Using tactile cfg for inhand: {cfg_entry}")
     EnvCls = _load_symbol(env_entry)
@@ -306,7 +393,12 @@ def main() -> int:
     hand_indices = [i for i, n in enumerate(joint_names) if re.match(hand_expr, n)]
     sh_names = shadowhand_joint_names()
 
+    print(
+        "[INFO] env.reset(): starting (Forge uses joint-space reset only; "
+        "first reset can still take a few seconds with cameras/TacSL — not frozen)."
+    )
     env.reset()
+    print("[INFO] env.reset(): done.")
     action_dim = env.num_actions
     print(f"[INFO] action_dim={action_dim}, actuated_dof_indices count={len(env.actuated_dof_indices)}")
     if args.show_rgb or args.show_ff:
@@ -576,6 +668,11 @@ def main() -> int:
     step = 0
     last_arm_print: Optional[np.ndarray] = None
     last_hand_norm_print: Optional[np.ndarray] = None
+
+    print(
+        "[INFO] Main loop: first env.step may take 30–60s with TacSL + RTX (shader warmup). "
+        "ManagerLiveVisualizer warnings for action/observation_manager are normal for DirectRLEnv."
+    )
 
     while simulation_app.is_running():
         t0 = time.time()

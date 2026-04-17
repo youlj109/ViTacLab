@@ -40,7 +40,7 @@ def _repo_root() -> Path:
 def _default_input() -> Path:
     return (
         _repo_root()
-        / "source/ViTacLab/ViTacLab/assets/data/Robots/ShadowHand/ur10e/ur10e_shadow_right_hand_glb_withtac.usd"
+        / "source/ViTacLab/ViTacLab/assets/data/Robots/Franka/Franka_R15/franka_mimic_edit.usd"
     )
 
 

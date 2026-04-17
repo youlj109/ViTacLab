@@ -1,0 +1,32 @@
+# Differential IK defaults for dual-arm bottle unscrew (train_ik_rl_dual.py / play_ik_rl_dual.py).
+# Default when the file exists unless --ik-config none. CLI overrides YAML after merge.
+#
+# Each list entry: world-frame pose of ee_body (default wrist_3_link): pos [m], quat **wxyz** [w,x,y,z] (Isaac Lab; not xyzw), steps (env steps; -1 = rest of episode).
+# If only ``trajectory`` is set, it is copied to both arms. Use ``trajectory_right`` / ``trajectory_left`` for different paths.
+# Env ``ik_rl_trajectory_xyz_offset`` (bottle position noise) is added to every waypoint position each reset.
+
+task: Isaac-UR10e-Dual-Shadow-Hand-UnscrewBottleCap-Direct-v0
+
+
+trajectory_right:
+  - pos: [0.3, 0.0, 0.7]
+    quat: [-0.50, -0.5, -0.5, -0.5]
+    steps: 500
+  - pos: [0.3, 0.0, 0.9]
+    quat: [-0.5, -0.5, -0.5, -0.5]
+    steps: -1
+trajectory_left:
+  - pos: [0.686150, 0.312908, 0.15]
+    quat: [-0.5, -0.5, -0.5, 0.5]
+    steps: 250
+  - pos: [0.686150, 0.312908, 0.5]
+    quat: [-0.5, -0.5, -0.5, 0.5]
+    steps: -1
+
+
+ee_body: wrist_3_link
+ik_method: dls
+# dls: lower lambda = snappier (default in ik_rl when null is 0.005; Isaac Lab default is 0.01).
+ik_lambda: null
+# Extra joint-space gain per env step (try 1.5–2.5 if the arm still feels sluggish).
+ik_delta_scale: 1.5

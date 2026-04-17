@@ -1,22 +1,19 @@
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Train Shadow **hand** with RSL-RL; UR10e **arm** follows GPU differential IK + scripted palm trajectory.
+"""Train Shadow **hand** with RSL-RL; UR10e **arm** follows GPU differential IK + EE waypoints.
 
 Mirrors ``train.py`` but wraps with :class:`IkHandRslRlVecEnvWrapper` (policy = hand only).
 
-**Trajectory** (task-agnostic): each segment is ``<name>:env_steps:use_rotation``. ``<name>`` resolves on the env to
-either an asset ``env.<name>`` (``root_pos_w`` / ``root_quat_w``), or tensors ``<name>_pos`` / ``<name>_rot`` (pos
-env-local), or legacy ``goal`` → ``goal_object_pos`` / ``goal_object_rot``. Example: ``cup:150:0,goal_cup:-1:0`` for
-pour. ``use_rotation``: ``1`` = offset in anchor frame + palm aligned with anchor rotation.
+**Trajectory**: YAML list of ``{pos: [x,y,z], quat: [w,x,y,z], steps: int}`` — world-frame pose of ``ee_body``
+(default ``wrist_3_link``). ``steps`` = env steps to hold; ``-1`` = until episode end.
 
 Example::
 
     ./isaaclab.sh -p scripts/rsl_rl/ik_rl/train_ik_rl_single.py --task Isaac-UR10eShadowHand-Pickup-Direct-v0 \\
         --num_envs 16
 
-Palm/IK defaults load from ``scripts/rsl_rl/ik_rl/configs/ik_rl_pickup.yaml`` when that file exists (override with
-``--ik-config PATH`` or ``--ik-config none``). CLI flags such as ``--trajectory`` still override YAML.
+IK defaults load from ``configs/ik_rl_pickup.yaml`` when present (``--ik-config PATH`` or ``none``).
 """
 
 """Launch Isaac Sim Simulator first."""
@@ -34,7 +31,7 @@ if _IK_UTILS not in sys.path:
 from isaaclab.app import AppLauncher
 
 import cli_args  # isort: skip
-import numpy as np
+
 parser = argparse.ArgumentParser(description="Train hand-only RL with GPU differential IK arm (single-arm setup).")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
@@ -59,85 +56,9 @@ parser.add_argument("--export_io_descriptors", action="store_true", default=Fals
 parser.add_argument(
     "--ray-proc-id", "-rid", type=int, default=None, help="Automatically configured by Ray integration, otherwise None."
 )
-# Palm + IK (minimal)
-parser.add_argument(
-    "--trajectory",
-    type=str,
-    default="object:150:0,goal:-1:0",
-    help="Comma-separated phases: name:env_steps:use_rotation (0/1). "
-    "name = env asset (e.g. object, cup) or tensor prefix (e.g. goal_cup → goal_cup_pos/rot), or goal (legacy). "
-    "steps=-1 = until episode end.",
-)
-parser.add_argument(
-    "--object-to-palm-offset",
-    type=float,
-    nargs=3,
-    default=(0.0, 0.0, 0.05),
-    metavar=("OX", "OY", "OZ"),
-    help="Offset from trajectory anchor to palm origin (world if use_rotation=0, anchor frame if use_rotation=1).",
-)
-parser.add_argument(
-    "--palm-in-wrist-pos",
-    type=float,
-    nargs=3,
-    default=(0.0, 0.0, 0.35),
-    metavar=("PX", "PY", "PZ"),
-    help="Palm origin in wrist_3 frame (m).",
-)
-parser.add_argument(
-    "--palm-in-wrist-euler",
-    type=float,
-    nargs=3,
-    default=(np.pi / 2.0, -np.pi / 2.0, np.pi / 2.0),
-    metavar=("RX", "RY", "RZ"),
-    help="Palm in wrist_3 euler xyz (rad).",
-)
-parser.add_argument(
-    "--palm-orient",
-    type=str,
-    choices=("fixed", "pickup_down"),
-    default="pickup_down",
-    help="When trajectory phase has use_rotation=0: fixed euler or pickup_down.",
-)
-parser.add_argument(
-    "--palm-normal-local",
-    type=float,
-    nargs=3,
-    default=(0.0, 1.0, 0.0),
-    metavar=("NX", "NY", "NZ"),
-    help="Palm-frame axis to align with --world-down (pickup_down).",
-)
-parser.add_argument(
-    "--palm-yaw-offset",
-    type=float,
-    default=0.0,
-    help="Extra yaw (rad) about world Z after pickup_down alignment.",
-)
-parser.add_argument(
-    "--world-down",
-    type=float,
-    nargs=3,
-    default=(0.0, 0.0, -1.0),
-    metavar=("DX", "DY", "DZ"),
-    help="World down direction for pickup_down.",
-)
-parser.add_argument(
-    "--palm-euler",
-    type=float,
-    nargs=3,
-    default=(0.0, 2.2, 0.0),
-    metavar=("RX", "RY", "RZ"),
-    help="Palm world euler xyz (rad) when --palm-orient fixed.",
-)
-parser.add_argument(
-    "--palm-euler-in-anchor",
-    type=float,
-    nargs=3,
-    default=(0.0, 0.0, 0.0),
-    metavar=("RX", "RY", "RZ"),
-    help="When use_rotation=1: euler xyz (rad) of palm relative to anchor frame (applied after anchor quat).",
-)
-parser.add_argument("--ee-body", type=str, default="wrist_3_link", help="End-effector link for Jacobian.")
+# IK: EE waypoints from YAML (list of {pos, quat, steps})
+parser.add_argument("--trajectory", default=None, help=argparse.SUPPRESS)
+parser.add_argument("--ee-body", type=str, default=None, dest="ee_body", help="EE link for IK (default: wrist_3_link).")
 parser.add_argument(
     "--ik-method",
     type=str,
@@ -149,7 +70,27 @@ parser.add_argument(
     "--ik-lambda",
     type=float,
     default=None,
-    help="dls damping lambda override; default = Isaac controller.",
+    help="dls damping lambda override; default = 0.005 in ik_rl (Isaac default is 0.01).",
+)
+parser.add_argument(
+    "--ik-k-val",
+    type=float,
+    default=None,
+    dest="ik_k_val",
+    help="pinv/svd/trans: scale step size (Isaac k_val); ignored for dls.",
+)
+parser.add_argument(
+    "--ik-delta-scale",
+    type=float,
+    default=1.0,
+    dest="ik_delta_scale",
+    help="Multiply joint-space IK delta each step (>1 = faster EE motion, may overshoot).",
+)
+parser.add_argument(
+    "--ik-waypoints-world-frame",
+    action="store_true",
+    dest="ik_waypoints_world_frame",
+    help="YAML pos is global sim world (do not add env_origins). Default: env-local for multi-env cloning.",
 )
 parser.add_argument(
     "--hand-freeze-phase-target",
@@ -167,7 +108,7 @@ parser.add_argument(
     "--ik-config",
     type=str,
     default=None,
-    help="YAML with task (Gym id) + palm/IK/trajectory (see configs/ik_rl_pickup.yaml). "
+    help="YAML with task + trajectory (see configs/ik_rl_pickup.yaml). "
     "If omitted, that file is loaded when present. Pass 'none' to disable.",
 )
 
@@ -186,7 +127,7 @@ args_cli, hydra_args = parser.parse_known_args()
 _cfg_path = resolve_ik_config_path(sys.argv, default_pickup_ik_yaml_path())
 RESOLVED_IK_CONFIG_YAML = _cfg_path
 if _cfg_path is not None:
-    print(f"[INFO] IK palm/trajectory defaults merged from YAML: {_cfg_path}")
+    print(f"[INFO] IK trajectory defaults merged from YAML: {_cfg_path}")
 warn_if_task_mismatch_with_ik_yaml(RESOLVED_IK_CONFIG_YAML, args_cli.task)
 
 if args_cli.video:
@@ -197,29 +138,7 @@ sys.argv = [sys.argv[0]] + hydra_args
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
-"""RSL-RL version check (same as train.py)."""
-
-import importlib.metadata as metadata
-import platform
-
-from packaging import version
-
-RSL_RL_VERSION = "3.0.1"
-installed_version = metadata.version("rsl-rl-lib")
-if version.parse(installed_version) < version.parse(RSL_RL_VERSION):
-    if platform.system() == "Windows":
-        cmd = [r".\isaaclab.bat", "-p", "-m", "pip", "install", f"rsl-rl-lib=={RSL_RL_VERSION}"]
-    else:
-        cmd = ["./isaaclab.sh", "-p", "-m", "pip", "install", f"rsl-rl-lib=={RSL_RL_VERSION}"]
-    print(
-        f"Please install the correct version of RSL-RL.\nExisting version is: '{installed_version}'"
-        f" and required version is: '{RSL_RL_VERSION}'.\nTo install the correct version, run:"
-        f"\n\n\t{' '.join(cmd)}\n"
-    )
-    exit(1)
-
 import logging
-import os
 import shutil
 import time
 from datetime import datetime
@@ -244,15 +163,12 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
-from rsl_rl_log_utils import get_rsl_rl_log_root
-from ik_rl_hand_vec_env import (
-    ArmIkHandActionExpander,
-    IkHandRslRlVecEnvWrapper,
-    IkRlHandArmCfg,
-    parse_trajectory_phases,
-)
+from rsl_rl_log_utils import check_rsl_rl_lib_version, get_rsl_rl_log_root
+from ik_rl_hand_vec_env import ArmIkHandActionExpander, IkHandRslRlVecEnvWrapper, build_ik_cfg_from_trajectory_args
 
 logger = logging.getLogger(__name__)
+
+check_rsl_rl_lib_version()
 
 import ViTacLab.tasks  # noqa: F401
 from ViTacLab.utils.vitaclab_marl_rsl import multi_agent_to_single_agent
@@ -342,28 +258,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     env.reset()
 
-    traj = parse_trajectory_phases(args_cli.trajectory)
-    ik_cfg = IkRlHandArmCfg(
-        object_to_palm_offset=tuple(args_cli.object_to_palm_offset),
-        palm_in_wrist_pos=tuple(args_cli.palm_in_wrist_pos),
-        palm_in_wrist_euler_xyz=tuple(args_cli.palm_in_wrist_euler),
-        palm_orientation_mode=args_cli.palm_orient,
-        palm_euler_xyz=tuple(args_cli.palm_euler),
-        palm_normal_in_palm_frame=tuple(args_cli.palm_normal_local),
-        world_down=tuple(args_cli.world_down),
-        palm_yaw_offset_rad=float(args_cli.palm_yaw_offset),
-        palm_euler_in_anchor_frame=tuple(args_cli.palm_euler_in_anchor),
-        trajectory=traj,
-        ee_body_name=str(args_cli.ee_body),
-        ik_method=args_cli.ik_method,
-        ik_lambda=args_cli.ik_lambda,
-        hand_freeze_phase_target=args_cli.hand_freeze_phase_target,
-        hand_freeze_yaml=args_cli.hand_freeze_yaml,
-    )
+    ik_cfg = build_ik_cfg_from_trajectory_args(args_cli, arm="single")
     expander = ArmIkHandActionExpander(base, ik_cfg)
     print(
         f"[INFO] Hand-only RL: policy actions={expander.num_hand}, full actuated={expander.num_actuated}, "
-        f"trajectory={args_cli.trajectory}"
+        f"EE waypoints={len(ik_cfg.waypoints)}"
     )
 
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
@@ -412,23 +311,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "task": args_cli.task,
             "ik_config_source_yaml": str(RESOLVED_IK_CONFIG_YAML) if RESOLVED_IK_CONFIG_YAML else None,
             "trajectory": args_cli.trajectory,
-            "object_to_palm_offset": list(ik_cfg.object_to_palm_offset),
-            "palm_in_wrist_pos": list(ik_cfg.palm_in_wrist_pos),
-            "palm_in_wrist_euler_xyz": list(ik_cfg.palm_in_wrist_euler_xyz),
-            "palm_orientation_mode": ik_cfg.palm_orientation_mode,
-            "palm_euler_xyz": list(ik_cfg.palm_euler_xyz),
-            "palm_normal_in_palm_frame": list(ik_cfg.palm_normal_in_palm_frame),
-            "world_down": list(ik_cfg.world_down),
-            "palm_yaw_offset_rad": ik_cfg.palm_yaw_offset_rad,
-            "palm_euler_in_anchor_frame": list(ik_cfg.palm_euler_in_anchor_frame),
             "ee_body_name": ik_cfg.ee_body_name,
             "ik_method": ik_cfg.ik_method,
             "ik_lambda": ik_cfg.ik_lambda,
+            "ik_k_val": ik_cfg.ik_k_val,
+            "ik_delta_scale": ik_cfg.ik_delta_scale,
+            "ik_waypoints_world_frame": getattr(args_cli, "ik_waypoints_world_frame", False),
             "num_hand_actions": expander.num_hand,
         },
     )
 
-    runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
+    runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=False)
 
     print(f"Training time: {round(time.time() - start_time, 2)} seconds")
     env.close()
