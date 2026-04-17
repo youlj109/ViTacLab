@@ -31,6 +31,7 @@ ViTacLab is an Isaac Lab **extension** that lives **outside** the upstream `Isaa
 
 | Topic | Location |
 |-------|----------|
+| **Quick install (中文)** | [`docs/QUICK_INSTALL.md`](docs/QUICK_INSTALL.md) |
 | RSL-RL training (commands, Hydra, IK-RL) | [`scripts/rsl_rl/README.md`](scripts/rsl_rl/README.md), [`scripts/rsl_rl/QUICKSTART.md`](scripts/rsl_rl/QUICKSTART.md) |
 | IK-RL team guide (env / reward / recording) | [`docs/ik_rl_modification_guide.md`](docs/ik_rl_modification_guide.md) |
 | IK-RL YAML configs | [`scripts/rsl_rl/ik_rl/configs/README.md`](scripts/rsl_rl/ik_rl/configs/README.md) |
