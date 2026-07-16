@@ -21,7 +21,7 @@ from isaaclab.utils.math import (
 )
 
 try:
-    from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
+    from ViTacLab.assets.sensor.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
 except ImportError:
     VisuoTactileSensorData = None  # type: ignore
 

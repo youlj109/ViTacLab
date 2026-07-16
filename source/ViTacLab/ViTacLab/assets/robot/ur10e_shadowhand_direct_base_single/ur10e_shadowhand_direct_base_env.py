@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from pathlib import Path
 import re
 
 import isaaclab.sim as sim_utils
@@ -21,6 +22,20 @@ def _scale(x, lower, upper):
     return 0.5 * (x + 1.0) * (upper - lower) + lower
 
 
+@torch.jit.script
+def _unscale(x, lower, upper):
+    return (2.0 * x - upper - lower) / (upper - lower)
+
+
+def _tacsl_to_batched_flat(t: torch.Tensor, num_envs: int) -> torch.Tensor:
+    """TacSL tensors may be (N, F) or (N, F, 1); return a flattened (N, *)."""
+    if t.ndim <= 1:
+        return t.reshape(num_envs, -1)
+    if t.ndim == 2:
+        return t
+    return t.reshape(num_envs, -1)
+
+
 # Names must match ``build_ur10e_shadowhand_tactile_sensor_cfgs`` keys.
 _TACSL_SENSOR_NAMES: tuple[str, ...] = (
     "tactile_sensor_ff",
@@ -40,6 +55,58 @@ def spawn_factory_table(prim_path: str = "/World/envs/env_.*/Table") -> None:
         translation=(0.55, 0.0, 0.0),
         orientation=(0.70711, 0.0, 0.0, 0.70711),
     )
+
+
+def _resolve_asset_usd_path(usd_path: str) -> str:
+    """Resolve repo-relative USD paths (e.g. source/ViTacLab/...) to an absolute file path."""
+    raw = str(usd_path or "").strip()
+    if not raw:
+        return raw
+    p = Path(raw)
+    if p.is_file():
+        return str(p.resolve())
+    candidates: list[Path] = [Path.cwd() / p]
+    cur = Path.cwd()
+    for _ in range(12):
+        if (cur / "source" / "ViTacLab").is_dir():
+            candidates.append(cur / p)
+            break
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate.resolve())
+    return raw
+
+
+def spawn_high_fidelity_scene_if_enabled(cfg) -> None:
+    """Optionally spawn a high-fidelity scene USD under each env root."""
+    if not getattr(cfg, "enable_high_fidelity_scene", False):
+        return
+
+    usd_path = getattr(cfg, "high_fidelity_scene_usd_path", "")
+    if not usd_path:
+        return
+
+    resolved_usd = _resolve_asset_usd_path(usd_path)
+    prim_path = getattr(cfg, "high_fidelity_scene_prim_path", "/World/envs/env_.*/HighFidelityScene")
+    translation = getattr(cfg, "high_fidelity_scene_translation", (0.0, 0.0, 0.0))
+    orientation = getattr(cfg, "high_fidelity_scene_orientation", (1.0, 0.0, 0.0, 0.0))
+    scale = getattr(cfg, "high_fidelity_scene_scale", (1.0, 1.0, 1.0))
+
+    scene_spawn_cfg = sim_utils.UsdFileCfg(usd_path=resolved_usd, scale=scale)
+    print(
+        f"[INFO] Spawning high-fidelity scene: usd={resolved_usd} prim={prim_path} "
+        f"scale={scale} translation={translation}"
+    )
+    scene_spawn_cfg.func(
+        prim_path,
+        scene_spawn_cfg,
+        translation=translation,
+        orientation=orientation,
+    )
+    print(f"[INFO] High-fidelity scene prim spawned (verify in Stage under {prim_path}).")
 
 
 class UR10eShadowHandDirectBaseEnv(DirectRLEnv):
@@ -73,6 +140,7 @@ class UR10eShadowHandDirectBaseEnv(DirectRLEnv):
         self.robot = Articulation(self.cfg.robot_cfg)
 
         spawn_factory_table()
+        spawn_high_fidelity_scene_if_enabled(self.cfg)
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg(), translation=(0.0, 0.0, -1.05))
 
         self.scene.clone_environments(copy_from_source=False)
@@ -123,8 +191,8 @@ class UR10eShadowHandDirectBaseEnv(DirectRLEnv):
                 continue
             try:
                 sensor.get_initial_render()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[WARN] TacSL get_initial_render failed for {name}: {e}")
 
     def _setup_task_scene(self) -> None:
         raise NotImplementedError
@@ -162,4 +230,186 @@ class UR10eShadowHandDirectBaseEnv(DirectRLEnv):
         self.cur_targets[env_ids] = dof_pos
         self.robot.set_joint_position_target(dof_pos, env_ids=env_ids)
         self.robot.write_joint_state_to_sim(dof_pos, dof_vel, env_ids=env_ids)
+
+    def _resolve_body_index_by_keywords(self, keywords: Sequence[str]) -> int:
+        """Resolve robot body index by fuzzy-name keyword search."""
+        body_names_src = getattr(self.robot, "body_names", None)
+        if body_names_src is None:
+            body_names_src = getattr(self.robot.data, "body_names", [])
+        body_names = [str(name).lower() for name in body_names_src]
+        for key in keywords:
+            try:
+                return next(i for i, name in enumerate(body_names) if key in name)
+            except StopIteration:
+                continue
+        return 0
+
+    def _get_ee_pose_env(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return EE pose in env frame (pos) and world quaternion."""
+        ee_idx = getattr(self, "_ee_body_idx", None)
+        if ee_idx is None:
+            ee_idx = self._resolve_body_index_by_keywords(("wrist_3", "wrist3", "hand", "palm"))
+            self._ee_body_idx = ee_idx
+        ee_pos_env = self.robot.data.body_pos_w[:, ee_idx] - self.scene.env_origins
+        ee_quat_env = self.robot.data.body_quat_w[:, ee_idx]
+        return ee_pos_env, ee_quat_env
+
+    def _build_tactile_pose_tensor(self, sensor_names: Sequence[str], num_tactile: int) -> torch.Tensor:
+        """Return tactile poses (N, num_tactile, 7) with TacSL/body fallback."""
+        tactile_pos = torch.zeros((self.num_envs, num_tactile, 7), device=self.device, dtype=torch.float32)
+        tactile_pos_source = "zero_no_sensor"
+        if num_tactile <= 0:
+            return tactile_pos
+
+        if all(name in self.scene.sensors for name in sensor_names):
+            pose_list: list[torch.Tensor] = []
+
+            def _extract_pos_quat(sensor_obj, sensor_data):
+                pos_w = getattr(sensor_data, "pos_w", None)
+                quat_w = getattr(sensor_data, "quat_w_ros", None)
+                if quat_w is None:
+                    quat_w = getattr(sensor_data, "quat_w", None)
+                if pos_w is None:
+                    pos_w = getattr(sensor_obj, "pos_w", None)
+                if quat_w is None:
+                    quat_w = getattr(sensor_obj, "quat_w_ros", None)
+                if quat_w is None:
+                    quat_w = getattr(sensor_obj, "quat_w", None)
+                return pos_w, quat_w
+
+            for name in sensor_names:
+                sensor_obj = self.scene[name]
+                sensor_data = sensor_obj.data
+                pos_w, quat_w = _extract_pos_quat(sensor_obj, sensor_data)
+                if pos_w is None or quat_w is None:
+                    pose_list = []
+                    break
+                pose_list.append(torch.cat((pos_w - self.scene.env_origins, quat_w), dim=-1))
+
+            if len(pose_list) == num_tactile:
+                tactile_pos = torch.stack(pose_list, dim=1)
+                tactile_pos_source = "tacsl_pose"
+            else:
+                body_names_src = getattr(self.robot, "body_names", None)
+                if body_names_src is None:
+                    body_names_src = getattr(self.robot.data, "body_names", [])
+                body_names = [str(name).lower() for name in body_names_src]
+                body_idx_list: list[int] = []
+                key_map = {
+                    "ff": ("ffdistal", "ff_tip", "ff"),
+                    "lf": ("lfdistal", "lf_tip", "lf"),
+                    "mf": ("mfdistal", "mf_tip", "mf"),
+                    "rf": ("rfdistal", "rf_tip", "rf"),
+                    "th": ("thdistal", "th_tip", "th"),
+                }
+                for sensor_name in sensor_names:
+                    finger_key = str(sensor_name).split("_")[-1].lower()
+                    search_keys = key_map.get(finger_key, (finger_key,))
+                    idx_found = None
+                    for sk in search_keys:
+                        try:
+                            idx_found = next(i for i, bname in enumerate(body_names) if sk in bname)
+                            break
+                        except StopIteration:
+                            continue
+                    if idx_found is None:
+                        body_idx_list = []
+                        break
+                    body_idx_list.append(idx_found)
+
+                if len(body_idx_list) == num_tactile:
+                    pose_list = []
+                    for body_idx in body_idx_list:
+                        pose_list.append(
+                            torch.cat(
+                                (
+                                    self.robot.data.body_pos_w[:, body_idx] - self.scene.env_origins,
+                                    self.robot.data.body_quat_w[:, body_idx],
+                                ),
+                                dim=-1,
+                            )
+                        )
+                    tactile_pos = torch.stack(pose_list, dim=1)
+                    tactile_pos_source = "robot_body_fallback"
+                else:
+                    tactile_pos_source = "zero_no_body_match"
+
+        if not getattr(self, "_printed_tactile_pos_source_once", False):
+            print(f"[{self.__class__.__name__}] tactile_pos source: {tactile_pos_source}")
+            self._printed_tactile_pos_source_once = True
+        return tactile_pos
+
+    def _append_camera_record(self, record_dict: dict, camera_name: str, rgb_key: str, depth_key: str, pose_key: str) -> None:
+        """Append RGB/depth/pose entries from a camera sensor to record dict."""
+        if camera_name not in self.scene.sensors:
+            return
+        camera = self.scene[camera_name]
+        cam_out = camera.data.output
+        if "rgb" in cam_out:
+            record_dict[rgb_key] = cam_out["rgb"].detach().cpu()
+        if "distance_to_image_plane" in cam_out:
+            record_dict[depth_key] = cam_out["distance_to_image_plane"].detach().cpu()
+        cam_pos_env = camera.data.pos_w - self.scene.env_origins
+        cam_quat_w = getattr(camera.data, "quat_w_ros", None)
+        if cam_quat_w is None:
+            cam_quat_w = getattr(camera.data, "quat_w", None)
+        if cam_quat_w is not None:
+            record_dict[pose_key] = torch.cat((cam_pos_env, cam_quat_w), dim=-1).unsqueeze(1).detach().cpu()
+
+    def _build_pickup_style_record_dict(
+        self,
+        *,
+        joint_pos: torch.Tensor,
+        tactile_sensor_names: Sequence[str],
+        tactile_sensor_count: int,
+        tactile_normal_force: torch.Tensor | None = None,
+        tactile_shear_force: torch.Tensor | None = None,
+        tactile_rgb_image: torch.Tensor | None = None,
+        tactile_array_size: tuple[int, int] | None = None,
+        tactile_image_hw: tuple[int, int] | None = None,
+    ) -> dict:
+        """Build pickup-v1 compatible ``record`` payload."""
+        ee_pos_env, ee_quat_env = self._get_ee_pose_env()
+        tactile_pos = self._build_tactile_pose_tensor(tuple(tactile_sensor_names), int(tactile_sensor_count))
+
+        record_dict: dict = {
+            "joint_pos": joint_pos.detach().cpu(),
+            "tactile_pos": tactile_pos.detach().cpu(),
+            "ee_pos_env": ee_pos_env.detach().cpu(),
+            "ee_quat_env": ee_quat_env.detach().cpu(),
+        }
+        if (
+            tactile_sensor_count > 0
+            and tactile_normal_force is not None
+            and tactile_shear_force is not None
+            and tactile_array_size is not None
+        ):
+            h, w = int(tactile_array_size[0]), int(tactile_array_size[1])
+            record_dict["tactile_normal_force"] = tactile_normal_force.detach().cpu().reshape(
+                self.num_envs, tactile_sensor_count, h, w, 1
+            )
+            record_dict["tactile_shear_force"] = tactile_shear_force.detach().cpu().reshape(
+                self.num_envs, tactile_sensor_count, h, w, 2
+            )
+            if tactile_rgb_image is not None and tactile_image_hw is not None:
+                img_h, img_w = int(tactile_image_hw[0]), int(tactile_image_hw[1])
+                record_dict["tactile_rgb_image"] = (
+                    tactile_rgb_image.detach().cpu().reshape(self.num_envs, tactile_sensor_count, img_h, img_w, 3) * 255.0
+                ).to(torch.uint8)
+
+        self._append_camera_record(
+            record_dict,
+            camera_name="third_person_camera",
+            rgb_key="third_person_camera",
+            depth_key="third_person_camera_depth",
+            pose_key="third_person_camera_pos",
+        )
+        self._append_camera_record(
+            record_dict,
+            camera_name="twist_camera",
+            rgb_key="twist_camera",
+            depth_key="twist_camera_depth",
+            pose_key="twist_camera_pos",
+        )
+        return record_dict
 

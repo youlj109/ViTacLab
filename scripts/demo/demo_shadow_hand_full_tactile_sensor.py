@@ -5,21 +5,21 @@
 
 """Demo: full-hand palm-frame voxel tactile on the UR10e + Shadow Hand in-hand manipulation layout.
 
-Scene / object / default arm pose match
-:class:`ViTacLab.tasks.direct.simple_dexhand.inhand_manipulation.inhand_manipulation_env_cfg.UR10eShadowHandInHandEnvCfg`.
+Run (same style as ``demo_visuotactile_sensor_v2.py`` — **do not** pass ``--headless``)::
 
-The robot USD spawn enables contact reporters so :class:`~ViTacLab.assets.sensor.shadow_hand_full_tactile.ShadowHandFullTactileSensor`
-can aggregate ``get_contact_data`` / ``get_friction_data`` into ``voxel_grid``.
+    conda activate env_isaaclab_510test
+    cd /path/to/IssacLab_510test/ViTacLab
+    python scripts/demo/demo_shadow_hand_full_tactile_sensor.py --num_envs 1 --no_plot --diag_only
 
-On startup, joint positions are written with :meth:`~isaaclab.assets.articulation.Articulation.write_joint_state_to_sim`
-so the arm matches the in-hand configuration immediately (no transient from default USD pose).
+Body-name diagnostic only, then exit::
 
-Tactile visualization: matplotlib ``Axes3D.voxels`` in **palm** coordinates (meters on the axes when supported
-by your matplotlib version); color encodes ``|fn| + ‖ft‖`` per cell.
+    python scripts/demo/demo_shadow_hand_full_tactile_sensor.py --num_envs 1 --no_plot --diag_only
 
-Console logs include **contact_pts_mean_palm**: PhysX ``get_contact_data`` contact positions (world) transformed
-into the palm body frame (same as voxel binning), averaged per env/filter; see
-``ShadowHandFullTactileData.contact_normal_points_mean_palm``.
+Live plot (schematic hand composite + optional 3D voxels)::
+
+    python scripts/demo/demo_shadow_hand_full_tactile_sensor.py --num_envs 1
+    python scripts/demo/demo_shadow_hand_full_tactile_sensor.py --num_envs 1 --plot_2d_only
+    python scripts/demo/demo_shadow_hand_full_tactile_sensor.py --num_envs 1 --plot_voxel_2d
 """
 
 import argparse
@@ -44,6 +44,26 @@ parser.add_argument(
     default=0.85,
     help="Opacity of occupied voxels in the 3D plot (0..1).",
 )
+parser.add_argument(
+    "--plot_2d_only",
+    action="store_true",
+    help="Matplotlib: schematic composite only (no 3D voxels).",
+)
+parser.add_argument(
+    "--plot_voxel_2d",
+    action="store_true",
+    help="Also show raw palm-frame max-projection heatmap (in addition to schematic).",
+)
+parser.add_argument(
+    "--tactile-schematic-mirror-x",
+    action="store_true",
+    help="Flip schematic composite horizontally if thumb/pinky look swapped vs your 3D view.",
+)
+parser.add_argument(
+    "--diag_only",
+    action="store_true",
+    help="Print body-name diagnostic and exit (no main simulation loop).",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -51,8 +71,6 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 import torch
-
-import numpy as np
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
@@ -65,7 +83,14 @@ from isaaclab.utils import configclass
 from ViTacLab.assets.robot.ur10e_shadowhand_direct_base_single.ur10e_shadowhand_direct_base_env import (
     spawn_factory_table,
 )
-from ViTacLab.assets.sensor import ShadowHandFullTactileSensorCfg
+from ViTacLab.assets.sensor import (
+    UR10E_ARM_BODY_NAMES,
+    UR10E_SHADOW_HAND_TACTILE_BODY_NAMES,
+    ShadowHandTactilePlotCfg,
+    build_shadow_hand_full_tactile_sensor_cfg,
+    open_shadow_hand_tactile_live_plot,
+    update_shadow_hand_tactile_live_plot,
+)
 from ViTacLab.tasks.direct.simple_dexhand.inhand_manipulation.inhand_manipulation_env_cfg import (
     UR10eShadowHandInHandEnvCfg,
 )
@@ -99,28 +124,22 @@ class ShadowHandFullTactileInHandSceneCfg(InteractiveSceneCfg):
 
     object = _OBJECT_CFG
 
-    full_hand_tactile = ShadowHandFullTactileSensorCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/.*",
-        update_period=0.0,
-        history_length=0,
-        debug_vis=False,
+    full_hand_tactile = build_shadow_hand_full_tactile_sensor_cfg(
         filter_prim_paths_expr=["{ENV_REGEX_NS}/object"],
         max_contact_data_count_per_prim=1024,
-        palm_link_name_substr="palm",
         voxel_resolution=(48, 36, 8),
         voxel_min_bounds_palm=(-0.2, -0.2, -0.2),
         voxel_max_bounds_palm=(0.2, 0.2, 0.2),
+        update_period=0.0,
+        history_length=0,
+        debug_vis=False,
         track_friction=True,
         track_pose=False,
     )
 
 
 def _apply_inhand_initial_robot_state(robot) -> torch.Tensor:
-    """Write default (in-hand) joint pose into the sim immediately so the arm is already correct on frame 0.
-
-    Mirrors env reset: all DOF positions from ``default_joint_pos`` (includes merged
-    ``UR10eShadowHandInHandEnvCfg.robot_cfg`` arm + USD hand defaults), zero velocities.
-    """
+    """Write default (in-hand) joint pose into the sim immediately so the arm is already correct on frame 0."""
     dof_pos = robot.data.default_joint_pos.clone()
     dof_vel = torch.zeros_like(robot.data.default_joint_vel)
     robot.write_joint_state_to_sim(dof_pos, dof_vel)
@@ -128,126 +147,33 @@ def _apply_inhand_initial_robot_state(robot) -> torch.Tensor:
     return dof_pos
 
 
-def _intensity_rgba_numpy(
-    intensity: torch.Tensor,
-    *,
-    cmap_name: str,
-    vmax: float | None,
-    alpha: float,
-) -> np.ndarray:
-    """Map scalar ``(nx,ny,nz)`` to ``(nx,ny,nz,4)`` RGBA (numpy) in display [0,1]."""
-    import matplotlib
-
-    s_np = intensity.detach().float().cpu().numpy()
-    norm_vmax = float(s_np.max()) if vmax is None else float(vmax)
-    norm_vmax = max(norm_vmax, 1e-9)
-    cmap = matplotlib.colormaps[cmap_name]
-    rgba = cmap(s_np / norm_vmax)
-    rgba[..., 3] = alpha
-    return rgba
-
-
-def _apply_palm_voxel_view_limits(
-    ax,
-    bmin: tuple[float, float, float],
-    bmax: tuple[float, float, float],
-) -> None:
-    """Set limits to 2x the ``[bmin,bmax]`` span (centered); re-apply after ``voxels`` (it may autoscale)."""
-    xm, ym, zm = bmin
-    xM, yM, zM = bmax
-    cx, cy, cz = 0.5 * (xm + xM), 0.5 * (ym + yM), 0.5 * (zm + zM)
-    sx, sy, sz = xM - xm, yM - ym, zM - zm
-    ax.set_xlim(cx - sx, cx + sx)
-    ax.set_ylim(cy - sy, cy + sy)
-    ax.set_zlim(cz - sz, cz + sz)
-    ax.set_box_aspect((sx, sy, sz))
-
-
-def _make_3d_voxel_figure(*, bmin: tuple[float, float, float], bmax: tuple[float, float, float]):
-    """3D matplotlib figure: palm-frame voxels colored by ``|fn| + ‖ft‖`` (occupied cells)."""
-    import matplotlib.pyplot as plt
-
-    plt.ion()
-    fig = plt.figure(num="Full-hand voxel tactile — palm frame (3D)", figsize=(7.5, 6.2))
-    ax = fig.add_subplot(111, projection="3d")
-    _apply_palm_voxel_view_limits(ax, bmin, bmax)
-    ax.set_xlabel("palm +X (m)")
-    ax.set_ylabel("palm +Y (m)")
-    ax.set_zlabel("palm +Z (m)")
-    ax.set_title("voxel_grid in palm frame (|fn| + ‖ft‖)")
-    fig.tight_layout()
-    fig.show()
-    return fig, ax
-
-
-def _update_3d_voxel_figure(
-    ax,
-    v0: torch.Tensor,
-    *,
-    bmin: tuple[float, float, float],
-    bmax: tuple[float, float, float],
-    alpha: float,
-    mean_palm: torch.Tensor | None = None,
-):
-    """Redraw voxels from ``v0``; optional ``mean_palm`` marks the contact-point centroid in palm frame."""
-    import inspect
-
-    import matplotlib.pyplot as plt
-
-    nx, ny, nz, _ = v0.shape
-    fn = v0[..., 0].abs()
-    f1, f2 = v0[..., 1], v0[..., 2]
-    ft_mag = torch.sqrt(torch.clamp(f1 * f1 + f2 * f2, min=0.0))
-    intensity = fn + ft_mag
-
-    int_np = intensity.detach().cpu().numpy()
-    imax = float(np.max(int_np)) if int_np.size else 0.0
-    if imax > 0.0:
-        # Absolute 1e-9 hides real signal when peak is e.g. 1e-7; use small fraction of peak.
-        eps = max(imax * 1e-9, np.finfo(np.float64).tiny * 1e3)
-        filled = int_np > eps
-    else:
-        filled = np.zeros(int_np.shape, dtype=bool)
-
-    for c in list(ax.collections):
-        c.remove()
-
-    show_voxels = bool(filled.any())
-    if show_voxels:
-        rgba = _intensity_rgba_numpy(
-            intensity, cmap_name="magma", vmax=float(intensity.max().item()), alpha=alpha
-        )
-        x_e = np.linspace(bmin[0], bmax[0], nx + 1, dtype=np.float64)
-        y_e = np.linspace(bmin[1], bmax[1], ny + 1, dtype=np.float64)
-        z_e = np.linspace(bmin[2], bmax[2], nz + 1, dtype=np.float64)
-
-        sig = inspect.signature(ax.voxels)
-        kw = dict(facecolors=rgba, edgecolor="k", linewidth=0.06, shade=False)
-        if "x" in sig.parameters:
-            ax.voxels(filled, **kw, x=x_e, y=y_e, z=z_e)
-        else:
-            ax.voxels(filled, **kw)
-
-    if mean_palm is not None and torch.isfinite(mean_palm).all():
-        mp = mean_palm.detach().float().cpu().numpy().reshape(3)
-        ax.scatter(
-            [mp[0]],
-            [mp[1]],
-            [mp[2]],
-            c="lime",
-            s=120,
-            depthshade=True,
-            edgecolors="k",
-            linewidths=0.8,
-            zorder=10,
-            label="contact points mean (palm)",
-        )
-
-    _apply_palm_voxel_view_limits(ax, bmin, bmax)
-
-    ax.figure.canvas.draw_idle()
-    ax.figure.canvas.flush_events()
-    plt.pause(0.001)
+def _print_tactile_body_diagnostic(scene: InteractiveScene, palm_link_name_substr: str) -> None:
+    """Print ContactSensor body list and which name matches ``palm_link_name_substr``."""
+    ts = scene["full_hand_tactile"]
+    names = [str(n) for n in ts.body_names]
+    palm_sub = str(palm_link_name_substr)
+    matches = [n for n in names if palm_sub in n]
+    print(f"[DIAG] full_hand_tactile.body_names ({len(names)} bodies under prim_path={ts.cfg.prim_path!r})")
+    for i, name in enumerate(names):
+        tag = "  <-- palm match" if palm_sub in name else ""
+        print(f"  [{i:3d}] {name}{tag}")
+    print(f"[DIAG] palm_link_name_substr={palm_sub!r} -> matches {matches!r}")
+    if len(matches) == 0:
+        print("[WARN] No palm body matched — sensor init will fail or pick wrong frame.")
+    elif len(matches) > 1:
+        print("[WARN] Multiple palm matches — sensor uses the first in body_names order.")
+    hand_set = set(UR10E_SHADOW_HAND_TACTILE_BODY_NAMES)
+    arm_set = set(UR10E_ARM_BODY_NAMES)
+    hand_like = [n for n in names if n in hand_set]
+    arm_like = [n for n in names if n in arm_set]
+    extra = [n for n in names if n not in hand_set and n not in arm_set]
+    print(f"[DIAG] hand bodies ({len(hand_like)}/{len(hand_set)} expected): {hand_like[:12]}{'...' if len(hand_like) > 12 else ''}")
+    print(f"[DIAG] arm bodies  ({len(arm_like)}): {arm_like}")
+    if extra:
+        print(f"[DIAG] other bodies ({len(extra)}): {extra}")
+    if set(hand_like) != hand_set:
+        missing = sorted(hand_set - set(hand_like))
+        print(f"[WARN] Missing expected hand bodies: {missing}")
 
 
 def run_simulator(
@@ -255,22 +181,29 @@ def run_simulator(
     scene: InteractiveScene,
     *,
     enable_plot: bool,
+    plot_cfg: ShadowHandTactilePlotCfg | None,
     palm_bmin: tuple[float, float, float],
     palm_bmax: tuple[float, float, float],
-    voxel_alpha: float,
 ):
     sim_dt = sim.get_physics_dt()
     robot = scene["robot"]
     targets = robot.data.default_joint_pos.clone()
 
-    fig_ax = None
-    if enable_plot:
+    plot_session = None
+    if enable_plot and plot_cfg is not None:
         try:
-            fig_ax = _make_3d_voxel_figure(bmin=palm_bmin, bmax=palm_bmax)
-            print("[INFO] Matplotlib: 3D palm-frame voxel plot (use --no_plot to disable).")
+            plot_session = open_shadow_hand_tactile_live_plot(bmin=palm_bmin, bmax=palm_bmax, cfg=plot_cfg)
+            modes = []
+            if plot_cfg.show_schematic:
+                modes.append("schematic composite")
+            if plot_cfg.show_2d:
+                modes.append("raw 2D max-projection")
+            if plot_cfg.show_3d:
+                modes.append("3D voxels")
+            print(f"[INFO] Matplotlib: {' + '.join(modes)} (use --no_plot to disable).")
         except Exception as exc:
             print(f"[WARN] Could not open matplotlib ({exc}). Continuing without plot.")
-            fig_ax = None
+            plot_session = None
 
     step = 0
     while simulation_app.is_running():
@@ -289,7 +222,6 @@ def run_simulator(
                 mag = torch.sqrt(torch.clamp(f1 * f1 + f2 * f2, min=0.0))
                 cpp = tactile.contact_normal_points_mean_palm
                 cpc = tactile.contact_normal_point_count
-                print("cpc:",cpc)
                 mean_for_plot: torch.Tensor | None = None
                 palm_mu = ""
                 if cpp is not None and cpc is not None:
@@ -307,20 +239,18 @@ def run_simulator(
                     f"[step {step:5d}] voxel_grid[env=0,filter=0]: |fn|_max={fn.abs().max().item():.4f}  "
                     f"|ft|_max={mag.max().item():.4f}  shape={tuple(v0.shape)}{palm_mu}"
                 )
-                if fig_ax is not None:
-                    _, ax = fig_ax
+                if plot_session is not None:
                     try:
-                        _update_3d_voxel_figure(
-                            ax,
+                        update_shadow_hand_tactile_live_plot(
+                            plot_session,
                             v0,
                             bmin=palm_bmin,
                             bmax=palm_bmax,
-                            alpha=voxel_alpha,
                             mean_palm=mean_for_plot,
                         )
                     except Exception as exc:
-                        print(f"[WARN] 3D plot update failed ({exc}); disabling plot.")
-                        fig_ax = None
+                        print(f"[WARN] Tactile plot update failed ({exc}); disabling plot.")
+                        plot_session = None
 
 
 def main():
@@ -356,6 +286,12 @@ def main():
         sim.step()
         scene.update(sim.get_physics_dt())
 
+    _print_tactile_body_diagnostic(scene, scene_cfg.full_hand_tactile.palm_link_name_substr)
+
+    if args_cli.diag_only:
+        print("[INFO] --diag_only: exiting after body-name diagnostic.")
+        return
+
     print("[INFO] Shadow Hand full-hand voxel tactile demo (in-hand manipulation scene layout).")
     print("[INFO] Robot init matches UR10eShadowHandInHandEnvCfg.robot_cfg; table/ground match UR10eShadowHandDirectBaseEnv.")
     print("[INFO] scene['full_hand_tactile'].data.voxel_grid shape (N, F, nx, ny, nz, 3).")
@@ -366,13 +302,22 @@ def main():
     vcfg = scene_cfg.full_hand_tactile
     bmin = vcfg.voxel_min_bounds_palm
     bmax = vcfg.voxel_max_bounds_palm
+    plot_cfg = None
+    if not args_cli.no_plot:
+        plot_cfg = ShadowHandTactilePlotCfg(
+            voxel_alpha=float(max(0.0, min(1.0, args_cli.voxel_alpha))),
+            show_schematic=True,
+            show_2d=bool(args_cli.plot_voxel_2d),
+            show_3d=not args_cli.plot_2d_only,
+            schematic_mirror_x=bool(args_cli.tactile_schematic_mirror_x),
+        )
     run_simulator(
         sim,
         scene,
         enable_plot=not args_cli.no_plot,
+        plot_cfg=plot_cfg,
         palm_bmin=bmin,
         palm_bmax=bmax,
-        voxel_alpha=float(max(0.0, min(1.0, args_cli.voxel_alpha))),
     )
 
 

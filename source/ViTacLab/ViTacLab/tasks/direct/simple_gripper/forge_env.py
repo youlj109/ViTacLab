@@ -16,8 +16,11 @@ from isaaclab.utils.math import axis_angle_from_quat
 
 from isaaclab_tasks.direct.factory import factory_utils
 from isaaclab_tasks.direct.factory.factory_env import FactoryEnv
-from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
-from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_sensor import VisuoTactileSensor
+from ViTacLab.assets.sensor.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
+from ViTacLab.assets.sensor.tacsl_sensor.visuotactile_sensor import VisuoTactileSensor
+from ViTacLab.assets.robot.ur10e_shadowhand_direct_base_single.ur10e_shadowhand_direct_base_env import (
+    spawn_high_fidelity_scene_if_enabled,
+)
 from . import forge_utils
 from .forge_env_cfg import ForgeEnvCfg
 
@@ -207,7 +210,8 @@ class ForgeEnv(FactoryEnv):
 
     def _setup_scene(self):
         """Setup scene - tactile sensors are automatically created from ForgeSceneCfg."""
-        # Call parent setup first - this will create the scene with tactile sensors from ForgeSceneCfg
+        # Spawn decorative scene before Factory clone (same timing as UR10e direct-base envs).
+        spawn_high_fidelity_scene_if_enabled(self.cfg)
         super()._setup_scene()
         
         # Initialize nominal tactile render for camera-based tactile sensing

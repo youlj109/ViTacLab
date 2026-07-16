@@ -80,3 +80,17 @@ tests/
 # TacSL sensor
 **/tactile_record/*
 **/gelsight_r15_data/*
+vendor/
+vitac_full_delivery_pack.tar.gz
+logs.zip
+source/ViTacLab/ViTacLab/assets.zip
+source/ViTacLab/ViTacLab/utils.zip
+policy/**/checkpoints/
+policy/**/data/
+policy/**/outputs/
+policy/**/info/
+policy/**/wandb/
+policy/**/*.ckpt
+policy/**/*.pt
+policy/**/*.pth
+policy/**/*.zarr/

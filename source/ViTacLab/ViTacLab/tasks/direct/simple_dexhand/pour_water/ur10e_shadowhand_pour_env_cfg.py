@@ -15,7 +15,7 @@ from isaaclab.utils import configclass
 class UR10eShadowHandTactileSceneCfg(UR10eShadowHandTacSLSceneCfg):
     """Scene configuration for UR10e + ShadowHand with TacSL tactile sensors.
 
-    Deformable cup has no rigid SDF mesh; use :class:`~isaaclab_contrib.sensors.tacsl_sensor.visuotactile_sensor_v2.VisuoTactileSensorV2`
+    Deformable cup has no rigid SDF mesh; use :class:`~ViTacLab.assets.sensor.tacsl_sensor.visuotactile_sensor_v2.VisuoTactileSensorV2`
     with ``contact_object_is_deformable=True`` (depth-based force field + soft-body nodal velocity).
     """
 

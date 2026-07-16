@@ -26,7 +26,7 @@ from isaaclab.utils.math import (
     saturate,
 )
 
-from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
+from ViTacLab.assets.sensor.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
 
 from ViTacLab.assets.robot.ur10e_shadowhand_direct_base_single.ur10e_shadowhand_direct_base_env import (
     UR10eShadowHandDirectBaseEnv,

@@ -13,8 +13,8 @@ from isaaclab.assets import ArticulationCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.sensors import TiledCameraCfg
 from isaaclab_assets.sensors import GELSIGHT_MINI_CFG, GELSIGHT_R15_CFG
-from isaaclab_contrib.sensors.tacsl_sensor import VisuoTactileSensorV2Cfg as VisuoTactileSensorCfg
-from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
+from ViTacLab.assets.sensor.tacsl_sensor import VisuoTactileSensorV2Cfg as VisuoTactileSensorCfg
+from ViTacLab.assets.sensor.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
 
 from isaaclab_tasks.direct.factory.factory_env_cfg import OBS_DIM_CFG, STATE_DIM_CFG, CtrlCfg, FactoryEnvCfg, ObsRandCfg
 
@@ -223,6 +223,14 @@ class ForgeEnvCfg(FactoryEnvCfg):
     # When False (default for headless RL), Forge strips tactile + third-person camera from the scene.
     # Set True via train/play (from --enable_cameras / ENABLE_CAMERAS) or in cfg for debugging / video.
     enable_cameras: bool = False
+
+    # Optional high-fidelity background scene (spawned in ForgeEnv._setup_scene when enabled).
+    enable_high_fidelity_scene: bool = False
+    high_fidelity_scene_usd_path: str = ""
+    high_fidelity_scene_prim_path: str = "/World/envs/env_.*/HighFidelityScene"
+    high_fidelity_scene_scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    high_fidelity_scene_translation: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    high_fidelity_scene_orientation: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
 
     # Visual disturbance: when True, apply Gaussian noise or Gaussian blur to third_person_camera images
     visual_disturbance: bool = False

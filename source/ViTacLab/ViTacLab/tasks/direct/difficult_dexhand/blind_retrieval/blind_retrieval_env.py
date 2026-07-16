@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from isaaclab.assets import RigidObject
 from isaaclab.utils.math import quat_from_angle_axis, sample_uniform, saturate
 
-from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
+from ViTacLab.assets.sensor.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
 
 from ViTacLab.tasks.direct.simple_dexhand.hand_pickup.hand_pickup_env import (
     TACTILE_SENSOR_NAMES,
