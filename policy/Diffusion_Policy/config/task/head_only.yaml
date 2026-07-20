@@ -1,0 +1,26 @@
+name: head_only
+agent_dim: 30
+
+shape_meta:
+  obs:
+    head_cam:
+      shape: [3, 480, 640]
+      type: rgb
+    agent_pos:
+      shape: [${task.agent_dim}]
+      type: low_dim
+  action:
+    shape: [${task.agent_dim}]
+
+dataset:
+  _target_: diffusion_policy_core.dataset.camera_dataset.RobotImageDataset
+  zarr_path: data/placeholder.zarr
+  shape_meta: ${task.shape_meta}
+  camera_keys: [head_camera]
+  horizon: ${horizon}
+  pad_before: ${eval:'${n_obs_steps}-1'}
+  pad_after: ${eval:'${n_action_steps}-1'}
+  seed: 42
+  val_ratio: 0.02
+  batch_size: 32
+  max_train_episodes: null

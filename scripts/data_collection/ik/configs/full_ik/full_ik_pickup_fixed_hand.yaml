@@ -1,0 +1,55 @@
+# Canonical Pickup Full-IK chain-validation baseline.
+#
+# This file proves that phase loading, palm/wrist transforms, differential IK,
+# scripted hand actions, environment stepping, and optional recording work
+# together.  Its offsets/orientations/timings are calibration starting points,
+# not universally optimal grasp geometry.  Before production collection, the
+# operator must tune them for the selected object, reset distribution, desired
+# approach path, and success definition.  An unusual but finite/repeatable IK
+# posture does not fail the generic chain smoke test; it does require task-level
+# calibration before the resulting trajectories are accepted as training data.
+task: Isaac-UR10eShadowHand-Pickup-Direct-v0
+freeze_hand_after_script: true
+phase_schedule:
+- name: approach_open_hand
+  mode: ik_trajectory
+  env_steps: 75
+  hand: open
+- name: apply_grasp_hand
+  mode: ik_trajectory
+  env_steps: 125
+  hand_yaml: scripts/data_collection/manual/config/pickup_grasp.yaml
+trajectory: object:200:0,goal:-1:0
+object_to_palm_offset:
+- 0.004481857814875534
+- -0.002219155430793762
+- 0.05787752349037664
+palm_in_wrist_pos:
+- 0.0
+- 0.0
+- 0.35
+palm_in_wrist_euler:
+- 1.5707963267948966
+- -1.5707963267948966
+- 1.5707963267948966
+palm_orient: fixed
+palm_normal_local:
+- 0.0
+- 1.0
+- 0.0
+palm_yaw_offset: 0.0
+world_down:
+- 0.0
+- 0.0
+- -1.0
+palm_euler:
+- 3.141592653589793
+- 1.154573814168823
+- 3.141592653589793
+palm_euler_in_anchor:
+- 0.0
+- 0.0
+- 0.0
+ee_body: wrist_3_link
+ik_method: dls
+ik_lambda: null

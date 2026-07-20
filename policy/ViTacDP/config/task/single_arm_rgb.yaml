@@ -1,0 +1,40 @@
+name: single_arm_rgb
+camera_num: 2
+tac_num: 5
+tac_type: tac_rgb
+agent_dim: 30
+
+shape_meta:
+  obs:
+    camera:
+      shape: [${task.camera_num}, 3, 480, 640]
+      type: rgb
+    camera_pos:
+      shape: [${task.camera_num}, 9]
+      type: pos
+    tac_rgb:
+      shape: [${task.tac_num}, 3, 32, 32]
+      type: tac_rgb
+    tac_pos:
+      shape: [${task.tac_num}, 9]
+      type: pos
+    agent_pos:
+      shape: [${task.agent_dim}]
+      type: low_dim
+  action:
+    shape: [${task.agent_dim}]
+
+dataset:
+  _target_: vitacdp_core.dataset.vitac_dataset.RobotImageDataset
+  zarr_path: data/placeholder.zarr
+  shape_meta: ${task.shape_meta}
+  camera_num: ${task.camera_num}
+  tac_num: ${task.tac_num}
+  tac_type: ${task.tac_type}
+  horizon: ${horizon}
+  pad_before: ${eval:'${n_obs_steps}-1'}
+  pad_after: ${eval:'${n_action_steps}-1'}
+  seed: 42
+  val_ratio: 0.02
+  batch_size: 16
+  max_train_episodes: null
