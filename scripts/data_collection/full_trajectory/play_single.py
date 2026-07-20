@@ -30,7 +30,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from common_record_utils import extract_success_signal
+from common_record_utils import extract_canonical_record_row, extract_success_signal
 from task_entries_single import resolve_env_cfg_entries
 
 
@@ -79,24 +79,8 @@ def _clear_bufs(bufs: dict[str, list[np.ndarray]] | None) -> None:
         bufs[k].clear()
 
 
-def _extract_record_row(obs: object, env_index: int) -> dict[str, np.ndarray] | None:
-    record = None
-    try:
-        record = obs["record"]  # type: ignore[index]
-    except Exception:
-        if isinstance(obs, dict):
-            record = obs.get("record", None)
-    if not isinstance(record, dict):
-        return None
-    row: dict[str, np.ndarray] = {}
-    for k, v in record.items():
-        if torch.is_tensor(v):
-            if v.ndim == 0:
-                row[k] = np.asarray(v.detach().cpu().numpy())
-            else:
-                ei = max(0, min(int(env_index), int(v.shape[0]) - 1))
-                row[k] = np.asarray(v[ei].detach().cpu().numpy())
-    return row if row else None
+def _extract_record_row(obs: object, env_index: int, env: Any) -> dict[str, np.ndarray] | None:
+    return extract_canonical_record_row(obs, env, env_index, num_envs=getattr(env, "num_envs", None))
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -396,7 +380,7 @@ def main() -> int:
         nonlocal last_recorded_episode_step
         if not bool(args.record_data) or rec_bufs is None:
             return
-        row = _extract_record_row(obs, record_ei)
+        row = _extract_record_row(obs, record_ei, env)
         if row is None:
             return
         if action_record is not None:

@@ -49,6 +49,10 @@ def extract_record_row(obs: object, env_index: int) -> dict[str, np.ndarray] | N
     record = obs.get("record") if isinstance(obs, dict) else None
     if not isinstance(record, dict):
         return None
+    return _record_dict_to_row(record, env_index)
+
+
+def _record_dict_to_row(record: dict, env_index: int) -> dict[str, np.ndarray] | None:
     row: dict[str, np.ndarray] = {}
     for key, value in record.items():
         if torch.is_tensor(value):
@@ -57,7 +61,54 @@ def extract_record_row(obs: object, env_index: int) -> dict[str, np.ndarray] | N
             else:
                 ei = max(0, min(int(env_index), int(value.shape[0]) - 1))
                 row[key] = np.asarray(value[ei].detach().cpu().numpy())
+        elif isinstance(value, np.ndarray):
+            if value.ndim == 0:
+                row[key] = value
+            else:
+                ei = max(0, min(int(env_index), int(value.shape[0]) - 1))
+                row[key] = np.asarray(value[ei])
     return row or None
+
+
+def extract_canonical_record_row(
+    obs: object,
+    env: Any,
+    env_index: int,
+    *,
+    num_envs: int | None = None,
+) -> dict[str, np.ndarray] | None:
+    """Resolve one canonical record row from obs or env fallbacks."""
+
+    row = extract_record_row(obs, env_index)
+    if row:
+        return row
+
+    cur = env
+    seen: set[int] = set()
+    for _ in range(16):
+        if cur is None or id(cur) in seen:
+            break
+        seen.add(id(cur))
+
+        build_record = getattr(cur, "_build_record_dict", None)
+        if callable(build_record):
+            try:
+                record = build_record()
+                if isinstance(record, dict):
+                    row = _record_dict_to_row(record, env_index)
+                    if row:
+                        return row
+            except Exception:
+                pass
+
+        nxt = getattr(cur, "unwrapped", None)
+        if nxt is None or nxt is cur:
+            nxt = getattr(cur, "env", None)
+        if nxt is None or nxt is cur:
+            break
+        cur = nxt
+
+    return None
 
 
 def merge_record_row(
