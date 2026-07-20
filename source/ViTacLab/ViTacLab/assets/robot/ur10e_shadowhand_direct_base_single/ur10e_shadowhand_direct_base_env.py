@@ -1,16 +1,30 @@
+"""Canonical ViTacLab module for UR10e + ShadowHand direct base environments.
+
+Maintained stack for RL training, data collection, and policy inference.
+Uses local VisuoTactileSensorV2 (PhysX sparse anchors + depth-camera TacSL).
+"""
+
 from collections.abc import Sequence
 from pathlib import Path
 import re
 
 import isaaclab.sim as sim_utils
 import torch
+import torch.nn.functional as F
 from isaaclab.assets import Articulation
+from isaaclab_assets.sensors import GELSIGHT_R15_CFG
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import saturate
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
+try:
+    from ViTacLab.assets.sensor.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
+except ImportError:
+    VisuoTactileSensorData = None  # type: ignore
+
 from .ur10e_shadowhand_direct_base_cfg import (
+    UR10E_SHADOWHAND_TACTILE_SENSOR_NAMES,
     UR10eShadowHandTacSLSceneCfg,
     build_ur10e_shadowhand_tactile_sensor_cfgs,
     build_ur10e_shadowhand_third_person_camera_cfg,
@@ -34,16 +48,6 @@ def _tacsl_to_batched_flat(t: torch.Tensor, num_envs: int) -> torch.Tensor:
     if t.ndim == 2:
         return t
     return t.reshape(num_envs, -1)
-
-
-# Names must match ``build_ur10e_shadowhand_tactile_sensor_cfgs`` keys.
-_TACSL_SENSOR_NAMES: tuple[str, ...] = (
-    "tactile_sensor_ff",
-    "tactile_sensor_lf",
-    "tactile_sensor_mf",
-    "tactile_sensor_rf",
-    "tactile_sensor_th",
-)
 
 
 def spawn_factory_table(prim_path: str = "/World/envs/env_.*/Table") -> None:
@@ -115,6 +119,9 @@ class UR10eShadowHandDirectBaseEnv(DirectRLEnv):
     robot: Articulation
 
     def __init__(self, cfg, render_mode: str | None = None, **kwargs):
+        # TacSL nominal backgrounds must be captured only after DirectRLEnv has
+        # completed its normal scene/EventManager/simulation-start lifecycle.
+        self._tacsl_nominal_render_initialized = False
         super().__init__(cfg, render_mode, **kwargs)
 
         self.num_robot_dofs = self.robot.num_joints
@@ -135,6 +142,284 @@ class UR10eShadowHandDirectBaseEnv(DirectRLEnv):
         self.robot_dof_upper_limits = joint_pos_limits[..., 1]
 
         self.actions = torch.zeros((self.num_envs, self.num_actions), device=self.device)
+        self._use_rl_control = True
+
+        self._shadow_render_sensors_enabled = bool(getattr(self.cfg, "enable_cameras", False))
+        self._ur10e_stacked_tacsl_names = self._resolve_ur10e_stacked_tacsl_sensor_names()
+        self._init_ur10e_stacked_tacsl_buffers()
+        self._maybe_init_tacsl_nominal_render()
+
+    def _maybe_init_tacsl_nominal_render(self) -> None:
+        """Capture TacSL nominal backgrounds once, after the normal simulation start."""
+
+        if self._tacsl_nominal_render_initialized or not self._shadow_render_sensors_enabled:
+            return
+
+        for name in self._ur10e_stacked_tacsl_names:
+            if name not in self.scene.sensors:
+                continue
+            tactile = self.scene[name]
+            if getattr(tactile.cfg, "enable_camera_tactile", False):
+                try:
+                    tactile.get_initial_render()
+                except Exception as e:
+                    print(f"[WARN] TacSL get_initial_render failed for {name}: {e}")
+        self._tacsl_nominal_render_initialized = True
+
+    def _initialize_deferred_tacsl_nominal_render(self) -> None:
+        """Backward-compatible alias for the canonical deferred initializer."""
+
+        self._maybe_init_tacsl_nominal_render()
+
+    def _resolve_ur10e_stacked_tacsl_sensor_names(self) -> tuple[str, ...]:
+        """Ordered TacSL sensor keys (matches :func:`build_ur10e_shadowhand_tactile_sensor_cfgs`)."""
+        scene_has_tactile = isinstance(self.cfg.scene, UR10eShadowHandTacSLSceneCfg) or hasattr(
+            type(self.cfg.scene), "_tactile_params"
+        )
+        if scene_has_tactile:
+            return tuple(build_ur10e_shadowhand_tactile_sensor_cfgs(self.cfg.scene).keys())
+        return UR10E_SHADOWHAND_TACTILE_SENSOR_NAMES
+
+    def _init_ur10e_stacked_tacsl_buffers(self) -> None:
+        """Forge-style stacked tactile tensors (``tactile_*``); safe alongside task-specific buffers."""
+        names = self._ur10e_stacked_tacsl_names
+        self._ur10e_stacked_n = len(names)
+        n = self._ur10e_stacked_n
+
+        try:
+            tactile_hw = tuple(type(self.cfg.scene)._tactile_params().get("tactile_array_size", (20, 25)))
+        except (AttributeError, TypeError):
+            tactile_hw = (20, 25)
+        self.tactile_array_size = (int(tactile_hw[0]), int(tactile_hw[1]))
+
+        if n > 0 and names[0] in self.scene.sensors:
+            first = self.scene[names[0]]
+            self.tactile_array_size = tuple(int(value) for value in first.cfg.tactile_array_size)
+            self._ur10e_stacked_array_total = int(self.tactile_array_size[0]) * int(self.tactile_array_size[1])
+            self.tactile_image_height = int(first.cfg.render_cfg.image_height)
+            self.tactile_image_width = int(first.cfg.render_cfg.image_width)
+        else:
+            self._ur10e_stacked_array_total = int(self.tactile_array_size[0]) * int(self.tactile_array_size[1])
+            self.tactile_image_height = int(GELSIGHT_R15_CFG.image_height)
+            self.tactile_image_width = int(GELSIGHT_R15_CFG.image_width)
+        self.tactile_array_total = self._ur10e_stacked_array_total
+        self.tactile_image_channels = 3
+        self._ur10e_stacked_image_total = self.tactile_image_height * self.tactile_image_width * self.tactile_image_channels
+        self.tactile_normal_force = torch.zeros((self.num_envs, n * self._ur10e_stacked_array_total), device=self.device)
+        self.tactile_shear_force = torch.zeros((self.num_envs, n * self._ur10e_stacked_array_total * 2), device=self.device)
+        self.tactile_rgb_image = torch.zeros((self.num_envs, n * self._ur10e_stacked_image_total), device=self.device)
+
+    def _update_stacked_tacsl_tactile_from_scene(self) -> None:
+        """Read all TacSL sensors and fill ``tactile_{normal,shear,rgb}_image``."""
+        n_sens = self._ur10e_stacked_n
+        flat_n = n_sens * self._ur10e_stacked_array_total
+        flat_s = n_sens * self._ur10e_stacked_array_total * 2
+        flat_rgb = n_sens * self._ur10e_stacked_image_total
+        names = self._ur10e_stacked_tacsl_names
+        if (
+            self._shadow_render_sensors_enabled
+            and VisuoTactileSensorData is not None
+            and n_sens > 0
+            and all(name in self.scene.sensors for name in names)
+        ):
+            chunks_n: list[torch.Tensor] = []
+            chunks_s: list[torch.Tensor] = []
+            chunks_rgb: list[torch.Tensor] = []
+            ok_n = ok_s = ok_rgb = True
+            for name in names:
+                sensor = self.scene[name]
+                try:
+                    td = sensor.data
+                except RuntimeError as e:
+                    if "source and destination dtypes match" in str(e):
+                        try:
+                            sdata = getattr(sensor, "_data", None)
+                            if sdata is not None and hasattr(sdata, "tactile_rgb_image"):
+                                tri = getattr(sdata, "tactile_rgb_image")
+                                if torch.is_tensor(tri) and tri.dtype != torch.uint8:
+                                    sdata.tactile_rgb_image = tri.to(torch.uint8)
+                            td = sensor.data
+                        except Exception:
+                            ok_n = ok_s = ok_rgb = False
+                            continue
+                    else:
+                        ok_n = ok_s = ok_rgb = False
+                        continue
+                if td.tactile_normal_force is not None:
+                    chunks_n.append(
+                        torch.nan_to_num(td.tactile_normal_force, nan=0.0, posinf=0.0, neginf=0.0)
+                    )
+                else:
+                    ok_n = False
+                if td.tactile_shear_force is not None:
+                    chunks_s.append(
+                        torch.nan_to_num(td.tactile_shear_force, nan=0.0, posinf=0.0, neginf=0.0)
+                    )
+                else:
+                    ok_s = False
+                if td.tactile_rgb_image is not None:
+                    chunks_rgb.append(td.tactile_rgb_image)
+                else:
+                    ok_rgb = False
+
+            if ok_n and len(chunks_n) == n_sens:
+                self.tactile_normal_force = torch.cat(chunks_n, dim=1)
+            else:
+                self.tactile_normal_force = torch.zeros((self.num_envs, flat_n), device=self.device)
+
+            if ok_s and len(chunks_s) == n_sens:
+                self.tactile_shear_force = torch.cat(chunks_s, dim=1)
+            else:
+                self.tactile_shear_force = torch.zeros((self.num_envs, flat_s), device=self.device)
+
+            if ok_rgb and len(chunks_rgb) == n_sens:
+                self.tactile_rgb_image = torch.cat(chunks_rgb, dim=1)
+                if self.tactile_rgb_image.max() > 1.0:
+                    self.tactile_rgb_image = self.tactile_rgb_image / 255.0
+            else:
+                self.tactile_rgb_image = torch.zeros((self.num_envs, flat_rgb), device=self.device)
+        else:
+            self.tactile_normal_force = torch.zeros((self.num_envs, flat_n), device=self.device)
+            self.tactile_shear_force = torch.zeros((self.num_envs, flat_s), device=self.device)
+            self.tactile_rgb_image = torch.zeros((self.num_envs, flat_rgb), device=self.device)
+
+    def _apply_visual_disturbance(self) -> None:
+        """Corrupt ``third_person_camera`` RGB in-place; fields are optional and read via ``getattr``."""
+        if not getattr(self.cfg, "visual_disturbance", False):
+            return
+        if "third_person_camera" not in self.scene.sensors:
+            return
+        cam = self.scene["third_person_camera"]
+        if "rgb" not in cam.data.output:
+            return
+        rgb = cam.data.output["rgb"]
+        if rgb is None or rgb.numel() == 0:
+            return
+        dtype = rgb.dtype
+        device = rgb.device
+        need_denorm = bool(rgb.max() > 1.0)
+        img = rgb.float() / 255.0 if need_denorm else rgb.float()
+
+        vtype = getattr(self.cfg, "visual_disturbance_type", "gaussian_noise")
+        if vtype == "gaussian_noise":
+            std = float(getattr(self.cfg, "visual_disturbance_noise_std", 0.08))
+            img = img + std * torch.randn_like(img, device=device, dtype=img.dtype)
+        elif vtype == "gaussian_blur":
+            k = int(getattr(self.cfg, "visual_disturbance_blur_kernel_size", 5))
+            sigma = float(getattr(self.cfg, "visual_disturbance_blur_sigma", 1.0))
+            if k % 2 == 0:
+                k += 1
+            x = torch.arange(k, device=device, dtype=img.dtype) - k // 2
+            g = torch.exp(-(x**2) / (2 * sigma**2))
+            g = g / g.sum()
+            kernel_2d = (g.unsqueeze(0) * g.unsqueeze(1)).reshape(1, 1, k, k)
+            _n, _h, _w, c = img.shape
+            img = img.permute(0, 3, 1, 2)
+            kernel = kernel_2d.expand(c, 1, k, k)
+            img = F.conv2d(img, kernel, padding=k // 2, groups=c)
+            img = img.permute(0, 2, 3, 1)
+        else:
+            return
+
+        img = torch.clamp(img, 0.0, 1.0)
+        if need_denorm:
+            rgb.copy_(img.mul(255.0).to(dtype))
+        else:
+            rgb.copy_(img.to(dtype))
+
+    def _sync_tacsl_tactile_and_third_person_visual(self) -> None:
+        """Call this at the end of task ``_compute_intermediate_values`` when needed."""
+        self._update_stacked_tacsl_tactile_from_scene()
+        self._apply_visual_disturbance()
+
+    def _build_record_dict(self) -> dict[str, torch.Tensor]:
+        """Build the canonical single-arm record schema for collection/deployment."""
+
+        self._update_stacked_tacsl_tactile_from_scene()
+        record: dict[str, torch.Tensor] = {"joint_pos": self.robot.data.joint_pos.detach().cpu()}
+
+        sensor_names = self._ur10e_stacked_tacsl_names
+        tactile_poses: list[torch.Tensor] = []
+        for name in sensor_names:
+            if name not in self.scene.sensors:
+                tactile_poses = []
+                break
+            sensor = self.scene[name]
+            data = sensor.data
+            pos_w = getattr(data, "pos_w", getattr(sensor, "pos_w", None))
+            quat_w = getattr(data, "quat_w_ros", None)
+            if quat_w is None:
+                quat_w = getattr(data, "quat_w", getattr(sensor, "quat_w", None))
+            if pos_w is None or quat_w is None:
+                tactile_poses = []
+                break
+            tactile_poses.append(torch.cat((pos_w - self.scene.env_origins, quat_w), dim=-1))
+        if not tactile_poses and sensor_names and all(name in self.scene.sensors for name in sensor_names):
+            # TacSL V2 may not expose pose tensors; fall back to physical fingertip rigid-body poses.
+            body_names = [str(name).lower() for name in self.robot.body_names]
+            for sensor_name in sensor_names:
+                finger = str(sensor_name).rsplit("_", maxsplit=1)[-1].lower()
+                search_terms = (f"{finger}distal", f"{finger}_tip", finger)
+                body_idx = next(
+                    (
+                        index
+                        for term in search_terms
+                        for index, body_name in enumerate(body_names)
+                        if term in body_name
+                    ),
+                    None,
+                )
+                if body_idx is None:
+                    tactile_poses = []
+                    break
+                tactile_poses.append(
+                    torch.cat(
+                        (
+                            self.robot.data.body_pos_w[:, body_idx] - self.scene.env_origins,
+                            self.robot.data.body_quat_w[:, body_idx],
+                        ),
+                        dim=-1,
+                    )
+                )
+        if tactile_poses:
+            record["tactile_pos"] = torch.stack(tactile_poses, dim=1).detach().cpu()
+
+        n = self._ur10e_stacked_n
+        if n > 0:
+            rows, cols = self.tactile_array_size
+            record["tactile_normal_force"] = (
+                self.tactile_normal_force.reshape(self.num_envs, n, rows, cols, 1).detach().cpu()
+            )
+            record["tactile_shear_force"] = (
+                self.tactile_shear_force.reshape(self.num_envs, n, rows, cols, 2).detach().cpu()
+            )
+            record["tactile_rgb_image"] = (
+                self.tactile_rgb_image.reshape(
+                    self.num_envs, n, self.tactile_image_height, self.tactile_image_width, 3
+                )
+                .mul(255.0)
+                .clamp(0.0, 255.0)
+                .to(torch.uint8)
+                .detach()
+                .cpu()
+            )
+
+        for camera_name in ("third_person_camera", "twist_camera"):
+            if camera_name not in self.scene.sensors:
+                continue
+            camera = self.scene[camera_name]
+            rgb = camera.data.output.get("rgb", None)
+            if rgb is not None:
+                record[camera_name] = rgb.detach().cpu()
+            quat_w = getattr(camera.data, "quat_w_ros", None)
+            if quat_w is None:
+                quat_w = getattr(camera.data, "quat_w", None)
+            pos_w = getattr(camera.data, "pos_w", None)
+            if pos_w is not None and quat_w is not None:
+                record[f"{camera_name}_pos"] = (
+                    torch.cat((pos_w - self.scene.env_origins, quat_w), dim=-1).unsqueeze(1).detach().cpu()
+                )
+        return record
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -153,54 +438,39 @@ class UR10eShadowHandDirectBaseEnv(DirectRLEnv):
             # Create third-person camera AFTER cloning environments.
             if "third_person_camera" not in self.scene.sensors:
                 cam_cfg = build_ur10e_shadowhand_third_person_camera_cfg()
+                if hasattr(self.cfg, "third_person_camera_pos"):
+                    cam_cfg.offset.pos = tuple(getattr(self.cfg, "third_person_camera_pos"))
+                if hasattr(self.cfg, "third_person_camera_rot"):
+                    cam_cfg.offset.rot = tuple(getattr(self.cfg, "third_person_camera_rot"))
+                if hasattr(self.cfg, "third_person_camera_width"):
+                    cam_cfg.width = int(getattr(self.cfg, "third_person_camera_width"))
+                if hasattr(self.cfg, "third_person_camera_height"):
+                    cam_cfg.height = int(getattr(self.cfg, "third_person_camera_height"))
                 self.scene.sensors["third_person_camera"] = cam_cfg.class_type(cam_cfg)
 
-            # Create TacSL sensors AFTER cloning environments so sensor initialization sees all env prims.
-            if isinstance(self.cfg.scene, UR10eShadowHandTacSLSceneCfg):
+            scene_has_tactile = isinstance(self.cfg.scene, UR10eShadowHandTacSLSceneCfg) or hasattr(
+                type(self.cfg.scene), "_tactile_params"
+            )
+            if scene_has_tactile:
                 sensor_cfgs = build_ur10e_shadowhand_tactile_sensor_cfgs(self.cfg.scene)
                 for name, sensor_cfg in sensor_cfgs.items():
                     if name not in self.scene.sensors:
-                        # InteractiveScene expects cfg.class_type(cfg) objects in its sensor dict.
                         self.scene.sensors[name] = sensor_cfg.class_type(sensor_cfg)
 
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-        if getattr(self.cfg, "enable_cameras", False):
-            self._maybe_init_tacsl_nominal_render()
-
-    def _maybe_init_tacsl_nominal_render(self) -> None:
-        """Nominal camera render for TacSL (``get_initial_render``) when ``enable_cameras`` is True.
-
-        TacSL / Forge reference: call after ``sim.reset()`` so GPU handles and buffers are valid before the first
-        ``scene.update()``. ``DirectRLEnv`` will reset again after ``_setup_scene()``; an extra reset here matches
-        :class:`ForgeEnv` and avoids relying on external scripts for initialization.
-        """
-        if not isinstance(self.cfg.scene, UR10eShadowHandTacSLSceneCfg):
-            return
-        from isaaclab.sim.utils.stage import use_stage
-
-        with use_stage(self.sim.get_initial_stage()):
-            self.sim.reset()
-
-        for name in _TACSL_SENSOR_NAMES:
-            if name not in self.scene.sensors:
-                continue
-            sensor = self.scene[name]
-            if not getattr(sensor.cfg, "enable_camera_tactile", False):
-                continue
-            try:
-                sensor.get_initial_render()
-            except Exception as e:
-                print(f"[WARN] TacSL get_initial_render failed for {name}: {e}")
-
     def _setup_task_scene(self) -> None:
         raise NotImplementedError
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
+        if not self._use_rl_control:
+            return
         self.actions = torch.clamp(actions.to(device=self.device), -1.0, 1.0)
 
     def _apply_action(self) -> None:
+        if not self._use_rl_control:
+            return
         joint_ids = self.actuated_dof_indices
         self.cur_targets[:, joint_ids] = _scale(
             self.actions,
@@ -219,6 +489,33 @@ class UR10eShadowHandDirectBaseEnv(DirectRLEnv):
         self.prev_targets[:, joint_ids] = self.cur_targets[:, joint_ids]
 
         self.robot.set_joint_position_target(self.cur_targets[:, joint_ids], joint_ids=joint_ids)
+
+    def apply_joint_targets(self, joint_pos: torch.Tensor) -> None:
+        """Apply absolute full-joint or actuated-joint targets for offline-policy playback."""
+
+        targets = joint_pos.to(device=self.device, dtype=self.robot.data.joint_pos.dtype)
+        if targets.ndim == 1:
+            targets = targets.unsqueeze(0)
+        if targets.shape[0] == 1 and self.num_envs > 1:
+            targets = targets.expand(self.num_envs, -1)
+        if targets.shape[0] != self.num_envs:
+            raise ValueError(f"Expected {self.num_envs} target rows, got {targets.shape[0]}.")
+
+        if targets.shape[-1] == self.num_robot_dofs:
+            joint_ids = list(range(self.num_robot_dofs))
+        elif targets.shape[-1] == len(self.actuated_dof_indices):
+            joint_ids = self.actuated_dof_indices
+        else:
+            raise ValueError(
+                f"Joint target dim must be full={self.num_robot_dofs} or actuated={len(self.actuated_dof_indices)}, "
+                f"got {targets.shape[-1]}."
+            )
+        lower = self.robot_dof_lower_limits[:, joint_ids]
+        upper = self.robot_dof_upper_limits[:, joint_ids]
+        targets = saturate(targets, lower, upper)
+        self.cur_targets[:, joint_ids] = targets
+        self.prev_targets[:, joint_ids] = targets
+        self.robot.set_joint_position_target(targets, joint_ids=joint_ids)
 
     def _reset_robot_joints(
         self,

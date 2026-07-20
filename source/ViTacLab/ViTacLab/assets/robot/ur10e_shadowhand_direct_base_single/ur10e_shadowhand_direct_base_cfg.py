@@ -11,6 +11,20 @@ from isaaclab_assets.sensors import GELSIGHT_R15_CFG
 from ViTacLab.assets.sensor.tacsl_sensor import VisuoTactileSensorV2Cfg as VisuoTactileSensorCfg
 #from ViTacLab.assets.sensor.tacsl_sensor import VisuoTactileSensorCfg
 
+# Canonical ordered scene keys and matching robot finger suffixes. Task
+# environments, collectors, and policy record adapters must preserve this
+# order so tactile tensors have stable sensor semantics across workflows.
+UR10E_SHADOWHAND_TACTILE_SENSOR_SPECS: tuple[tuple[str, str], ...] = (
+    ("tactile_sensor_ff", "ff"),
+    ("tactile_sensor_lf", "lf"),
+    ("tactile_sensor_mf", "mf"),
+    ("tactile_sensor_rf", "rf"),
+    ("tactile_sensor_th", "th"),
+)
+UR10E_SHADOWHAND_TACTILE_SENSOR_NAMES: tuple[str, ...] = tuple(
+    name for name, _finger in UR10E_SHADOWHAND_TACTILE_SENSOR_SPECS
+)
+
 UR10E_SHADOWHAND_LEFT_CFG: ArticulationCfg = ArticulationCfg(
     prim_path="/World/envs/env_.*/Robot",
     spawn=sim_utils.UsdFileCfg(
@@ -26,6 +40,9 @@ UR10E_SHADOWHAND_LEFT_CFG: ArticulationCfg = ArticulationCfg(
             max_contact_impulse=1e32,
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            # UR10e is a bolted-down tabletop manipulator. Keep this explicit
+            # even if a particular USD already authors a fixed root.
+            fix_root_link=True,
             enabled_self_collisions=True,
             solver_position_iteration_count=8,
             solver_velocity_iteration_count=0,
@@ -194,11 +211,5 @@ def build_ur10e_shadowhand_tactile_sensor_cfgs(scene_cfg: UR10eShadowHandTacSLSc
             visualize_sdf_closest_pts=False,
         )
 
-    return {
-        "tactile_sensor_ff": _mk("ff"),
-        "tactile_sensor_lf": _mk("lf"),
-        "tactile_sensor_mf": _mk("mf"),
-        "tactile_sensor_rf": _mk("rf"),
-        "tactile_sensor_th": _mk("th"),
-    }
+    return {name: _mk(finger) for name, finger in UR10E_SHADOWHAND_TACTILE_SENSOR_SPECS}
 
