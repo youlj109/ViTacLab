@@ -39,6 +39,9 @@ class VisuoTactileSensorData:
     tactile_height_map_corrected: torch.Tensor | None = None
     """Stage-C force-corrected render height map. Shape is (num_instances, height, width)."""
 
+    tactile_marker_displacement: torch.Tensor | None = None
+    """FOTS-style marker displacements in pixels (dx, dy). Shape is (num_instances, num_markers, 2)."""
+
     # Force field tactile data
     tactile_points_pos_w: torch.Tensor | None = None
     """Positions of tactile points in world frame. Shape is (num_instances, num_tactile_points, 3)."""

@@ -16,6 +16,8 @@ import torch
 
 from isaaclab.utils.assets import retrieve_file_path
 
+from .visuotactile_marker import MarkerSimulator
+
 logger = logging.getLogger(__name__)
 
 
@@ -130,7 +132,16 @@ class GelsightRender:
                 f"Data dir: {self.cfg.sensor_data_dir_name}"
             )
 
+        image_height = self.cfg.image_height
+        image_width = self.cfg.image_width
+
         self.background = cv2.cvtColor(cv2.imread(bg_path), cv2.COLOR_BGR2RGB)
+        if self.background.shape[0] != image_height or self.background.shape[1] != image_width:
+            self.background = cv2.resize(
+                self.background,
+                (image_width, image_height),
+                interpolation=cv2.INTER_AREA,
+            )
 
         # Load calibration data directly
         calib_data = np.load(calib_path)
@@ -138,8 +149,6 @@ class GelsightRender:
         calib_grad_g = calib_data["grad_g"]
         calib_grad_b = calib_data["grad_b"]
 
-        image_height = self.cfg.image_height
-        image_width = self.cfg.image_width
         num_bins = self.cfg.num_bins
         [xx, yy] = np.meshgrid(range(image_width), range(image_height))
         xf = xx.flatten()
@@ -163,23 +172,66 @@ class GelsightRender:
         # Pre-allocate buffer for RGB output (will be resized if needed)
         self._sim_img_rgb_buffer = torch.empty((1, image_height, image_width, 3), device=self.device)
 
+        self._marker_sim: MarkerSimulator | None = None
+        self._last_marker_displacements: torch.Tensor | None = None
+        if bool(self.cfg.enable_marker_simulation) and self.cfg.marker_pattern != "none":
+            pattern = str(self.cfg.marker_pattern)
+            rest_override = None
+            rest_file = str(getattr(self.cfg, "marker_rest_path", "") or "").strip()
+            if rest_file:
+                rest_path = self._get_render_data(self.cfg.sensor_data_dir_name, rest_file)
+                if rest_path and os.path.isfile(rest_path):
+                    rest_override = np.load(rest_path).astype(np.float32)
+            self._marker_sim = MarkerSimulator(
+                pattern=pattern,  # type: ignore[arg-type]
+                image_height=image_height,
+                image_width=image_width,
+                device=self.device,
+                lambda_d=float(self.cfg.marker_lambda_d),
+                displacement_gain=float(self.cfg.marker_displacement_gain),
+                shear_gain=float(self.cfg.marker_shear_gain),
+                deadband_mm=float(self.cfg.marker_deadband_mm),
+                blend_alpha=float(self.cfg.marker_blend_alpha),
+                max_displacement_px=float(getattr(self.cfg, "marker_max_displacement_px", 25.0)),
+                rest_xy_override=rest_override,
+            )
+            logger.info("Gelsight marker simulation enabled (pattern=%s, M=%d).", pattern, self._marker_sim.num_markers)
+
         logger.info("Gelsight renderer initialization done!")
 
-    def render(self, height_map: torch.Tensor) -> torch.Tensor:
+    @property
+    def num_markers(self) -> int:
+        """Number of simulated markers (0 if disabled)."""
+        if self._marker_sim is None:
+            return 0
+        return self._marker_sim.num_markers
+
+    @property
+    def last_marker_displacements(self) -> torch.Tensor | None:
+        """Last batch marker displacements from :meth:`render`, shape (N, M, 2) in pixels."""
+        return self._last_marker_displacements
+
+    def render(
+        self,
+        height_map: torch.Tensor,
+        *,
+        marker_height_map: torch.Tensor | None = None,
+        marker_shear_map: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Render the height map using the GelSight sensor.
 
         Args:
-            height_map: Input height map tensor. Shape is (N, H, W).
+            height_map: Input height map tensor (m). Shape is (N, H, W).
+            marker_height_map: Optional separate height (m) for FOTS markers; defaults to ``height_map``.
+            marker_shear_map: Optional ViT shear displacement field in pixels, shape (N, H, W, 2).
 
         Returns:
             Rendered image tensor. Shape is (N, H, W, 3).
         """
-        height_map = height_map.clone()
-        height_map[torch.abs(height_map) < 1e-6] = 0  # remove minor artifact
-        height_map = height_map * -1000.0
-        height_map /= self.cfg.mm_per_pixel
-
-        height_map = self._gaussian_filtering(height_map.unsqueeze(-1), self.kernel).squeeze(-1)
+        taxim_scale = float(getattr(self.cfg, "taxim_height_scale", 1.0))
+        if abs(taxim_scale - 1.0) > 1e-9:
+            height_map = height_map * taxim_scale
+        height_map = self._height_m_to_taxim_mm(height_map)
 
         grad_mag, grad_dir = self._generate_normals(height_map)
 
@@ -208,7 +260,31 @@ class GelsightRender:
         # write tactile image
         sim_img = sim_img_rgb + self.background_tensor  # /255.0
         sim_img = torch.clip(sim_img, 0, 255, out=sim_img).to(torch.uint8)
+
+        if self._marker_sim is not None and self._marker_sim.enabled:
+            raw_markers = marker_height_map if marker_height_map is not None else height_map
+            marker_scale = float(getattr(self.cfg, "marker_height_scale", 1.0))
+            taxim_max = float(getattr(self.cfg, "marker_height_taxim_mm_max", 100.0))
+            height_for_markers = self._height_m_to_taxim_mm(raw_markers * marker_scale).abs().clamp(
+                min=0.0, max=taxim_max
+            )
+            sim_img, self._last_marker_displacements = self._marker_sim.composite_batch(
+                sim_img,
+                height_for_markers,
+                shear_disp_px_batch=marker_shear_map,
+            )
+        else:
+            self._last_marker_displacements = None
+
         return sim_img
+
+    def _height_m_to_taxim_mm(self, height_m: torch.Tensor) -> torch.Tensor:
+        """Convert penetration depth (m, >=0) to Taxim height-map mm units."""
+        h = height_m.clone()
+        h[torch.abs(h) < 1e-6] = 0
+        h = h * -1000.0
+        h /= self.cfg.mm_per_pixel
+        return self._gaussian_filtering(h.unsqueeze(-1), self.kernel).squeeze(-1)
 
     """
     Internal Helpers.

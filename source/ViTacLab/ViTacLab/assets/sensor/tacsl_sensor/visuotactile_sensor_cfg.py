@@ -97,6 +97,42 @@ class GelSightRenderCfg:
     mm_per_pixel: float = cast(float, MISSING)
     """Millimeters per pixel conversion factor for reconstructing 2D tactile image from the height map."""
 
+    taxim_height_scale: float = 1.0
+    """Scale penetration depth (m) before Taxim RGB synthesis (Task2 ``rgb_diff_scale``)."""
+
+    enable_marker_simulation: bool = False
+    """Whether to overlay FOTS-style marker motion on Taxim RGB (TacEx-compatible)."""
+
+    marker_pattern: str = "gelsight"
+    """Marker layout: ``gelsight`` (sparse black dots), ``xense`` (denser staggered black dots), or ``none``."""
+
+    marker_lambda_d: float = 0.0025
+    """Gaussian falloff for FOTS dilate displacement (1/pixel^2 scale)."""
+
+    marker_displacement_gain: float = 0.35
+    """Scale for normal-indentation marker displacement."""
+
+    marker_shear_gain: float = 8.0
+    """Scale for shear proxy from height-map gradient."""
+
+    marker_deadband_mm: float = 0.02
+    """Ignore height-map cells below this penetration (Taxim mm units) for marker contacts."""
+
+    marker_blend_alpha: float = 0.92
+    """Marker color blend weight when compositing onto Taxim RGB."""
+
+    marker_max_displacement_px: float = 25.0
+    """Clamp FOTS marker displacement magnitude (px) to avoid gradient blow-up at high resolution."""
+
+    marker_height_taxim_mm_max: float = 100.0
+    """Upper clamp on Taxim-mm height fed to FOTS markers (prevents silent saturation)."""
+
+    marker_height_scale: float = 1.0
+    """Scale penetration (m) before Taxim-mm conversion for FOTS markers only (RGB unchanged)."""
+
+    marker_rest_path: str = ""
+    """Optional filename (within sensor data dir) of lab-measured marker rest (M,2) pixel coords."""
+
 
 ##
 # Visuo-Tactile Sensor Configuration
@@ -256,6 +292,43 @@ class VisuoTactileSensorCfg(SensorBaseCfg):
     The final render height is ``(1-blend)*depth_delta + blend*force_delta`` and clamped to ``[0, +inf)``.
     Recommended range is ``[0, 1]``.
     """
+
+    force_height_max_m: float = 0.006
+    """Upper bound (m) on force-derived penetration used for Taxim RGB and marker height maps."""
+
+    marker_load_ref_fn_n: float = 0.72
+    """Reference PhysX normal force (N) for ViTacSim marker load scaling (advisor G110 ~0.72 N)."""
+
+    marker_load_scale_exponent: float = 0.5
+    """Exponent on ``(sparse_fn / marker_load_ref_fn_n)`` when scaling depth for markers."""
+
+    marker_depth_gamma: float = 1.0
+    """Superlinear exponent on depth (m) for FOTS markers at high PhysX load; >1 compresses saturation."""
+
+    marker_depth_gamma_low_load: float = 1.0
+    """Depth exponent at low load (keeps G010 markers above FOTS deadband when paired with ``marker_depth_gamma``)."""
+
+    marker_depth_gamma_load_t0: float = 0.35
+    """Load-scale pivot: below this use ``marker_depth_gamma_low_load``, above blend toward ``marker_depth_gamma``."""
+
+    marker_shear_from_force_field: bool = False
+    """When True (ViTacSim), add marker shear from ``tactile_shear_force`` scattered to the camera grid."""
+
+    marker_shear_force_gain: float = 3.0
+    """Pixel gain applied to ``tactile_shear_force`` when driving marker displacement."""
+
+    marker_shear_force_ref_n: float = 0.05
+    """Reference shear magnitude (N) mapped to ``marker_shear_force_gain`` pixels."""
+
+    tactile_uv_shift_px: tuple[float, float] = (0.0, 0.0)
+    """In-plane shift (du, dv) in pixels applied to height maps before Taxim render.
+
+    Lab advisor alignment: positive du samples from the right, positive dv from below,
+    moving the contact imprint toward the lab Xense image coordinates.
+    """
+
+    normal_correction_max_stiffness_ratio: float = 0.0
+    """Cap on ``F_n/(d+eps)`` in local stiffness estimation. ``<=0`` disables (uses ``50 * k_ref``)."""
 
     # Force field physics parameters
     normal_contact_stiffness: float = 1e4

@@ -281,6 +281,13 @@ class VisuoTactileSensor(SensorBase):
         self._data.tactile_height_map_corrected = torch.zeros(
             (self._num_envs, self.cfg.camera_cfg.height, self.cfg.camera_cfg.width), device=self._device
         )
+        n_markers = int(self._tactile_rgb_render.num_markers)
+        if n_markers > 0:
+            self._data.tactile_marker_displacement = torch.zeros(
+                (self._num_envs, n_markers, 2), device=self._device, dtype=torch.float32
+            )
+        else:
+            self._data.tactile_marker_displacement = None
 
         logger.info("Camera-based tactile sensing initialized.")
 
@@ -618,6 +625,7 @@ class VisuoTactileSensor(SensorBase):
             "tangential_speed": self._data.tactile_tangential_speed,
             "contact_mask": self._data.contact_mask,
             "slip_mask": self._data.slip_mask,
+            "marker_displacement": self._data.tactile_marker_displacement,
         }
 
         # Policy-ready packing: keep original tensors in tri_modal, and expose flattened tensors here.
@@ -675,6 +683,9 @@ class VisuoTactileSensor(SensorBase):
             self._data.tactile_depth_image[env_ids] = camera_data.output[depth_key][env_ids].clone()
             diff = self._nominal_tactile[depth_key][env_ids] - self._data.tactile_depth_image[env_ids]
             self._data.tactile_rgb_image[env_ids] = self._tactile_rgb_render.render(diff.squeeze(-1))
+            marker_disp = self._tactile_rgb_render.last_marker_displacements
+            if self._data.tactile_marker_displacement is not None and marker_disp is not None:
+                self._data.tactile_marker_displacement[env_ids] = marker_disp
 
     #########################################################################################
     # Force field tactile sensing

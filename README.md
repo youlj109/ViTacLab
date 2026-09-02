@@ -15,6 +15,52 @@ ViTacLab is an Isaac Lab **extension** that lives **outside** the upstream `Isaa
 
 ---
 
+## ViTacSim advisor release (Xense 400×700 + M2 nut)
+
+> **Stable snapshot:** branch [`release/advisor-xense-v0.1`](https://github.com/youlj109/ViTacLab/tree/release/advisor-xense-v0.1) · tag [`v0.1-advisor-xense`](https://github.com/youlj109/ViTacLab/releases/tag/v0.1-advisor-xense)
+
+Code-only release: **lab tactile videos / polycalib / fitted params are not in Git** (see below).
+
+### Prerequisites
+
+- [Isaac Lab](https://isaac-sim.github.io/IsaacLab/) + Isaac Sim (tested with conda env `env_isaaclab_510test`)
+- `python -m pip install -e source/ViTacLab`
+- Lab data placed locally under `data/calibration/tactile/` (gitignored): advisor mp4, `correct.zip`, ball-calib video
+- Render assets installed into `source/ViTacLab/ViTacLab/assets/sensor/tacsl_sensor/xense_lab_data/` — see [`xense_lab_data/README.md`](source/ViTacLab/ViTacLab/assets/sensor/tacsl_sensor/xense_lab_data/README.md)
+
+Optional: external [Taxim](https://github.com/TacTip/Taxim) repo for polycalib fitting (`TAXIM_REPO=...` in install scripts).
+
+### Reproduce (Task 2 → Task 3)
+
+```bash
+# 1) Import real frames + bg/marker_rest into xense_lab_data/
+python3 scripts/calibration/import_advisor_tactile_videos.py --install-bg
+
+# 2) Sim NF sweep (TacSL + ViTacSim, advisor M2 nut G010–G210)
+bash bash_command/run_vitacsim_calibration_sweep_dual.sh
+
+# 3) Joint RGB + marker fit → data/calibration/tactile/fitted_params.json
+bash bash_command/run_task2_advisor_calibration.sh
+
+# 4) Re-sweep with fitted params, then validation panels
+SKIP_EXISTING=0 FITTED_PARAMS=data/calibration/tactile/fitted_params.json \
+  bash bash_command/run_vitacsim_calibration_sweep_dual.sh
+bash bash_command/run_task3_advisor_validation.sh
+```
+
+**Outputs (local):** `logs/vitacsim_validation/task3/panel_nf_three_way.png`, `TASK3_VALIDATION_REPORT.md`
+
+### Documentation
+
+| Topic | File |
+|-------|------|
+| Calibration protocol (Task 2) | [`docs/VITACSIM_CALIBRATION.md`](docs/VITACSIM_CALIBRATION.md) |
+| Marker simulation (FOTS) | [`docs/VITACSIM_MARKER_SIMULATION.md`](docs/VITACSIM_MARKER_SIMULATION.md) |
+| ViTacSim V1/V2 principles | [`docs/VITACSIM_PRINCIPLES.md`](docs/VITACSIM_PRINCIPLES.md) |
+| PhysX validation | [`docs/VITACSIM_PHYSX_VALIDATION.md`](docs/VITACSIM_PHYSX_VALIDATION.md) |
+
+---
+
 ## Repository map
 
 | Path | Description |
@@ -38,6 +84,7 @@ ViTacLab is an Isaac Lab **extension** that lives **outside** the upstream `Isaa
 | Video teleop (calibration, sender/receiver, UR10e task) | [`scripts/teleoperation/video_teleop/QUICK_START.md`](scripts/teleoperation/video_teleop/QUICK_START.md), [`scripts/teleoperation/video_teleop/README.md`](scripts/teleoperation/video_teleop/README.md) |
 | `video_teleop` package internals | [`source/video_teleop/docs/README.md`](source/video_teleop/docs/README.md), [`source/video_teleop/docs/ENGINEERING_SUMMARY.md`](source/video_teleop/docs/ENGINEERING_SUMMARY.md) |
 | Headless training vs `enable_cameras` | [`docs/enable_cameras_headless_rl.md`](docs/enable_cameras_headless_rl.md) |
+| **ViTacSim Xense calibration & validation** | [`docs/VITACSIM_CALIBRATION.md`](docs/VITACSIM_CALIBRATION.md) (see **Advisor release** above) |
 
 ---
 

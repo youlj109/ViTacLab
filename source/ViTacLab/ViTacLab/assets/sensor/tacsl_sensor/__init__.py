@@ -5,6 +5,7 @@
 
 """TacSL VisuoTactile sensors (V1 SDF + V2 depth-based) — ViTacLab local copy."""
 
+from .visuotactile_marker import MarkerSimulator, MarkerPattern, PATTERN_SPECS
 from .visuotactile_sensor import VisuoTactileSensor
 from .visuotactile_sensor_cfg import GelSightRenderCfg, VisuoTactileSensorCfg
 from .visuotactile_sensor_data import VisuoTactileSensorData
