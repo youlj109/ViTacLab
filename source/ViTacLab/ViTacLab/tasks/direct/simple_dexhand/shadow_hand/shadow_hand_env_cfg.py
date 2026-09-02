@@ -1,0 +1,477 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+
+import isaaclab.envs.mdp as mdp
+import isaaclab.sim as sim_utils
+from isaaclab.assets import ArticulationCfg, RigidObjectCfg
+from isaaclab.envs import DirectRLEnvCfg
+from isaaclab.managers import EventTermCfg as EventTerm
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.markers import VisualizationMarkersCfg
+from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sensors import TiledCameraCfg
+from isaaclab.sim import PhysxCfg, SimulationCfg
+from isaaclab.sim.spawners.materials.physics_materials_cfg import RigidBodyMaterialCfg
+from isaaclab.utils import configclass
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab.utils.noise import GaussianNoiseCfg, NoiseModelWithAdditiveBiasCfg
+
+from isaaclab_assets.robots.shadow_hand import SHADOW_HAND_CFG
+from isaaclab_assets.sensors import GELSIGHT_R15_CFG
+from ViTacLab.assets.sensor.tacsl_sensor import VisuoTactileSensorV2Cfg as VisuoTactileSensorCfg
+
+# Tactile: 5 GelSight sensors (ff, lf, mf, rf, th). For the Shadow Hand elastomer
+# geometry we obtain 490 valid ray-cast intersections, so we use a 14 x 35 grid.
+# tactile_normal_force: 5 * 490 = 2450, tactile_shear_force: 5 * 490 * 2 = 4900
+# tactile_rgb_image (optional): 5 * 240 * 320 * 3 = 1152000
+NUM_TACTILE_SENSORS = 5
+TACTILE_ARRAY_TOTAL = 14 * 35  # 490
+TACTILE_NORMAL_DIM = NUM_TACTILE_SENSORS * TACTILE_ARRAY_TOTAL  # 2450
+TACTILE_SHEAR_DIM = NUM_TACTILE_SENSORS * TACTILE_ARRAY_TOTAL * 2  # 4900
+TACTILE_IMAGE_PER_SENSOR = 240 * 320 * 3  # GELSIGHT_R15
+TACTILE_RGB_DIM = NUM_TACTILE_SENSORS * TACTILE_IMAGE_PER_SENSOR  # 1152000
+
+
+@configclass
+class EventCfg:
+    """Configuration for randomization."""
+
+    # -- robot
+    robot_physics_material = EventTerm(
+        func=mdp.randomize_rigid_body_material,
+        mode="reset",
+        min_step_count_between_reset=720,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "static_friction_range": (0.7, 1.3),
+            "dynamic_friction_range": (1.0, 1.0),
+            "restitution_range": (1.0, 1.0),
+            "num_buckets": 250,
+        },
+    )
+    robot_joint_stiffness_and_damping = EventTerm(
+        func=mdp.randomize_actuator_gains,
+        min_step_count_between_reset=720,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+            "stiffness_distribution_params": (0.75, 1.5),
+            "damping_distribution_params": (0.3, 3.0),
+            "operation": "scale",
+            "distribution": "log_uniform",
+        },
+    )
+    robot_joint_pos_limits = EventTerm(
+        func=mdp.randomize_joint_parameters,
+        min_step_count_between_reset=720,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+            "lower_limit_distribution_params": (0.00, 0.01),
+            "upper_limit_distribution_params": (0.00, 0.01),
+            "operation": "add",
+            "distribution": "gaussian",
+        },
+    )
+    robot_tendon_properties = EventTerm(
+        func=mdp.randomize_fixed_tendon_parameters,
+        min_step_count_between_reset=720,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", fixed_tendon_names=".*"),
+            "stiffness_distribution_params": (0.75, 1.5),
+            "damping_distribution_params": (0.3, 3.0),
+            "operation": "scale",
+            "distribution": "log_uniform",
+        },
+    )
+
+    # -- object
+    object_physics_material = EventTerm(
+        func=mdp.randomize_rigid_body_material,
+        min_step_count_between_reset=720,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("object"),
+            "static_friction_range": (0.7, 1.3),
+            "dynamic_friction_range": (1.0, 1.0),
+            "restitution_range": (1.0, 1.0),
+            "num_buckets": 250,
+        },
+    )
+    object_scale_mass = EventTerm(
+        func=mdp.randomize_rigid_body_mass,
+        min_step_count_between_reset=720,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("object"),
+            "mass_distribution_params": (0.5, 1.5),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+
+    # -- scene
+    reset_gravity = EventTerm(
+        func=mdp.randomize_physics_scene_gravity,
+        mode="interval",
+        is_global_time=True,
+        interval_range_s=(36.0, 36.0),  # time_s = num_steps * (decimation * dt)
+        params={
+            "gravity_distribution_params": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.4]),
+            "operation": "add",
+            "distribution": "gaussian",
+        },
+    )
+
+
+@configclass
+class ShadowHandSceneCfg(InteractiveSceneCfg):
+    """Scene with 5 GelSight tactile sensors (ff, lf, mf, rf, th)."""
+
+    tactile_sensor_ff = VisuoTactileSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/gelsight_ffdistal/elastomer/tactile_sensor",
+        history_length=0,
+        debug_vis=False,
+        render_cfg=GELSIGHT_R15_CFG,
+        enable_camera_tactile=True,
+        enable_force_field=True,
+        tactile_array_size=(20, 25),
+        tactile_margin=0.005,
+        contact_object_prim_path_expr="/World/envs/env_.*/object",
+        normal_contact_stiffness=1.0,
+        friction_coefficient=2.0,
+        tangential_stiffness=0.1,
+        camera_cfg=TiledCameraCfg(
+            prim_path="/World/envs/env_.*/Robot/gelsight_ffdistal/elastomer_tip/cam",
+            height=GELSIGHT_R15_CFG.image_height,
+            width=GELSIGHT_R15_CFG.image_width,
+            data_types=["distance_to_image_plane"],
+            spawn=None,
+        ),
+        trimesh_vis_tactile_points=False,
+        visualize_sdf_closest_pts=False,
+    )
+    tactile_sensor_lf = VisuoTactileSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/gelsight_lfdistal/elastomer/tactile_sensor",
+        history_length=0,
+        debug_vis=False,
+        render_cfg=GELSIGHT_R15_CFG,
+        enable_camera_tactile=True,
+        enable_force_field=True,
+        tactile_array_size=(20, 25),
+        tactile_margin=0.005,
+        contact_object_prim_path_expr="/World/envs/env_.*/object",
+        normal_contact_stiffness=1.0,
+        friction_coefficient=2.0,
+        tangential_stiffness=0.1,
+        camera_cfg=TiledCameraCfg(
+            prim_path="/World/envs/env_.*/Robot/gelsight_lfdistal/elastomer_tip/cam",
+            height=GELSIGHT_R15_CFG.image_height,
+            width=GELSIGHT_R15_CFG.image_width,
+            data_types=["distance_to_image_plane"],
+            spawn=None,
+        ),
+        trimesh_vis_tactile_points=False,
+        visualize_sdf_closest_pts=False,
+    )
+    tactile_sensor_mf = VisuoTactileSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/gelsight_mfdistal/elastomer/tactile_sensor",
+        history_length=0,
+        debug_vis=False,
+        render_cfg=GELSIGHT_R15_CFG,
+        enable_camera_tactile=True,
+        enable_force_field=True,
+        tactile_array_size=(20, 25),
+        tactile_margin=0.005,
+        contact_object_prim_path_expr="/World/envs/env_.*/object",
+        normal_contact_stiffness=1.0,
+        friction_coefficient=2.0,
+        tangential_stiffness=0.1,
+        camera_cfg=TiledCameraCfg(
+            prim_path="/World/envs/env_.*/Robot/gelsight_mfdistal/elastomer_tip/cam",
+            height=GELSIGHT_R15_CFG.image_height,
+            width=GELSIGHT_R15_CFG.image_width,
+            data_types=["distance_to_image_plane"],
+            spawn=None,
+        ),
+        trimesh_vis_tactile_points=False,
+        visualize_sdf_closest_pts=False,
+    )
+    tactile_sensor_rf = VisuoTactileSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/gelsight_rfdistal/elastomer/tactile_sensor",
+        history_length=0,
+        debug_vis=False,
+        render_cfg=GELSIGHT_R15_CFG,
+        enable_camera_tactile=True,
+        enable_force_field=True,
+        tactile_array_size=(20, 25),
+        tactile_margin=0.005,
+        contact_object_prim_path_expr="/World/envs/env_.*/object",
+        normal_contact_stiffness=1.0,
+        friction_coefficient=2.0,
+        tangential_stiffness=0.1,
+        camera_cfg=TiledCameraCfg(
+            prim_path="/World/envs/env_.*/Robot/gelsight_rfdistal/elastomer_tip/cam",
+            height=GELSIGHT_R15_CFG.image_height,
+            width=GELSIGHT_R15_CFG.image_width,
+            data_types=["distance_to_image_plane"],
+            spawn=None,
+        ),
+        trimesh_vis_tactile_points=False,
+        visualize_sdf_closest_pts=False,
+    )
+    tactile_sensor_th = VisuoTactileSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/gelsight_thdistal/elastomer/tactile_sensor",
+        history_length=0,
+        debug_vis=False,
+        render_cfg=GELSIGHT_R15_CFG,
+        enable_camera_tactile=True,
+        enable_force_field=True,
+        tactile_array_size=(20, 25),
+        tactile_margin=0.005,
+        contact_object_prim_path_expr="/World/envs/env_.*/object",
+        normal_contact_stiffness=1.0,
+        friction_coefficient=2.0,
+        tangential_stiffness=0.1,
+        camera_cfg=TiledCameraCfg(
+            prim_path="/World/envs/env_.*/Robot/gelsight_thdistal/elastomer_tip/cam",
+            height=GELSIGHT_R15_CFG.image_height,
+            width=GELSIGHT_R15_CFG.image_width,
+            data_types=["distance_to_image_plane"],
+            spawn=None,
+        ),
+        trimesh_vis_tactile_points=False,
+        visualize_sdf_closest_pts=False,
+    )
+
+
+@configclass
+class ShadowHandEnvCfg(DirectRLEnvCfg):
+    # env
+    decimation = 2
+    episode_length_s = 10.0
+    action_space = 20
+    observation_space = 157  # (full)
+    state_space = 0
+    asymmetric_obs = False
+    obs_type = "full"
+
+    # simulation
+    sim: SimulationCfg = SimulationCfg(
+        dt=1 / 120,
+        render_interval=decimation,
+        physics_material=RigidBodyMaterialCfg(
+            static_friction=1.0,
+            dynamic_friction=1.0,
+        ),
+        physx=PhysxCfg(
+            bounce_threshold_velocity=0.2,
+        ),
+    )
+    # robot
+    _shadow_hand_spawn = SHADOW_HAND_CFG.spawn.replace(
+        usd_path="source/ViTacLab/ViTacLab/assets/data/Robots/ShadowHand/shadow_hand_withtac.usd",
+        collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.001, rest_offset=-0.001)
+    )
+    robot_cfg: ArticulationCfg = SHADOW_HAND_CFG.replace(prim_path="/World/envs/env_.*/Robot").replace(
+        init_state=ArticulationCfg.InitialStateCfg(
+            pos=(0.0, 0.0, 0.5),
+            rot=(1.0, 0.0, 0.0, 0.0),
+            joint_pos={".*": 0.0},
+        )
+    ).replace(spawn=_shadow_hand_spawn)
+    actuated_joint_names = [
+        "robot0_WRJ1",
+        "robot0_WRJ0",
+        "robot0_FFJ3",
+        "robot0_FFJ2",
+        "robot0_FFJ1",
+        "robot0_MFJ3",
+        "robot0_MFJ2",
+        "robot0_MFJ1",
+        "robot0_RFJ3",
+        "robot0_RFJ2",
+        "robot0_RFJ1",
+        "robot0_LFJ4",
+        "robot0_LFJ3",
+        "robot0_LFJ2",
+        "robot0_LFJ1",
+        "robot0_THJ4",
+        "robot0_THJ3",
+        "robot0_THJ2",
+        "robot0_THJ1",
+        "robot0_THJ0",
+    ]
+    fingertip_body_names = [
+        "robot0_ffdistal",
+        "robot0_mfdistal",
+        "robot0_rfdistal",
+        "robot0_lfdistal",
+        "robot0_thdistal",
+    ]
+
+    # in-hand object
+    object_cfg: RigidObjectCfg = RigidObjectCfg(
+        prim_path="/World/envs/env_.*/object",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path="source/ViTacLab/ViTacLab/assets/data/Objects/DexCube/dex_cube_sdf.usd",
+            activate_contact_sensors=True,
+            #usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                kinematic_enabled=False,
+                disable_gravity=False,
+                linear_damping=0.0,
+                angular_damping=0.0,
+                max_linear_velocity=1000.0,
+                max_angular_velocity=3666.0,
+                enable_gyroscopic_forces=True,
+                solver_position_iteration_count=8,
+                solver_velocity_iteration_count=0,
+                sleep_threshold=0.005,
+                stabilization_threshold=0.0025,
+                max_depenetration_velocity=1000.0,
+                max_contact_impulse=1e32,
+            ),
+            mass_props=sim_utils.MassPropertiesCfg(density=567.0),
+            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.001, rest_offset=0.0),
+            semantic_tags=[("class", "cube")],
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.39, 0.6), rot=(1.0, 0.0, 0.0, 0.0)),
+    )
+    # held_asset: ArticulationCfg = ArticulationCfg(
+    #     prim_path="/World/envs/env_.*/HeldAsset",
+    #     spawn=sim_utils.UsdFileCfg(
+    #         usd_path=held_asset_cfg.usd_path,
+    #         activate_contact_sensors=True,
+    #         rigid_props=sim_utils.RigidBodyPropertiesCfg(
+    #             disable_gravity=True,
+    #             max_depenetration_velocity=5.0,
+    #             linear_damping=0.0,
+    #             angular_damping=0.0,
+    #             max_linear_velocity=1000.0,
+    #             max_angular_velocity=3666.0,
+    #             enable_gyroscopic_forces=True,
+    #             solver_position_iteration_count=192,
+    #             solver_velocity_iteration_count=1,
+    #             max_contact_impulse=1e32,
+    #         ),
+    #         mass_props=sim_utils.MassPropertiesCfg(mass=held_asset_cfg.mass),
+    #         collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
+    #     ),
+    #     init_state=ArticulationCfg.InitialStateCfg(
+    #         pos=(0.0, 0.4, 0.1), rot=(1.0, 0.0, 0.0, 0.0), joint_pos={}, joint_vel={}
+    #     ),
+    #     actuators={},
+    # )
+    # goal object
+    goal_object_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/goal_marker",
+        markers={
+            "goal": sim_utils.UsdFileCfg(
+                usd_path=f"source/ViTacLab/ViTacLab/assets/data/Objects/DexCube/dex_cube_sdf.usd",
+                scale=(1.0, 1.0, 1.0),
+            )
+        },
+    )
+    # scene
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(
+        num_envs=8192, env_spacing=0.75, replicate_physics=True, clone_in_fabric=True
+    )
+
+    # reset
+    reset_position_noise = 0.01  # range of position at reset
+    reset_dof_pos_noise = 0.2  # range of dof pos at reset
+    reset_dof_vel_noise = 0.0  # range of dof vel at reset
+    # reward scales
+    dist_reward_scale = -10.0
+    rot_reward_scale = 1.0
+    rot_eps = 0.1
+    action_penalty_scale = -0.0002
+    reach_goal_bonus = 250
+    fall_penalty = 0
+    fall_dist = 0.24
+    vel_obs_scale = 0.2
+    success_tolerance = 0.1
+    max_consecutive_success = 0
+    av_factor = 0.1
+    act_moving_average = 1.0
+    force_torque_obs_scale = 10.0
+
+
+@configclass
+class ShadowHandOpenAIEnvCfg(ShadowHandEnvCfg):
+    # env
+    decimation = 3
+    episode_length_s = 8.0
+    action_space = 20
+    observation_space = 42
+    state_space = 187
+    asymmetric_obs = True
+    obs_type = "openai"
+    # simulation
+    sim: SimulationCfg = SimulationCfg(
+        dt=1 / 60,
+        render_interval=decimation,
+        physics_material=RigidBodyMaterialCfg(
+            static_friction=1.0,
+            dynamic_friction=1.0,
+        ),
+        physx=PhysxCfg(
+            bounce_threshold_velocity=0.2,
+            gpu_max_rigid_contact_count=2**23,
+            gpu_max_rigid_patch_count=2**23,
+        ),
+    )
+    # reset
+    reset_position_noise = 0.01  # range of position at reset
+    reset_dof_pos_noise = 0.2  # range of dof pos at reset
+    reset_dof_vel_noise = 0.0  # range of dof vel at reset
+    # reward scales
+    dist_reward_scale = -10.0
+    rot_reward_scale = 1.0
+    rot_eps = 0.1
+    action_penalty_scale = -0.0002
+    reach_goal_bonus = 250
+    fall_penalty = -50
+    fall_dist = 0.24
+    vel_obs_scale = 0.2
+    success_tolerance = 0.4
+    max_consecutive_success = 50
+    av_factor = 0.1
+    act_moving_average = 0.3
+    force_torque_obs_scale = 10.0
+    # domain randomization config
+    events: EventCfg = EventCfg()
+    # at every time-step add gaussian noise + bias. The bias is a gaussian sampled at reset
+    action_noise_model: NoiseModelWithAdditiveBiasCfg = NoiseModelWithAdditiveBiasCfg(
+        noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.05, operation="add"),
+        bias_noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.015, operation="abs"),
+    )
+    # at every time-step add gaussian noise + bias. The bias is a gaussian sampled at reset
+    observation_noise_model: NoiseModelWithAdditiveBiasCfg = NoiseModelWithAdditiveBiasCfg(
+        noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.002, operation="add"),
+        bias_noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.0001, operation="abs"),
+    )
+
+
+@configclass
+class ShadowHandTactileEnvCfg(ShadowHandEnvCfg):
+    """Shadow Hand in-hand manipulation with 5 GelSight tactile sensors (force-only in obs)."""
+
+    # reduced_obs=True (default): 157-dim policy obs, no tactile (like forge reduce mode).
+    # reduced_obs=False: 7657-dim policy obs with tactile (like forge full mode).
+    reduced_obs: bool = True
+    # Default: reduced mode (157). When reduced_obs=False, env overrides to 7657 / 7687.
+    observation_space = 157
+    state_space = 187
+    # Scene with 5 tactile sensors.
+    # Use fewer envs by default than the non-tactile ShadowHandEnvCfg since
+    # each env carries 5 dense GelSight fields which are heavier to simulate
+    # and visualize. Users can still override num_envs via CLI / Hydra.
+    scene: ShadowHandSceneCfg = ShadowHandSceneCfg(
+        num_envs=128, env_spacing=0.75, replicate_physics=True, clone_in_fabric=True
+    )

@@ -1,0 +1,1 @@
+python scripts/rsl_rl/full_tra/record_full_tra_single.py   --task pickup  --enable-high-fidelity-scene   --high-fidelity-scene-scale 1.4 1.4 1.4   --high-fidelity-object-scale 1.2 1.2 1.2   --num_envs 1

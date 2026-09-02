@@ -1,0 +1,19 @@
+# IK + EE waypoints for Pour (load with --ik-config this file).
+# ``quat`` is Isaac Lab order: **wxyz** [w, x, y, z] (not xyzw).
+
+task: Isaac-UR10eShadowHand-PourDeformable-Direct-v0
+
+trajectory:
+  - pos: [0.55, 0.0, 0.38]
+    quat: [1.0, 0.0, 0.0, 0.0]
+    steps: 200
+  - pos: [0.58, 0.0, 0.48]
+    quat: [1.0, 0.0, 0.0, 0.0]
+    steps: 200
+  - pos: [0.58, 0.0, 0.48]
+    quat: [1.0, 0.0, 0.0, 0.0]
+    steps: -1
+
+ee_body: wrist_3_link
+ik_method: dls
+ik_lambda: null

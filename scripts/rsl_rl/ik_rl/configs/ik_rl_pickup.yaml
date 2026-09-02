@@ -1,0 +1,17 @@
+# IK + EE waypoints for Pickup (train_ik_rl_single.py / play_ik_rl_single.py).
+# Used when this file exists unless --ik-config none. Tune ``pos`` / ``quat`` for your layout.
+# ``quat`` is Isaac Lab order: **wxyz** [w, x, y, z] (not xyzw).
+
+task: Isaac-UR10eShadowHand-Pickup-Direct-v0
+
+trajectory:
+  - pos: [0.5, 0.0, 0.28]
+    quat: [1.0, 0.0, 0.0, 0.0]
+    steps: 150
+  - pos: [0.5, 0.0, 0.48]
+    quat: [1.0, 0.0, 0.0, 0.0]
+    steps: -1
+
+ee_body: wrist_3_link
+ik_method: dls
+ik_lambda: null

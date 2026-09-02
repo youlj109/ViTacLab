@@ -1,0 +1,31 @@
+# Palm + differential IK defaults for Pickup (registered Gym id below).
+# Used by train_ik_rl_single.py / data_collection/ik/play_ik_policy.py (default if file exists).
+#
+# Override any key via CLI (e.g. --task ... --trajectory ...) — CLI wins after merge.
+# Disable file:  --ik-config none
+
+task: Isaac-UR10eShadowHand-Pickup-Direct-v0
+
+trajectory: "object:150:0,goal:-1:0"
+
+object_to_palm_offset: [0.0, 0.0, 0.05]
+palm_in_wrist_pos: [0.0, 0.0, 0.35]
+# rad; ~ (pi/2, -pi/2, pi/2)
+palm_in_wrist_euler: [1.5707963267948966, -1.5707963267948966, 1.5707963267948966]
+
+palm_orient: pickup_down
+palm_normal_local: [0.0, 1.0, 0.0]
+palm_yaw_offset: 0.0
+world_down: [0.0, 0.0, -1.0]
+
+palm_euler: [0.0, 2.2, 0.0]
+palm_euler_in_anchor: [0.0, 0.0, 0.0]
+
+ee_body: wrist_3_link
+ik_method: dls
+ik_lambda: null
+
+# Freeze hand joints to a fixed grasp pose (hand joints override policy output).
+# The GUI script can write this file; see `scripts/data_collection/manual/record_grasp_pose.py`.
+hand_freeze_phase_target: goal
+hand_freeze_yaml: scripts/data_collection/manual/config/pickup_grasp.yaml
