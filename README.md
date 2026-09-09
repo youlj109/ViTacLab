@@ -12,7 +12,9 @@
 [![Release](https://img.shields.io/badge/release-v0.1--advisor--xense-8A63D2)](https://github.com/youlj109/ViTacLab/releases/tag/v0.1-advisor-xense)
 [![License](https://img.shields.io/badge/license-Apache--2.0-2F80ED)](LICENSE)
 
-<img src="docs/media/vitaclab-banner.svg" alt="ViTacLab connects physically consistent touch, visual perception, and robotic manipulation" width="100%">
+<a href="docs/media/paper/vitaclab-teaser.png">
+  <img src="docs/media/paper/vitaclab-teaser.png" alt="ViTacLab overview: ViTacSim, ViTacBench, and ViTacPolicy connect physically consistent tactile simulation, hierarchical benchmarking, and visuo-tactile policy learning" width="100%">
+</a>
 
 </div>
 
