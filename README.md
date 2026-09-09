@@ -13,6 +13,9 @@ ViTacLab is an Isaac Lab **extension** that lives **outside** the upstream `Isaa
 
 **Keywords:** Isaac Lab, visuo-tactile, dexterous manipulation, extension
 
+**Runtime assets:** [Hugging Face Dataset — `Yanlj/ViTacLab-assets`](https://huggingface.co/datasets/Yanlj/ViTacLab-assets).
+Download and verification instructions are in [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md).
+
 ---
 
 ## ViTacSim advisor release (Xense 400×700 + M2 nut)
@@ -77,6 +80,7 @@ bash bash_command/run_task3_advisor_validation.sh
 
 | Topic | Location |
 |-------|----------|
+| **完整复现（Git + Hugging Face 资产 + 验证）** | [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) |
 | **Quick install (中文)** | [`docs/QUICK_INSTALL.md`](docs/QUICK_INSTALL.md) |
 | RSL-RL training (commands, Hydra, IK-RL) | [`scripts/rsl_rl/README.md`](scripts/rsl_rl/README.md), [`scripts/rsl_rl/QUICKSTART.md`](scripts/rsl_rl/QUICKSTART.md) |
 | IK-RL team guide (env / reward / recording) | [`docs/ik_rl_modification_guide.md`](docs/ik_rl_modification_guide.md) |

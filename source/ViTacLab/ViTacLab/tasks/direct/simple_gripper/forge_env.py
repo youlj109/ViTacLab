@@ -1,3 +1,7 @@
+"""Simple Gripper environment implementation.
+
+This module is the canonical ViTacLab task-side code for simulation, data collection, and policy inference. Keep task-specific logic here and avoid creating version-suffixed copies; update the registered Gym task/config entry instead."""
+
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
@@ -17,13 +21,10 @@ import isaaclab.sim as sim_utils
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils.math import axis_angle_from_quat, transform_points, unproject_depth
 
-from isaaclab_tasks.direct.factory import factory_utils
+from isaaclab_tasks.direct.factory import factory_control, factory_utils
 from isaaclab_tasks.direct.factory.factory_env import FactoryEnv
-from ViTacLab.assets.sensor.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
-from ViTacLab.assets.sensor.tacsl_sensor.visuotactile_sensor import VisuoTactileSensor
-from ViTacLab.assets.robot.ur10e_shadowhand_direct_base_single.ur10e_shadowhand_direct_base_env import (
-    spawn_high_fidelity_scene_if_enabled,
-)
+from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
+from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_sensor import VisuoTactileSensor
 from . import forge_utils
 from .forge_env_cfg import ForgeEnvCfg
 
@@ -86,6 +87,28 @@ class ForgeEnv(FactoryEnv):
 
         # Headless RL: strip render-based sensors from scene cfg so InteractiveScene does not spawn them.
         self._forge_render_sensors_enabled = bool(getattr(cfg, "enable_cameras", False))
+        self._expected_tactile_sensor_names = ("tactile_sensor_left", "tactile_sensor_right")
+        self._tacsl_nominal_render_initialized = False
+        self._forge_render_sensor_cfgs = {}
+        original_scene_cfg = cfg.scene
+        if self._forge_render_sensors_enabled:
+            for name in (*self._expected_tactile_sensor_names, "third_person_camera"):
+                sensor_cfg = getattr(original_scene_cfg, name, None)
+                if sensor_cfg is not None:
+                    self._forge_render_sensor_cfgs[name] = sensor_cfg
+        # FactoryEnv spawns/clones the robot inside _setup_scene().  Config-declared
+        # TacSL sensors would otherwise be constructed by InteractiveScene before
+        # their robot prims exist.  Always pass a bare scene here and instantiate
+        # saved render sensors manually after FactoryEnv finishes cloning.
+        s = original_scene_cfg
+        cfg.scene = InteractiveSceneCfg(
+            num_envs=s.num_envs,
+            env_spacing=s.env_spacing,
+            replicate_physics=getattr(s, "replicate_physics", True),
+            clone_in_fabric=getattr(s, "clone_in_fabric", False),
+            lazy_sensor_update=getattr(s, "lazy_sensor_update", True),
+            filter_collisions=getattr(s, "filter_collisions", True),
+        )
         if not self._forge_render_sensors_enabled:
             if cfg.obs_mode == "full":
                 warnings.warn(
@@ -94,15 +117,6 @@ class ForgeEnv(FactoryEnv):
                     stacklevel=2,
                 )
                 cfg.obs_mode = "reduce"
-            s = cfg.scene
-            cfg.scene = InteractiveSceneCfg(
-                num_envs=s.num_envs,
-                env_spacing=s.env_spacing,
-                replicate_physics=getattr(s, "replicate_physics", True),
-                clone_in_fabric=getattr(s, "clone_in_fabric", False),
-                lazy_sensor_update=getattr(s, "lazy_sensor_update", True),
-                filter_collisions=getattr(s, "filter_collisions", True),
-            )
 
         # Update obs_order and state_order based on observation mode
         # This must be done BEFORE calling super().__init__() because FactoryEnv.__init__()
@@ -153,8 +167,9 @@ class ForgeEnv(FactoryEnv):
             ]
         else:
             raise ValueError(f"Unknown obs_mode: {cfg.obs_mode}. Must be 'reduce' or 'full'.")
-        
+
         super().__init__(cfg, render_mode, **kwargs)
+        self._maybe_init_tacsl_nominal_render()
         print(f"num_envs: {self.num_envs}")
         print(f"Observation mode: {cfg.obs_mode}")
         print(f"Forge render sensors (tactile + third-person camera): {self._forge_render_sensors_enabled}")
@@ -182,7 +197,7 @@ class ForgeEnv(FactoryEnv):
         # self.tactile_image_width = 640
         self.tactile_image_channels = 3  # RGB
         self.tactile_image_total = self.tactile_image_height * self.tactile_image_width * self.tactile_image_channels  # 240 * 320 * 3 = 230400
-        
+
         # Initialize tactile sensor data buffers
         self.tactile_normal_force = torch.zeros(
             (self.num_envs, 2 * self.tactile_array_total), device=self.device
@@ -216,6 +231,20 @@ class ForgeEnv(FactoryEnv):
         # Arm DOF indices (panda_joint1–7) for DP mode; PD gains from franka_drive_params.json
         self._arm_dof_indices = list(range(7))
         self._dp_arm_stiffness, self._dp_arm_damping = self._load_dp_arm_gains_from_json()
+
+    def _maybe_init_tacsl_nominal_render(self) -> None:
+        """Capture both GelSight nominal backgrounds after FactoryEnv starts the simulation."""
+
+        if self._tacsl_nominal_render_initialized or not self._forge_render_sensors_enabled:
+            return
+        for name in self._expected_tactile_sensor_names:
+            if name not in self.scene.sensors:
+                continue
+            tactile = self.scene[name]
+            if getattr(tactile.cfg, "enable_camera_tactile", False):
+                tactile.get_initial_render()
+        self._tacsl_nominal_render_initialized = True
+
 
     def _load_dp_arm_gains_from_json(self):
         """Load arm stiffness and damping per joint from franka_drive_params.json. Returns (stiffness, damping) tensors of shape (7,) on self.device."""
@@ -269,47 +298,55 @@ class ForgeEnv(FactoryEnv):
 
     def _setup_scene(self):
         """Setup scene - tactile sensors are automatically created from ForgeSceneCfg."""
-        # Spawn decorative scene before Factory clone (same timing as UR10e direct-base envs).
-        spawn_high_fidelity_scene_if_enabled(self.cfg)
+        # Call parent setup first - this will create the scene with tactile sensors from ForgeSceneCfg
         super()._setup_scene()
+        # GUI-draggable debug sphere (non-colliding visual-only): one sphere per env under env root.
+        debug_ball_pos_env = (0.60, 0.0, 0.20)
+        debug_ball_quat = (1.0, 0.0, 0.0, 0.0)
+        # Hide debug ball by default (keep code for quick re-enable).
+        if False:
+            debug_ball_cfg = sim_utils.SphereCfg(
+                radius=0.008,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+            )
+            debug_ball_cfg.func(
+                "/World/envs/env_.*/debug_ball",
+                debug_ball_cfg,
+                translation=debug_ball_pos_env,
+                orientation=debug_ball_quat,
+            )
         if self._forge_render_sensors_enabled:
+            for name, sensor_cfg in self._forge_render_sensor_cfgs.items():
+                if name not in self.scene.sensors:
+                    self.scene.sensors[name] = sensor_cfg.class_type(sensor_cfg)
+
             from isaaclab.sensors.camera import TiledCamera, TiledCameraCfg
 
             twist_cam = TiledCamera(
                 TiledCameraCfg(
                     prim_path="/World/envs/env_.*/Robot/panda_hand/twist_camera",
+                    offset=TiledCameraCfg.OffsetCfg(
+                        pos=(0.0, 0.0, 0.05),
+                        rot=(1.0, 0.0, 0.0, 0.0),
+                        convention="ros",
+                    ),
                     data_types=["rgb", "distance_to_image_plane"],
-                    spawn=None,
+                    # The maintained Franka USD has no pre-authored
+                    # ``twist_camera`` prim.  Spawn it on the panda hand after
+                    # FactoryEnv has created and cloned the robot instead of
+                    # assuming that a non-existent camera already exists.
+                    spawn=sim_utils.PinholeCameraCfg(
+                        focal_length=24.0,
+                        focus_distance=400.0,
+                        horizontal_aperture=20.955,
+                        clipping_range=(0.02, 20.0),
+                    ),
                     width=640,
                     height=480,
                     update_latest_camera_pose=True,
                 )
             )
             self.scene.sensors["twist_camera"] = twist_cam
-        # Initialize nominal tactile render for camera-based tactile sensing
-        # This must be called after sim.reset() but before the first scene.update()
-        # According to reference code, get_initial_render() should be called after sim.reset()
-        # DirectRLEnv.__init__() calls sim.reset() after _setup_scene(), so we need to call
-        # sim.reset() here first, then get_initial_render(), before DirectRLEnv calls scene.update()
-        import builtins
-        from isaaclab.sim.utils.stage import use_stage
-        
-        if builtins.ISAAC_LAUNCHED_FROM_TERMINAL is False:
-            # Reset simulation to activate physics handles
-            with use_stage(self.sim.get_initial_stage()):
-                self.sim.reset()
-            
-            # Get initial render for tactile sensors
-            if "tactile_sensor_left" in self.scene.sensors:
-                tactile_sensor_left = self.scene["tactile_sensor_left"]
-                if tactile_sensor_left.cfg.enable_camera_tactile:
-                    tactile_sensor_left.get_initial_render()
-            
-            if "tactile_sensor_right" in self.scene.sensors:
-                tactile_sensor_right = self.scene["tactile_sensor_right"]
-                if tactile_sensor_right.cfg.enable_camera_tactile:
-                    tactile_sensor_right.get_initial_render()
-
     def _compute_intermediate_values(self, dt):
         """Add noise to observations for force sensing."""
         super()._compute_intermediate_values(dt)
@@ -506,11 +543,42 @@ class ForgeEnv(FactoryEnv):
 
         obs_tensors = factory_utils.collapse_obs_dict(obs_dict, self.cfg.obs_order + ["prev_actions"])
         state_tensors = factory_utils.collapse_obs_dict(state_dict, self.cfg.state_order + ["prev_actions"])
-        
+
         ee_idx = self.fingertip_body_idx
         ee_pos_env = self._robot.data.body_pos_w[:, ee_idx] - self.scene.env_origins
+        tactile_poses = []
+        body_names = [str(name).lower() for name in self._robot.body_names]
+        for side, sensor_name in (("left", "tactile_sensor_left"), ("right", "tactile_sensor_right")):
+            sensor_pose = None
+            if sensor_name in self.scene.sensors:
+                sensor = self.scene[sensor_name]
+                sensor_data = sensor.data
+                pos_w = getattr(sensor_data, "pos_w", None)
+                quat_w = getattr(sensor_data, "quat_w_ros", None)
+                if quat_w is None:
+                    quat_w = getattr(sensor_data, "quat_w", None)
+                if pos_w is not None and quat_w is not None:
+                    sensor_pose = torch.cat((pos_w - self.scene.env_origins, quat_w), dim=-1)
+            if sensor_pose is None:
+                body_idx = next(
+                    (
+                        index
+                        for index, name in enumerate(body_names)
+                        if side in name and "finger" in name
+                    ),
+                    ee_idx,
+                )
+                sensor_pose = torch.cat(
+                    (
+                        self._robot.data.body_pos_w[:, body_idx] - self.scene.env_origins,
+                        self._robot.data.body_quat_w[:, body_idx],
+                    ),
+                    dim=-1,
+                )
+            tactile_poses.append(sensor_pose)
         record_dict = {
             "joint_pos": self._robot.data.joint_pos.detach().cpu(),
+            "tactile_pos": torch.stack(tactile_poses, dim=1).detach().cpu(),
             "tactile_normal_force": self.tactile_normal_force.detach().cpu().reshape(self.num_envs, 2, self.tactile_array_size[0], self.tactile_array_size[1], 1),
             "tactile_shear_force": self.tactile_shear_force.detach().cpu().reshape(self.num_envs, 2, self.tactile_array_size[0], self.tactile_array_size[1], 2),
             "tactile_rgb_image": (self.tactile_rgb_image.detach().cpu().reshape(self.num_envs, 2, self.tactile_image_height, self.tactile_image_width, 3) * 255.0).to(torch.uint8),
@@ -544,6 +612,137 @@ class ForgeEnv(FactoryEnv):
         joint_pos = joint_pos.to(device=self.device, dtype=self._robot.data.joint_pos.dtype)
         assert n_cmd == n_dofs, "Joint position command dimension mismatch"
         self._robot.set_joint_position_target(joint_pos)
+
+    def set_franka_ik_target(
+        self,
+        target_pos_env: torch.Tensor,
+        target_rot_env: torch.Tensor,
+        env_ids: torch.Tensor | None = None,
+        gripper_dof_pos: float = 0.0,
+        ik_pos_tolerance: float = 0.001,
+    ) -> torch.Tensor:
+        """
+        Solve Franka IK from env-frame EE pose and set joint position targets.
+
+        Args:
+            target_pos_env: EE target position in env frame, shape (3,) or (N, 3).
+            target_rot_env: EE target quaternion in env frame (w, x, y, z), shape (4,) or (N, 4).
+            env_ids: environments to apply. If None, apply to all envs.
+            gripper_dof_pos: target gripper DOF position for both fingers.
+            ik_pos_tolerance: position tolerance (m) for inner gentle IK early-stop.
+
+        Returns:
+            Arm joint targets for selected envs, shape (len(env_ids), 7).
+        """
+        if env_ids is None:
+            env_ids_local = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
+        else:
+            env_ids_local = env_ids.to(device=self.device, dtype=torch.long)
+
+        n_sel = int(env_ids_local.shape[0])
+        if n_sel == 0:
+            return torch.empty((0, 7), device=self.device, dtype=self._robot.data.joint_pos.dtype)
+
+        pos_in = target_pos_env.to(device=self.device, dtype=torch.float32)
+        if pos_in.ndim == 1:
+            pos_in = pos_in.unsqueeze(0)
+        if pos_in.shape[0] == 1:
+            pos_in = pos_in.expand(n_sel, -1)
+        if pos_in.shape != (n_sel, 3):
+            raise ValueError(f"target_pos_env must be (3,) or ({n_sel}, 3), got {tuple(pos_in.shape)}")
+
+        rot_in = target_rot_env.to(device=self.device, dtype=torch.float32)
+        if rot_in.ndim == 1:
+            rot_in = rot_in.unsqueeze(0)
+        if rot_in.shape[0] == 1:
+            rot_in = rot_in.expand(n_sel, -1)
+        if rot_in.shape[1] != 4:
+            raise ValueError(f"target_rot_env must be quaternion (4,), got last dim {rot_in.shape[1]}")
+        quat_in = rot_in
+        quat_in = quat_in / torch.clamp(torch.linalg.norm(quat_in, dim=-1, keepdim=True), min=1e-8)
+
+        # Build full target tensors only to satisfy the existing IK API signature.
+        pos_tgt = self.fingertip_midpoint_pos.clone()
+        quat_tgt = self.fingertip_midpoint_quat.clone()
+        pos_tgt[env_ids_local] = pos_in
+        quat_tgt[env_ids_local] = quat_in
+
+        self._set_pos_inverse_kinematics_gentle(
+            ctrl_target_fingertip_midpoint_pos=pos_tgt,
+            ctrl_target_fingertip_midpoint_quat=quat_tgt,
+            env_ids=env_ids_local,
+            ik_pos_tolerance=float(ik_pos_tolerance),
+        )
+        joint_target = self.ctrl_target_joint_pos.clone()
+        if joint_target.shape[1] >= 9:
+            joint_target[env_ids_local, 7:] = float(gripper_dof_pos)
+        self._robot.set_joint_position_target(joint_target)
+        return joint_target[env_ids_local, :7].clone()
+
+    def _set_pos_inverse_kinematics_gentle(
+        self,
+        ctrl_target_fingertip_midpoint_pos: torch.Tensor,
+        ctrl_target_fingertip_midpoint_quat: torch.Tensor,
+        env_ids: torch.Tensor,
+        ik_pos_tolerance: float = 0.001,
+    ):
+        """Gentle DLS IK used by play IK only (reset keeps parent default IK)."""
+        pos_tgt = ctrl_target_fingertip_midpoint_pos
+        quat_tgt = ctrl_target_fingertip_midpoint_quat
+        env_ids_local = env_ids.to(device=self.device, dtype=torch.long)
+        if env_ids_local.numel() == 0:
+            z = torch.zeros((0, 3), device=self.device, dtype=torch.float32)
+            return z, z
+
+        ik_time = 0.0
+        ik_inner_horizon_s = 0.4
+        ik_delta_scale = 0.35
+        max_move_dist = 0.008  # max EE translation allowed per call (env-local meters)
+        min_move_dist = 0.004  # must move at least this much before distance-based early stop
+        min_remaining_dist = 0.002  # stop when close enough to target (env-local meters)
+        ik_pos_tolerance = float(ik_pos_tolerance)  # if error already below this, stop immediately
+        start_pos = self.fingertip_midpoint_pos[env_ids_local].clone()
+        active_ids = env_ids_local.clone()
+        pos_error = torch.zeros((env_ids_local.shape[0], 3), device=self.device, dtype=torch.float32)
+        axis_angle_error = torch.zeros((env_ids_local.shape[0], 3), device=self.device, dtype=torch.float32)
+        while ik_time < ik_inner_horizon_s and active_ids.numel() > 0:
+            pos_error, axis_angle_error = factory_control.get_pose_error(
+                fingertip_midpoint_pos=self.fingertip_midpoint_pos[active_ids],
+                fingertip_midpoint_quat=self.fingertip_midpoint_quat[active_ids],
+                ctrl_target_fingertip_midpoint_pos=pos_tgt[active_ids],
+                ctrl_target_fingertip_midpoint_quat=quat_tgt[active_ids],
+                jacobian_type="geometric",
+                rot_error_type="axis_angle",
+            )
+            delta_hand_pose = torch.cat((pos_error, axis_angle_error), dim=-1)
+            delta_dof_pos = factory_control.get_delta_dof_pos(
+                delta_pose=delta_hand_pose,
+                ik_method="dls",
+                jacobian=self.fingertip_midpoint_jacobian[active_ids],
+                device=self.device,
+            )
+            self.joint_pos[active_ids, 0:7] += ik_delta_scale * delta_dof_pos[:, 0:7]
+            self.joint_vel[active_ids, :] = torch.zeros_like(self.joint_pos[active_ids, :])
+            self.ctrl_target_joint_pos[active_ids, 0:7] = self.joint_pos[active_ids, 0:7]
+            # self._robot.write_joint_state_to_sim(self.joint_pos, self.joint_vel)
+            self._robot.set_joint_position_target(self.ctrl_target_joint_pos)
+            self.step_sim_no_action()
+            ik_time += self.physics_dt
+
+            moved_dist = torch.linalg.norm(self.fingertip_midpoint_pos[active_ids] - start_pos[active_ids], dim=1)
+            remaining_dist = torch.linalg.norm(pos_tgt[active_ids] - self.fingertip_midpoint_pos[active_ids], dim=1)
+            # Exit conditions:
+            # 1) Already within tolerance -> stop immediately.
+            # 2) Otherwise must move at least min_move_dist, then stop if:
+            #    - moved max distance, OR
+            #    - remaining distance is small enough.
+            reached_tol = remaining_dist <= ik_pos_tolerance
+            moved_enough = moved_dist >= min_move_dist
+            dist_stop = torch.logical_or(moved_dist >= max_move_dist, remaining_dist <= min_remaining_dist)
+            done_mask = torch.logical_or(reached_tol, torch.logical_and(moved_enough, dist_stop))
+            if torch.any(done_mask):
+                active_ids = active_ids[~done_mask]
+        return pos_error, axis_angle_error
 
     def _apply_action(self):
         """FORGE actions are defined as targets relative to the fixed asset."""
@@ -626,6 +825,9 @@ class ForgeEnv(FactoryEnv):
         if not self._use_rl_control:
             return
 
+        if not self._use_rl_control:
+            return
+
         self.generate_ctrl_signals(
             ctrl_target_fingertip_midpoint_pos=ctrl_target_fingertip_midpoint_pos,
             ctrl_target_fingertip_midpoint_quat=ctrl_target_fingertip_midpoint_quat,
@@ -678,7 +880,7 @@ class ForgeEnv(FactoryEnv):
             rew_buf += rew_dict[rew_name] * rew_scales[rew_name]
 
         self._log_forge_metrics(rew_dict, policy_success_pred)
-        
+
         self.extras["curr_success_per_env"] = true_successes
         return rew_buf
 

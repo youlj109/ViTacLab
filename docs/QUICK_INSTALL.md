@@ -1,6 +1,9 @@
 # ViTacLab 快速安装
 
-：**已装 Isaac Sim / Isaac Lab**，只想尽快把本仓库跑起来。
+适用于：**已经安装 Isaac Sim / Isaac Lab**，只想尽快运行本仓库。
+
+完整的资产下载、配置和验收流程见
+[`REPRODUCIBILITY.md`](REPRODUCIBILITY.md)。
 
 ## 前置条件
 
@@ -12,9 +15,9 @@ Isaac 的 Python。
 
 ## 三步安装
 
-### 1. 进入「有 Isaac Lab 的」Python
+### 1. 进入安装了 Isaac Lab 的 Python 环境
 ```bash
-conda activate env_isaaclab_510
+conda activate <isaac-lab-environment>
 ```
 
 下面统一记为 **`python`**。
@@ -26,12 +29,19 @@ conda activate env_isaaclab_510
 ```bash
 cd /path/to/ViTacLab
 python -m pip install -e source/ViTacLab
+python -m pip install -r requirements/repro.txt
+python -m venv .venv_hf
+.venv_hf/bin/python -m pip install -U huggingface_hub
+bash bash_command/download_hf_assets.sh Yanlj/ViTacLab-assets
 ```
 
 ## 验证
 
-
 ```bash
-python scripts/rsl_rl/full_tra/record_full_tra_single.py --task Isaac-UR10eShadowHand-BlindGrasp-Direct-v0 --num_envs 1 --enable_cameras  --show_rgb --show_ff
+bash bash_command/verify_repro_env.sh
+
+python scripts/zero_agent.py \
+  --task Isaac-UR10eShadowHand-BlindGrasp-Direct-v0 \
+  --num_envs 1 --max-steps 20 --enable_cameras --headless
 ```
 
