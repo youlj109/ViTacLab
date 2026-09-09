@@ -1,0 +1,71 @@
+name: task_config
+
+camera_num: 1
+tac_num: 5
+shape_meta: &shape_meta
+  # acceptable types: rgb, low_dim
+  obs:
+    camera:
+      shape: 
+        - ${task.camera_num}
+        - 3
+        - 480
+        - 640
+      type: rgb
+    camera_pos:
+      shape: 
+        - ${task.camera_num}
+        - 9
+      type: pos
+    tac_pos:
+      shape: 
+        - ${task.tac_num}
+        - 9
+      type: pos
+    # tac:
+    #   shape: 
+    #     - ${task.tac_num}
+    #     - 3
+    #     - 320
+    #     - 240
+    #   type: tac_rgb
+    tac:
+      shape: 
+        - ${task.tac_num}
+        - 20
+        - 25
+        - 3
+      type: tac_force
+    agent_pos:
+      shape: [30]
+      type: low_dim
+  action:
+    shape: [30]
+
+env_runner:
+  _target_: diffusion_policy.env_runner.pusht_image_runner.PushTImageRunner
+  n_train: 6
+  n_train_vis: 2
+  train_start_seed: 0
+  n_test: 50
+  n_test_vis: 4
+  legacy_test: True
+  test_start_seed: 100000
+  max_steps: 300
+  n_obs_steps: ${n_obs_steps}
+  n_action_steps: ${n_action_steps}
+  fps: 10
+  past_action: ${past_action_visible}
+  n_envs: null
+
+dataset:
+  _target_: diffusion_policy.dataset.robot_image_dataset.RobotImageDataset
+  shape_meta: ${task.shape_meta}
+  zarr_path: diffusion_policy/data/useless.zarr
+  horizon: ${horizon}
+  pad_before: ${eval:'${n_obs_steps}-1'}
+  pad_after: ${eval:'${n_action_steps}-1'}
+  seed: 42
+  val_ratio: 0.02
+  batch_size: 60
+  max_train_episodes: null

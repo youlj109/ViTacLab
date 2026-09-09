@@ -21,11 +21,17 @@ def _unscale(x, lower, upper):
 
 
 class UR10eDualShadowHandBiBlindGraspEnv(UR10eDualShadowHandDirectMARLBaseEnv):
-    """Dual-arm blind grasp: left hand reaches hole, right hand reaches peg inside a trash can."""
+    """Dual-arm blind grasp: left hand reaches hole, right hand reaches peg."""
 
     cfg: UR10eDualShadowHandBiBlindGraspEnvCfg
 
     def __init__(self, cfg: UR10eDualShadowHandBiBlindGraspEnvCfg, render_mode: str | None = None, **kwargs):
+        choice = max(0, min(int(getattr(cfg, "object_init_choice", 0)), len(cfg.object_init_pos_candidates) - 1))
+        hole_pos = type(cfg).resolve_hole_init_pos(choice)
+        peg_pos = type(cfg).resolve_peg_init_pos(choice)
+        cfg.object_init_choice = choice
+        cfg.hole_cfg = cfg.hole_cfg.replace(init_state=cfg.hole_cfg.init_state.replace(pos=hole_pos))
+        cfg.peg_cfg = cfg.peg_cfg.replace(init_state=cfg.peg_cfg.init_state.replace(pos=peg_pos))
         super().__init__(cfg, render_mode, **kwargs)
 
         self.actions = {
@@ -61,15 +67,10 @@ class UR10eDualShadowHandBiBlindGraspEnv(UR10eDualShadowHandDirectMARLBaseEnv):
         self.hole_quat = torch.zeros((self.num_envs, 4), device=self.device)
         self.peg_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.peg_quat = torch.zeros((self.num_envs, 4), device=self.device)
-        self._last_reward = torch.zeros((self.num_envs,), device=self.device)
 
     def _setup_task_scene(self) -> None:
-        spawn = self.cfg.trash_can_cfg.spawn.replace(scale=self.cfg.trash_can_scale)
-        tc_cfg = self.cfg.trash_can_cfg.replace(spawn=spawn)
-        self.trash_can = RigidObject(tc_cfg)
         self.hole = RigidObject(self.cfg.hole_cfg)
         self.peg = RigidObject(self.cfg.peg_cfg)
-        self.scene.rigid_objects["trash_can"] = self.trash_can
         self.scene.rigid_objects["hole"] = self.hole
         self.scene.rigid_objects["peg"] = self.peg
 
@@ -140,47 +141,31 @@ class UR10eDualShadowHandBiBlindGraspEnv(UR10eDualShadowHandDirectMARLBaseEnv):
             dim=-1,
         )
 
-    def _get_observations(self) -> dict[str, torch.Tensor]:
+    def _get_observations(self) -> dict:
+        base = super()._get_observations()
         self._compute_intermediate_values()
         wr_p, wr_q = self._wrist_pose_env_right()
         wl_p, wl_q = self._wrist_pose_env_left()
-        return {
-            "right_hand": self._obs_single(
-                self.right_hand, wr_p, wr_q, self.actions["right_hand"], self._action_rate_r
-            ),
-            "left_hand": self._obs_single(
-                self.left_hand, wl_p, wl_q, self.actions["left_hand"], self._action_rate_l
-            ),
-        }
+        base["right_hand"] = self._obs_single(
+            self.right_hand, wr_p, wr_q, self.actions["right_hand"], self._action_rate_r
+        )
+        base["left_hand"] = self._obs_single(
+            self.left_hand, wl_p, wl_q, self.actions["left_hand"], self._action_rate_l
+        )
+        return base
 
     def _get_states(self) -> torch.Tensor:
         obs = self._get_observations()
         return torch.cat((obs["right_hand"], obs["left_hand"]), dim=-1)
 
     def _get_rewards(self) -> dict[str, torch.Tensor]:
-        self._compute_intermediate_values()
-        wr_p, _ = self._wrist_pose_env_right()
-        wl_p, _ = self._wrist_pose_env_left()
-        right_dist = torch.norm(wr_p - self.peg_pos, p=2, dim=-1)
-        left_dist = torch.norm(wl_p - self.hole_pos, p=2, dim=-1)
-        rew_reach = self.cfg.wrist_to_object_reward_scale * (
-            torch.exp(-8.0 * right_dist) + torch.exp(-8.0 * left_dist)
-        )
-        success_mask = (right_dist < self.cfg.success_dist_threshold) & (left_dist < self.cfg.success_dist_threshold)
-        rew = rew_reach + success_mask.float() * self.cfg.success_bonus
-        rew = rew + self.cfg.action_l2_weight * 0.5 * (
-            torch.sum(self.actions["right_hand"] ** 2, dim=-1) + torch.sum(self.actions["left_hand"] ** 2, dim=-1)
-        )
-        rew = rew + self.cfg.action_rate_l2_weight * 0.5 * (
-            torch.sum(self._action_rate_r**2, dim=-1) + torch.sum(self._action_rate_l**2, dim=-1)
-        )
-        self._last_reward = rew
         if "log" not in self.extras:
             self.extras["log"] = {}
-        self.extras["log"]["right_wrist_to_peg_dist"] = right_dist.mean()
-        self.extras["log"]["left_wrist_to_hole_dist"] = left_dist.mean()
-        self.extras["log"]["bi_success_rate"] = success_mask.float().mean()
-        return {"right_hand": rew, "left_hand": rew}
+        self.extras["log"]["consecutive_successes"] = 0.0
+        self.extras["log"]["episode_success_rate"] = 0.0
+        self.extras["log"]["episode_success_rate_all_time"] = 0.0
+        z = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        return {"right_hand": z, "left_hand": z}
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         self._compute_intermediate_values()
@@ -209,8 +194,12 @@ class UR10eDualShadowHandBiBlindGraspEnv(UR10eDualShadowHandDirectMARLBaseEnv):
         py = sample_uniform(self.cfg.object_reset_pos_y_range[0], self.cfg.object_reset_pos_y_range[1], (n, 1), self.device)
         pz = sample_uniform(self.cfg.object_reset_pos_z_range[0], self.cfg.object_reset_pos_z_range[1], (n, 1), self.device)
 
-        hole_base = torch.tensor(self.cfg.hole_cfg.init_state.pos, device=self.device, dtype=torch.float).view(1, 3)
-        peg_base = torch.tensor(self.cfg.peg_cfg.init_state.pos, device=self.device, dtype=torch.float).view(1, 3)
+        hole_base = torch.tensor(
+            type(self.cfg).resolve_hole_init_pos(self.cfg.object_init_choice), device=self.device, dtype=torch.float
+        ).view(1, 3)
+        peg_base = torch.tensor(
+            type(self.cfg).resolve_peg_init_pos(self.cfg.object_init_choice), device=self.device, dtype=torch.float
+        ).view(1, 3)
         hole_state[:, 0:3] = hole_base + torch.cat([hx, hy, hz], dim=1) + self.scene.env_origins[env_ids_t]
         peg_state[:, 0:3] = peg_base + torch.cat([px, py, pz], dim=1) + self.scene.env_origins[env_ids_t]
 

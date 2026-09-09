@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run GelSight short-finger pretraining tasks (mass / friction) with a simple loop."""
+"""Run GelSight short-finger pretraining tasks (mass / friction / pose) with a simple loop."""
 
 from __future__ import annotations
 
@@ -35,6 +35,16 @@ _TASK_PRESETS: dict[str, dict[str, str]] = {
         "cfg": (
             "ViTacLab.tasks.direct.pretraining.friction_pretrain.gelsight_friction_pretrain_env_cfg:"
             "GelsightFingerFrictionPretrainEnvCfg"
+        ),
+    },
+    "pose": {
+        "env": (
+            "ViTacLab.tasks.direct.pretraining.pose_pretrain.gelsight_pose_pretrain_env:"
+            "GelsightFingerPosePretrainEnv"
+        ),
+        "cfg": (
+            "ViTacLab.tasks.direct.pretraining.pose_pretrain.gelsight_pose_pretrain_env_cfg:"
+            "GelsightFingerPosePretrainEnvCfg"
         ),
     },
 }
@@ -86,7 +96,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--task",
         type=str,
         default="mass",
-        help="Preset task key (mass|friction) or any registered Gym ID.",
+        help="Preset task key (mass|friction|pose) or any registered Gym ID.",
     )
     p.add_argument("--num_envs", type=int, default=1, help="Number of environments.")
     p.add_argument("--fps", type=float, default=30.0, help="Loop target FPS.")
@@ -137,7 +147,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--print-force-mean-every",
         type=int,
         default=None,
-        help="Print debug line every N steps: friction=forces; mass=mass+tactile (0=off).",
+        help="Print debug line every N steps (0=off): friction=forces; mass=tactile; pose=mean euler (also sets print_pose_mean_interval).",
     )
     AppLauncher.add_app_launcher_args(p)
     return p
@@ -174,7 +184,7 @@ def _tactile_shear_image_rgb_uint8(nf_hw: np.ndarray, sf_hw2: np.ndarray) -> np.
     if _ff_compute_tactile_shear_image is None:
         import cv2
 
-        from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_render import compute_tactile_shear_image
+        from ViTacLab.assets.sensor.tacsl_sensor.visuotactile_render import compute_tactile_shear_image
 
         _ff_cv2 = cv2
         _ff_compute_tactile_shear_image = compute_tactile_shear_image
@@ -235,6 +245,10 @@ def main() -> int:
                 f"source={getattr(cfg, 'plot_xyz_force_live_source', None)} "
                 f"print_interval={getattr(cfg, 'print_xyz_force_mean_interval', None)}"
             )
+
+    if getattr(args, "print_force_mean_every", None) is not None and hasattr(cfg, "print_pose_mean_interval"):
+        cfg.print_pose_mean_interval = max(0, int(args.print_force_mean_every))
+        print(f"[INFO] cfg.print_pose_mean_interval={cfg.print_pose_mean_interval}")
 
     print(f"[INFO] Creating {EnvCls.__name__} (num_envs={cfg.scene.num_envs}) ...")
     env = EnvCls(cfg)

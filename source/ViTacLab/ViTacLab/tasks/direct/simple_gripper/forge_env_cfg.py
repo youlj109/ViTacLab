@@ -13,8 +13,8 @@ from isaaclab.assets import ArticulationCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.sensors import TiledCameraCfg
 from isaaclab_assets.sensors import GELSIGHT_MINI_CFG, GELSIGHT_R15_CFG
-from isaaclab_contrib.sensors.tacsl_sensor import VisuoTactileSensorV2Cfg as VisuoTactileSensorCfg
-from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
+from ViTacLab.assets.sensor.tacsl_sensor import VisuoTactileSensorV2Cfg as VisuoTactileSensorCfg
+from ViTacLab.assets.sensor.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
 
 from isaaclab_tasks.direct.factory.factory_env_cfg import OBS_DIM_CFG, STATE_DIM_CFG, CtrlCfg, FactoryEnvCfg, ObsRandCfg
 
@@ -221,14 +221,13 @@ class ForgeEnvCfg(FactoryEnvCfg):
 
     enable_cameras: bool = False
 
-    # 若 True：在 Factory reset 之后，将指尖中点（位置）钉到「各环境局部坐标」下的同一点：
-    # 与 Factory 一致：位置 = body_pos_w - env_origins；所有并行 env 使用同一 (x,y,z)，故相对各自 env 原点一致，全球坐标仍随 env 平移。
-    # reset_ee_pos_env：env-local（body_pos_w - env_origins）
-    # - x,y：与 PegInsert.fixed_asset 默认根位置均值对齐 init_state pos=(0.6, 0.0)，即 Fixed 位置随机分布中心（非桌子 spawn 0.55）。
-    # - z：fixed root z=0.05 + ForgePegInsert.hand_init_pos[2]=0.1。
-    reset_ee_constant_env_local_pose: bool = True
-    reset_ee_pos_env: tuple[float, float, float] = (0.6, 0.0, 0.18)
-    # 钉点时末端朝向始终沿用 Factory randomize_initial_state 的 IK 结果，不由本 env cfg 覆盖。
+    # Optional high-fidelity background scene (spawned in ForgeEnv._setup_scene when enabled).
+    enable_high_fidelity_scene: bool = False
+    high_fidelity_scene_usd_path: str = ""
+    high_fidelity_scene_prim_path: str = "/World/envs/env_.*/HighFidelityScene"
+    high_fidelity_scene_scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    high_fidelity_scene_translation: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    high_fidelity_scene_orientation: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
 
     # Visual disturbance: when True, apply Gaussian noise or Gaussian blur to third_person_camera images
     visual_disturbance: bool = False

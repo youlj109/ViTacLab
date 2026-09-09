@@ -1,4 +1,7 @@
-"""Shared env/cfg entry resolution for ``record_full_tra_single`` and ``play_full_tra_single``.
+"""Shared env/cfg entry resolution for full_tra record/play scripts.
+
+Used by ``record_full_tra_single``, ``play_full_tra_single*``, ``record_full_tra_simple_gripper``,
+and ``play_full_tra_simple_gripper``.
 
 Keeps ``pour`` on ``difficult_dexhand`` (record default); adds Forge presets and Gymnasium
 registry resolution aligned with ``run_ur10e_shadowhand_arm_pose_from_marker.py``.
@@ -35,12 +38,27 @@ _TASK_PRESETS: dict[str, dict[str, str]] = {
         "env": "ViTacLab.tasks.direct.medium_dexhand.forge_dexhand.ur10e_shadowhand_forge_env:UR10eShadowHandForgeEnv",
         "cfg": "ViTacLab.tasks.direct.medium_dexhand.forge_dexhand.ur10e_shadowhand_forge_env_cfg:UR10eShadowHandForgeNutThreadEnvCfg",
     },
+    "simple_forge_peg": {
+        "env": "ViTacLab.tasks.direct.simple_gripper.forge_env:ForgeEnv",
+        "cfg": "ViTacLab.tasks.direct.simple_gripper.forge_env_cfg:ForgeTaskPegInsertCfg",
+    },
+    "simple_forge_gear": {
+        "env": "ViTacLab.tasks.direct.simple_gripper.forge_env:ForgeEnv",
+        "cfg": "ViTacLab.tasks.direct.simple_gripper.forge_env_cfg:ForgeTaskGearMeshCfg",
+    },
+    "simple_forge_nut": {
+        "env": "ViTacLab.tasks.direct.simple_gripper.forge_env:ForgeEnv",
+        "cfg": "ViTacLab.tasks.direct.simple_gripper.forge_env_cfg:ForgeTaskNutThreadCfg",
+    },
 }
 
 _TASK_GYM_ID_ALIASES: dict[str, str] = {
     "Isaac-UR10eShadowHand-ForgePegInsert-Direct-v0": "forge_peg",
     "Isaac-UR10eShadowHand-ForgeGearMesh-Direct-v0": "forge_gear",
     "Isaac-UR10eShadowHand-ForgeNutThread-Direct-v0": "forge_nut",
+    "Isaac-Forge-PegInsert-Direct-v0": "simple_forge_peg",
+    "Isaac-Forge-GearMesh-Direct-v0": "simple_forge_gear",
+    "Isaac-Forge-NutThread-Direct-v0": "simple_forge_nut",
 }
 
 

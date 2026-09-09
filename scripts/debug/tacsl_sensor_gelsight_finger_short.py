@@ -243,9 +243,9 @@ from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.timer import Timer
 
-from isaaclab_contrib.sensors.tacsl_sensor import VisuoTactileSensorCfg, VisuoTactileSensorV2Cfg
-from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_render import compute_tactile_shear_image
-from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
+from ViTacLab.assets.sensor.tacsl_sensor import VisuoTactileSensorCfg, VisuoTactileSensorV2Cfg
+from ViTacLab.assets.sensor.tacsl_sensor.visuotactile_render import compute_tactile_shear_image
+from ViTacLab.assets.sensor.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
 
 from isaaclab_assets.sensors import GELSIGHT_R15_CFG
 
@@ -445,6 +445,46 @@ def _patch_tacsl_cfg_from_cli(sensor_cfg: VisuoTactileSensorCfg) -> VisuoTactile
     )
 
 
+def _make_single_finger_tacsl_cfg(*, contact_object_prim_path_expr: str | None) -> VisuoTactileSensorCfg:
+    """Build single-finger TacSL cfg (paths still contain ``{ENV_REGEX_NS}``; format before instantiate)."""
+    return _tactile_sensor_cfg_cls()(
+        prim_path="{ENV_REGEX_NS}/Robot/" + args_cli.tactile_sensor_subpath.strip().strip("/"),
+        history_length=0,
+        debug_vis=args_cli.debug_tactile_sensor_pts or args_cli.debug_sdf_closest_pts,
+        render_cfg=GELSIGHT_R15_CFG,
+        enable_camera_tactile=args_cli.use_tactile_rgb
+        or (args_cli.use_visuo_tactile_v2 and args_cli.use_tactile_ff),
+        enable_force_field=args_cli.use_tactile_ff,
+        tactile_array_size=_TACTILE_PARAMS["tactile_array_size"],
+        tactile_margin=_TACTILE_PARAMS["tactile_margin"],
+        contact_object_prim_path_expr=contact_object_prim_path_expr,
+        normal_contact_stiffness=args_cli.normal_contact_stiffness,
+        friction_coefficient=args_cli.friction_coefficient,
+        tangential_stiffness=args_cli.tangential_stiffness,
+        camera_cfg=TiledCameraCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/" + args_cli.tactile_cam_subpath.strip().strip("/"),
+            height=GELSIGHT_R15_CFG.image_height,
+            width=GELSIGHT_R15_CFG.image_width,
+            data_types=["distance_to_image_plane"],
+            spawn=None,
+        ),
+        trimesh_vis_tactile_points=args_cli.trimesh_vis_tactile_points,
+        visualize_sdf_closest_pts=args_cli.debug_sdf_closest_pts,
+    )
+
+
+def _register_single_tacsl_sensor(scene: InteractiveScene, *, contact_object_type: str) -> None:
+    """Register one finger TacSL sensor after scene clone (ViTacLab cfg needs manual path formatting)."""
+    contact_expr = _TACTILE_PARAMS["contact_object_prim_path_expr"] if contact_object_type != "none" else None
+    scfg = _make_single_finger_tacsl_cfg(contact_object_prim_path_expr=contact_expr)
+    scfg = _patch_tacsl_cfg_from_cli(scfg)
+    scfg = _maybe_upgrade_tacsl_cfg_to_v2(scfg)
+    if contact_object_type == "none":
+        scfg = scfg.replace(contact_object_prim_path_expr=None, debug_vis=True)
+    _format_visuo_tacsl_cfg_paths(scfg, scene)
+    scene.sensors["tactile_sensor"] = scfg.class_type(scfg)
+
+
 def _register_five_tacsl_sensors(scene: InteractiveScene) -> None:
     """After ``InteractiveScene`` + env clone — same order as :meth:`UR10eShadowHandDirectBaseEnv._setup_scene`."""
     meta = Ur10eTacDebugTactileMetaCfg(
@@ -485,7 +525,7 @@ def _refresh_articulation_physx_views_after_tacsl(scene: InteractiveScene) -> No
 
 @configclass
 class TactileSensorsSceneCfg(InteractiveSceneCfg):
-    """Scene: ground, dome light, GelSight short finger robot, TacSL sensor."""
+    """Scene: ground, dome light, GelSight short finger robot (TacSL registered after scene init)."""
 
     ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=sim_utils.GroundPlaneCfg())
 
@@ -494,31 +534,6 @@ class TactileSensorsSceneCfg(InteractiveSceneCfg):
     )
 
     robot = _make_robot_cfg()
-
-    tactile_sensor = _tactile_sensor_cfg_cls()(
-        prim_path="{ENV_REGEX_NS}/Robot/" + args_cli.tactile_sensor_subpath.strip().strip("/"),
-        history_length=0,
-        debug_vis=args_cli.debug_tactile_sensor_pts or args_cli.debug_sdf_closest_pts,
-        render_cfg=GELSIGHT_R15_CFG,
-        enable_camera_tactile=args_cli.use_tactile_rgb
-        or (args_cli.use_visuo_tactile_v2 and args_cli.use_tactile_ff),
-        enable_force_field=args_cli.use_tactile_ff,
-        tactile_array_size=_TACTILE_PARAMS["tactile_array_size"],
-        tactile_margin=_TACTILE_PARAMS["tactile_margin"],
-        contact_object_prim_path_expr=_TACTILE_PARAMS["contact_object_prim_path_expr"],
-        normal_contact_stiffness=args_cli.normal_contact_stiffness,
-        friction_coefficient=args_cli.friction_coefficient,
-        tangential_stiffness=args_cli.tangential_stiffness,
-        camera_cfg=TiledCameraCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/" + args_cli.tactile_cam_subpath.strip().strip("/"),
-            height=GELSIGHT_R15_CFG.image_height,
-            width=GELSIGHT_R15_CFG.image_width,
-            data_types=["distance_to_image_plane"],
-            spawn=None,
-        ),
-        trimesh_vis_tactile_points=args_cli.trimesh_vis_tactile_points,
-        visualize_sdf_closest_pts=args_cli.debug_sdf_closest_pts,
-    )
 
 
 def _contact_object_scale() -> float:
@@ -1093,11 +1108,10 @@ def main() -> None:
             scene_cfg = NutTactileSceneCfg(num_envs=args_cli.num_envs, env_spacing=0.2)
         elif args_cli.contact_object_type == "none":
             scene_cfg = TactileSensorsSceneCfg(num_envs=args_cli.num_envs, env_spacing=0.2)
-            scene_cfg.tactile_sensor.contact_object_prim_path_expr = None
-            scene_cfg.tactile_sensor.debug_vis = True
         else:
             raise ValueError(f"Invalid contact_object_type: {args_cli.contact_object_type!r}")
         scene = InteractiveScene(scene_cfg)
+        _register_single_tacsl_sensor(scene, contact_object_type=args_cli.contact_object_type)
         sim.reset()
         tactile_names = ("tactile_sensor",)
 

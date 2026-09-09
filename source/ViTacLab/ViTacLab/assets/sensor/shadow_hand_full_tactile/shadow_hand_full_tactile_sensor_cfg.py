@@ -5,10 +5,94 @@
 
 """Configuration for :class:`ShadowHandFullTactileSensor`."""
 
+from __future__ import annotations
+
+from typing import Any
+
 from isaaclab.sensors import ContactSensorCfg
 from isaaclab.utils import configclass
 
 from .shadow_hand_full_tactile_sensor import ShadowHandFullTactileSensor
+
+# Rigid-body names under ``{ENV_REGEX_NS}/Robot`` for ViTacLab UR10e + Shadow Hand USD
+# (``ur10e_shadow_*_hand_glb_withtac*.usd``). Verified via ``--diag_only`` on 2026-06-11.
+UR10E_SHADOW_HAND_TACTILE_BODY_NAMES: tuple[str, ...] = (
+    "forearm",
+    "wrist",
+    "palm",
+    "ffknuckle",
+    "ffproximal",
+    "ffmiddle",
+    "ffdistal",
+    "fftip",
+    "lfmetacarpal",
+    "lfknuckle",
+    "lfproximal",
+    "lfmiddle",
+    "lfdistal",
+    "lftip",
+    "mfknuckle",
+    "mfproximal",
+    "mfmiddle",
+    "mfdistal",
+    "mftip",
+    "rfknuckle",
+    "rfproximal",
+    "rfmiddle",
+    "rfdistal",
+    "rftip",
+    "thbase",
+    "thproximal",
+    "thhub",
+    "thmiddle",
+    "thdistal",
+    "thtip",
+)
+
+UR10E_ARM_BODY_NAMES: tuple[str, ...] = (
+    "base_link",
+    "base",
+    "base_link_inertia",
+    "shoulder_link",
+    "upper_arm_link",
+    "forearm_link",
+    "wrist_1_link",
+    "wrist_2_link",
+    "wrist_3_link",
+)
+
+
+def shadow_hand_tactile_prim_path_expr(robot_root_prim_path_expr: str = "{ENV_REGEX_NS}/Robot") -> str:
+    """Contact-sensor ``prim_path`` regex covering Shadow Hand links only (excludes UR10e arm + ``imu``/``ee_link``)."""
+    root = robot_root_prim_path_expr.rstrip("/")
+    alts = "|".join(UR10E_SHADOW_HAND_TACTILE_BODY_NAMES)
+    return f"{root}/({alts})"
+
+
+def build_shadow_hand_full_tactile_sensor_cfg(
+    *,
+    robot_root_prim_path_expr: str = "{ENV_REGEX_NS}/Robot",
+    filter_prim_paths_expr: list[str] | None = None,
+    palm_link_name_substr: str = "palm",
+    voxel_resolution: tuple[int, int, int] = (64, 48, 10),
+    voxel_min_bounds_palm: tuple[float, float, float] = (-0.11, -0.10, -0.06),
+    voxel_max_bounds_palm: tuple[float, float, float] = (0.11, 0.10, 0.10),
+    max_contact_data_count_per_prim: int = 512,
+    **kwargs: Any,
+) -> ShadowHandFullTactileSensorCfg:
+    """Factory for :class:`ShadowHandFullTactileSensorCfg` with hand-only ``prim_path``."""
+    if filter_prim_paths_expr is None:
+        filter_prim_paths_expr = ["{ENV_REGEX_NS}/object"]
+    return ShadowHandFullTactileSensorCfg(
+        prim_path=shadow_hand_tactile_prim_path_expr(robot_root_prim_path_expr),
+        filter_prim_paths_expr=list(filter_prim_paths_expr),
+        palm_link_name_substr=palm_link_name_substr,
+        voxel_resolution=voxel_resolution,
+        voxel_min_bounds_palm=voxel_min_bounds_palm,
+        voxel_max_bounds_palm=voxel_max_bounds_palm,
+        max_contact_data_count_per_prim=max_contact_data_count_per_prim,
+        **kwargs,
+    )
 
 
 @configclass
@@ -25,8 +109,8 @@ class ShadowHandFullTactileSensorCfg(ContactSensorCfg):
 
     class_type: type = ShadowHandFullTactileSensor
 
-    prim_path: str = "{ENV_REGEX_NS}/Robot/.*"
-    """Regex matching rigid bodies with contact reporters (ViTacLab single-arm uses ``Robot``; dual-arm may use ``LeftRobot``)."""
+    prim_path: str = shadow_hand_tactile_prim_path_expr()
+    """Hand-only regex (see :data:`UR10E_SHADOW_HAND_TACTILE_BODY_NAMES`). Use ``build_shadow_hand_full_tactile_sensor_cfg`` for dual-arm roots."""
 
     max_contact_data_count_per_prim: int = 512
     """Raise this for contact-rich multi-link hands (bounds PhysX contact buffers)."""

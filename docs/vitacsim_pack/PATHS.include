@@ -1,0 +1,73 @@
+# ViTacSim portable pack — path include list (relative to ViTacLab repo root)
+# Lines starting with # are comments. Blank lines ignored.
+# Use bash_command/vitacsim_pack.sh to build the archive.
+
+# --- Package / install ---
+source/ViTacLab/setup.py
+source/ViTacLab/pyproject.toml
+source/ViTacLab/config/extension.toml
+
+# --- Core ViTacSim sensor (TacSL VisuoTactile V1 + V2) ---
+source/ViTacLab/ViTacLab/assets/sensor/tacsl_sensor/
+source/ViTacLab/ViTacLab/assets/sensor/__init__.py
+source/ViTacLab/ViTacLab/assets/sensor/shadow_hand_tacsl.py
+source/ViTacLab/ViTacLab/assets/sensor/shadow_hand_full_tactile/
+
+# --- Robot integration (UR10e + ShadowHand tactile) ---
+source/ViTacLab/ViTacLab/assets/robot/
+
+# --- Task glue: Forge + pretraining (GelSight finger calibration tasks) ---
+source/ViTacLab/ViTacLab/tasks/direct/simple_gripper/
+source/ViTacLab/ViTacLab/tasks/direct/medium_dexhand/forge_dexhand/
+source/ViTacLab/ViTacLab/tasks/direct/pretraining/
+source/ViTacLab/ViTacLab/tasks/direct/__init__.py
+source/ViTacLab/ViTacLab/tasks/__init__.py
+source/ViTacLab/ViTacLab/__init__.py
+
+# --- Local USD / meshes (exclude Scene/ and Objects/ — see README) ---
+source/ViTacLab/ViTacLab/assets/data/Sensors/
+source/ViTacLab/ViTacLab/assets/data/Robots/ShadowHand/
+source/ViTacLab/ViTacLab/assets/data/Robots/Franka/GelSight_Mini/
+
+# --- Demo / validation scripts ---
+scripts/demo/demo_forge_tactile_feedback_insert.py
+scripts/demo/demo_forge_task_operation_video.py
+scripts/demo/demo_visuotactile_alignment_visual.py
+scripts/demo/demo_visuotactile_sensor_v2.py
+scripts/demo/demo_visuotactile_sensor_v2_ablation.py
+scripts/demo/demo_shadow_hand_full_tactile_sensor.py
+scripts/demo/eval_visuotactile_physx_alignment.py
+scripts/demo/make_visuotactile_alignment_demo_video.py
+scripts/demo/render_replay_record_video.py
+scripts/debug/tacsl_sensor_gelsight_finger_short.py
+scripts/debug/run_forge_peg_tactile_view.py
+
+# --- Full-tra replay (Forge success demo) ---
+scripts/rsl_rl/full_tra/play_full_tra_single_v5.py
+scripts/rsl_rl/full_tra/full_tra_task_entries.py
+scripts/rsl_rl/full_tra/pose_keyframes/UR10eShadowHandForgeEnv__UR10eShadowHandForgePegInsertEnvCfg.json
+scripts/rsl_rl/full_tra/pose_keyframes/UR10eShadowHandForgeEnv__UR10eShadowHandForgeGearMeshEnvCfg.json
+scripts/rsl_rl/full_tra/pose_keyframes/UR10eShadowHandForgeEnv__UR10eShadowHandForgeNutThreadEnvCfg.json
+scripts/rsl_rl/full_tra/hand_pose_presets/UR10eShadowHandForgeEnv__UR10eShadowHandForgePegInsertEnvCfg.json
+scripts/rsl_rl/full_tra/hand_pose_presets/UR10eShadowHandForgeEnv__UR10eShadowHandForgeGearMeshEnvCfg.json
+scripts/rsl_rl/full_tra/hand_pose_presets/UR10eShadowHandForgeEnv__UR10eShadowHandForgeNutThreadEnvCfg.json
+
+# --- Shell entry points ---
+bash_command/vitacsim_pack.sh
+bash_command/vitacsim_report_pack.sh
+bash_command/visuotactile_physx_alignment_check.sh
+bash_command/visuotactile_alignment_visual.sh
+bash_command/visuotactile_alignment_demo.sh
+bash_command/visuotactile_v2_ablation.sh
+bash_command/forge_tactile_feedback_insert_demo.sh
+bash_command/forge_task_success_demo.sh
+bash_command/forge_operation_demo.sh
+bash_command/forge_insert.sh
+bash_command/forge_gear.sh
+bash_command/forge_nut.sh
+
+# --- Documentation ---
+docs/VITACSIM_PRINCIPLES.md
+docs/VITACSIM_PHYSX_VALIDATION.md
+docs/vitacsim_pack/
+README_send.md

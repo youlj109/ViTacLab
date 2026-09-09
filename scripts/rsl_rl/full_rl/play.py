@@ -222,7 +222,7 @@ def _tactile_shear_image_rgb_uint8(nf_hw: np.ndarray, sf_hw2: np.ndarray) -> np.
     if _ff_compute_tactile_shear_image is None:
         import cv2
 
-        from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_render import compute_tactile_shear_image
+        from ViTacLab.assets.sensor.tacsl_sensor.visuotactile_render import compute_tactile_shear_image
 
         _ff_cv2 = cv2
         _ff_compute_tactile_shear_image = compute_tactile_shear_image

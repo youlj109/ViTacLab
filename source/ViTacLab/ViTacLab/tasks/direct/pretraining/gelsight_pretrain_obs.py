@@ -10,3 +10,11 @@ def pretrain_obs_dim(use_full_tactile_obs: bool) -> int:
     base = 3
     tactile = (20 * 25 + 20 * 25 * 2) if use_full_tactile_obs else 3
     return base + tactile
+
+
+def pose_pretrain_obs_dim(use_full_tactile_obs: bool, include_object_position: bool) -> int:
+    """Optional env-frame object position (3) + tactile; default is tactile-only for pose-from-touch."""
+
+    base = 3 if include_object_position else 0
+    tactile = (20 * 25 + 20 * 25 * 2) if use_full_tactile_obs else 3
+    return base + tactile

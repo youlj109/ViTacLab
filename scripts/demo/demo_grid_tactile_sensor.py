@@ -220,8 +220,11 @@ def run_simulator(
                 if fuv is not None:
                     uv = fuv[0, 0, 0]
                     f_mag = torch.sqrt(torch.clamp(uv[0] ** 2 + uv[1] ** 2, min=0.0)).max().item()
+                cdc = scene["tactile_pad"].data.contact_data_count
+                n_pts = int(cdc[0, 0, 0].item()) if cdc is not None else -1
                 print(
-                    f"[t={sim_time:6.3f}s] normal_grid min={trough:.4f} max={peak:.4f} mean={mean:.6f} N  "
+                    f"[t={sim_time:6.3f}s] contact_pts={n_pts}  "
+                    f"normal_grid min={trough:.4f} max={peak:.4f} mean={mean:.6f} N  "
                     f"friction_mag_max={f_mag:.4f}  |net_forces_w|={net_n:.4f}"
                 )
                 if plot_handles is not None:

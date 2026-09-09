@@ -10,7 +10,7 @@ from isaaclab.sensors import TiledCameraCfg
 from isaaclab.utils import configclass
 
 from isaaclab_assets.sensors import GELSIGHT_R15_CFG
-from isaaclab_contrib.sensors.tacsl_sensor import VisuoTactileSensorV2Cfg as VisuoTactileSensorCfg
+from ViTacLab.assets.sensor.tacsl_sensor import VisuoTactileSensorV2Cfg as VisuoTactileSensorCfg
 
 GELSIGHT_FINGER_SHORT_USD: str = (
     "source/ViTacLab/ViTacLab/assets/data/Sensors/Gelsight_finger/gelsight_r15_finger_short_v2.usd"

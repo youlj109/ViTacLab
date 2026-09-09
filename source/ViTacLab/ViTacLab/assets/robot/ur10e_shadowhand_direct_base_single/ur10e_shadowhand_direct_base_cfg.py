@@ -8,14 +8,27 @@ from isaaclab.sensors import TiledCameraCfg
 from isaaclab.utils import configclass
 
 from isaaclab_assets.sensors import GELSIGHT_R15_CFG
-from isaaclab_contrib.sensors.tacsl_sensor import VisuoTactileSensorV2Cfg as VisuoTactileSensorCfg
+from ViTacLab.assets.sensor.tacsl_sensor import VisuoTactileSensorV2Cfg as VisuoTactileSensorCfg
+#from ViTacLab.assets.sensor.tacsl_sensor import VisuoTactileSensorCfg
 
+# Canonical ordered scene keys and matching robot finger suffixes. Task
+# environments, collectors, and policy record adapters must preserve this
+# order so tactile tensors have stable sensor semantics across workflows.
+UR10E_SHADOWHAND_TACTILE_SENSOR_SPECS: tuple[tuple[str, str], ...] = (
+    ("tactile_sensor_ff", "ff"),
+    ("tactile_sensor_lf", "lf"),
+    ("tactile_sensor_mf", "mf"),
+    ("tactile_sensor_rf", "rf"),
+    ("tactile_sensor_th", "th"),
+)
+UR10E_SHADOWHAND_TACTILE_SENSOR_NAMES: tuple[str, ...] = tuple(
+    name for name, _finger in UR10E_SHADOWHAND_TACTILE_SENSOR_SPECS
+)
 
 UR10E_SHADOWHAND_LEFT_CFG: ArticulationCfg = ArticulationCfg(
     prim_path="/World/envs/env_.*/Robot",
     spawn=sim_utils.UsdFileCfg(
         usd_path="source/ViTacLab/ViTacLab/assets/data/Robots/ShadowHand/ur10e/ur10e_shadow_left_hand_glb_withtac_v2_no_gelsight_articulation.usd",
-        activate_contact_sensors=False,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=True,
             retain_accelerations=False,
@@ -27,6 +40,9 @@ UR10E_SHADOWHAND_LEFT_CFG: ArticulationCfg = ArticulationCfg(
             max_contact_impulse=1e32,
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            # UR10e is a bolted-down tabletop manipulator. Keep this explicit
+            # even if a particular USD already authors a fixed root.
+            fix_root_link=True,
             enabled_self_collisions=True,
             solver_position_iteration_count=8,
             solver_velocity_iteration_count=0,
@@ -59,9 +75,11 @@ UR10E_SHADOWHAND_LEFT_CFG: ArticulationCfg = ArticulationCfg(
         ),
         "fingers": ImplicitActuatorCfg(
             joint_names_expr=[".*(FFJ|MFJ|RFJ|LFJ|THJ|WRJ).*"],
-            effort_limit_sim=0.5,
-            stiffness=3.0,
-            damping=0.1,
+            effort_limit_sim=10.0,
+            # Keep hand posture stable while the UR10e arm moves.
+            # Previous values (stiffness=3.0, damping=0.1) were too soft and fingers drifted.
+            stiffness=80.0,
+            damping=10.0,
             friction=0.01,
         ),
     },
@@ -86,8 +104,8 @@ def build_ur10e_shadowhand_third_person_camera_cfg() -> TiledCameraCfg:
     return TiledCameraCfg(
         prim_path="/World/envs/env_.*/ThirdPersonCamera",
         offset=TiledCameraCfg.OffsetCfg(
-            pos=(2.0, 0.0, 1.0),
-            rot=(0.64086, 0.29884, 0.29884, 0.64086),
+            pos=(0.3899, -1.6833, 1.0833),
+            rot=(0.8403, 0.5420, 0.00063, 0.00098),
             convention="None",
         ),
         data_types=["rgb"],
@@ -103,16 +121,52 @@ def build_ur10e_shadowhand_third_person_camera_cfg() -> TiledCameraCfg:
 
 
 @configclass
+class TacSLSensorPolicyCfg:
+    """Unified TacSL policy for UR10e-ShadowHand scene families.
+
+    Task scenes should override this policy (or selected fields) instead of rebuilding
+    sensor setup logic per-task.
+    """
+
+    contact_object_prim_path_expr: str = "/World/envs/env_.*/object"
+    enable_force_field: bool = True
+    tactile_array_size: tuple[int, int] = (20, 25)
+    tactile_margin: float = 0.005
+    contact_object_is_deformable: bool = False
+    depth_penetration_deadband: float = 0.0
+    use_physx_sparse_anchors: bool = True
+    strict_target_contact_attribution: bool = True
+    require_physx_sparse_anchors: bool = False
+
+
+@configclass
 class UR10eShadowHandTacSLSceneCfg(UR10eShadowHandBaseSceneCfg):
     """UR10e + ShadowHand scene with 5 TacSL GelSight sensors (ff/lf/mf/rf/th)."""
 
     @classmethod
+    def _tactile_policy(cls) -> TacSLSensorPolicyCfg:
+        """Unified TacSL policy provider.
+
+        Keep as classmethod (not dataclass field) so InteractiveScene does not interpret it
+        as a scene asset config entry.
+        """
+        return TacSLSensorPolicyCfg()
+
+    @classmethod
     def _tactile_params(cls) -> dict:
+        # Keep this compatibility method so older task configs can still override it.
+        # New task configs should override `_tactile_policy()` on the scene cfg.
+        p = cls._tactile_policy()
         return {
-            "contact_object_prim_path_expr": "/World/envs/env_.*/object",
-            "enable_force_field": True,
-            "tactile_array_size": (20, 25),
-            "tactile_margin": 0.005,
+            "contact_object_prim_path_expr": p.contact_object_prim_path_expr,
+            "enable_force_field": p.enable_force_field,
+            "tactile_array_size": p.tactile_array_size,
+            "tactile_margin": p.tactile_margin,
+            "contact_object_is_deformable": p.contact_object_is_deformable,
+            "depth_penetration_deadband": p.depth_penetration_deadband,
+            "use_physx_sparse_anchors": p.use_physx_sparse_anchors,
+            "strict_target_contact_attribution": p.strict_target_contact_attribution,
+            "require_physx_sparse_anchors": p.require_physx_sparse_anchors,
         }
 
 def build_ur10e_shadowhand_tactile_sensor_cfgs(scene_cfg: UR10eShadowHandTacSLSceneCfg) -> dict[str, VisuoTactileSensorCfg]:
@@ -140,6 +194,9 @@ def build_ur10e_shadowhand_tactile_sensor_cfgs(scene_cfg: UR10eShadowHandTacSLSc
             contact_object_prim_path_expr=tp["contact_object_prim_path_expr"],
             contact_object_is_deformable=tp.get("contact_object_is_deformable", False),
             depth_penetration_deadband=tp.get("depth_penetration_deadband", 0.0),
+            use_physx_sparse_anchors=tp.get("use_physx_sparse_anchors", True),
+            require_physx_sparse_anchors=tp.get("require_physx_sparse_anchors", False),
+            strict_target_contact_attribution=tp.get("strict_target_contact_attribution", True),
             normal_contact_stiffness=1.0,
             friction_coefficient=2.0,
             tangential_stiffness=0.1,
@@ -154,11 +211,5 @@ def build_ur10e_shadowhand_tactile_sensor_cfgs(scene_cfg: UR10eShadowHandTacSLSc
             visualize_sdf_closest_pts=False,
         )
 
-    return {
-        "tactile_sensor_ff": _mk("ff"),
-        "tactile_sensor_lf": _mk("lf"),
-        "tactile_sensor_mf": _mk("mf"),
-        "tactile_sensor_rf": _mk("rf"),
-        "tactile_sensor_th": _mk("th"),
-    }
+    return {name: _mk(finger) for name, finger in UR10E_SHADOWHAND_TACTILE_SENSOR_SPECS}
 

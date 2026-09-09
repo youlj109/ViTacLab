@@ -12,7 +12,7 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.sim.utils.stage import use_stage
 
-from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
+from ViTacLab.assets.sensor.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
 
 from .gelsight_finger_pretrain_base_cfg import (
     GelsightFingerPretrainSceneCfg,

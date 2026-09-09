@@ -94,7 +94,7 @@ def main() -> None:
     import ViTacLab.tasks  # noqa: F401
     from ViTacLab.tasks.direct.simple_gripper.forge_env import ForgeEnv
     from ViTacLab.tasks.direct.simple_gripper.forge_env_cfg import ForgeTaskPegInsertCfg
-    from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_render import compute_tactile_shear_image
+    from ViTacLab.assets.sensor.tacsl_sensor.visuotactile_render import compute_tactile_shear_image
 
     # Build environment configuration for the PegInsert task.
     cfg = ForgeTaskPegInsertCfg()

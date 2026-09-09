@@ -146,26 +146,42 @@ class UR10eDualShadowHandBiStabEnvCfg(DirectMARLEnvCfg):
     )
 
     # --- Ball (sphere) resting on the plate; policy steers it toward the goal marker ---
+    # object_cfg: RigidObjectCfg = RigidObjectCfg(
+    #     prim_path="/World/envs/env_.*/object",
+    #     spawn=sim_utils.SphereCfg(
+    #         radius=0.015,
+    #         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.85, 0.1)),
+    #         physics_material=sim_utils.RigidBodyMaterialCfg(static_friction=0.9, dynamic_friction=0.8),
+    #         rigid_props=sim_utils.RigidBodyPropertiesCfg(
+    #             kinematic_enabled=False,
+    #             disable_gravity=False,
+    #             enable_gyroscopic_forces=True,
+    #             solver_position_iteration_count=8,
+    #             solver_velocity_iteration_count=0,
+    #             sleep_threshold=0.005,
+    #             stabilization_threshold=0.0025,
+    #             max_depenetration_velocity=1000.0,
+    #         ),
+    #         collision_props=sim_utils.CollisionPropertiesCfg(),
+    #         mass_props=sim_utils.MassPropertiesCfg(density=400.0),
+    #     ),
+    #     init_state=RigidObjectCfg.InitialStateCfg(pos=(0.45, 0.0, 0.47), rot=(1.0, 0.0, 0.0, 0.0)),
+    # )
     object_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/object",
-        spawn=sim_utils.SphereCfg(
-            radius=0.015,
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.85, 0.1)),
-            physics_material=sim_utils.RigidBodyMaterialCfg(static_friction=0.9, dynamic_friction=0.8),
+        spawn=sim_utils.UsdFileCfg(
+            usd_path="source/ViTacLab/ViTacLab/assets/data/Objects/cosmos_assets/1_object_A/orange/orange.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                kinematic_enabled=False,
                 disable_gravity=False,
-                enable_gyroscopic_forces=True,
-                solver_position_iteration_count=8,
-                solver_velocity_iteration_count=0,
-                sleep_threshold=0.005,
-                stabilization_threshold=0.0025,
-                max_depenetration_velocity=1000.0,
+                retain_accelerations=False,
+                enable_gyroscopic_forces=False,
             ),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(density=400.0),
+            articulation_props=None,
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.45, 0.0, 0.47), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(
+            # 放在机械臂前方稍远处，避免一开始就贴太近
+            pos=(0.45, 0.0, 0.47), rot=(1.0, 0.0, 0.0, 0.0)
+        ),
     )
 
     goal_object_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(

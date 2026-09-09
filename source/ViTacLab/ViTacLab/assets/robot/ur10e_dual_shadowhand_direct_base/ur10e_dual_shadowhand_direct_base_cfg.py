@@ -14,7 +14,9 @@ from isaaclab.sensors import TiledCameraCfg
 from isaaclab.utils import configclass
 
 from isaaclab_assets.sensors import GELSIGHT_R15_CFG
-from isaaclab_contrib.sensors.tacsl_sensor import VisuoTactileSensorV2Cfg as VisuoTactileSensorCfg
+from ViTacLab.assets.sensor.tacsl_sensor import (
+    VisuoTactileSensorV2Cfg as VisuoTactileSensorCfg,
+)
 
 # Default UR10e arm posture (elbow-up teleop ref); distinct symbol name from single-arm cfg module.
 UR10E_DUAL_SHADOWHAND_DEFAULT_ARM_JOINT_POS: dict[str, float] = {
@@ -45,7 +47,9 @@ _SHARED_USD_KWARGS = dict(
         sleep_threshold=0.005,
         stabilization_threshold=0.0005,
     ),
-    collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=-0.002),
+    collision_props=sim_utils.CollisionPropertiesCfg(
+        contact_offset=0.005, rest_offset=-0.002
+    ),
 )
 
 _SHARED_ACTUATORS = {
@@ -59,8 +63,14 @@ _SHARED_ACTUATORS = {
     "fingers": ImplicitActuatorCfg(
         joint_names_expr=[".*(FFJ|MFJ|RFJ|LFJ|THJ|WRJ).*"],
         effort_limit_sim=0.5,
-        stiffness=3.0,
-        damping=0.1,
+        stiffness={
+            "WRJ.*": 350.0,
+            ".*(FFJ|MFJ|RFJ|LFJ|THJ).*": 6.0,
+        },
+        damping={
+            "WRJ.*": 50.0,
+            ".*(FFJ|MFJ|RFJ|LFJ|THJ).*": 0.2,
+        },
         friction=0.01,
     ),
 }
