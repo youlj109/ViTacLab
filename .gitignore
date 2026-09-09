@@ -21,6 +21,7 @@
 **/.pytest_cache/
 **/*.pyc
 **/*.pb
+/.venv_hf/
 
 # Docker/Singularity
 **/*.sif
@@ -63,10 +64,15 @@ _build
 
 # Teleop Recorded Dataset
 /datasets/
+/play_records/
 
 # Local run/play data (checkpoints, recordings)
 /data/
 /source/ViTacLab/ViTacLab/assets/data/
+
+# Machine-local reproduction configuration
+/config/local.env
+/hftoken.txt
 
 # Large/binary simulation assets under package (textures, MDL, etc.)
 source/ViTacLab/ViTacLab/assets/data/

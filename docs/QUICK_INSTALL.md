@@ -1,6 +1,9 @@
 # ViTacLab 快速安装
 
-本指南面向已经安装好 Isaac Sim / Isaac Lab、希望快速验证 ViTacLab 扩展的用户。
+适用于：**已经安装 Isaac Sim / Isaac Lab**，只想尽快运行本仓库。
+
+完整的资产下载、配置和验收流程见
+[`REPRODUCIBILITY.md`](REPRODUCIBILITY.md)。
 
 ## 前置条件
 
@@ -13,8 +16,9 @@
 
 以下名称仅为示例，请换成你的实际环境名：
 
+### 1. 进入安装了 Isaac Lab 的 Python 环境
 ```bash
-conda activate env_isaaclab_510
+conda activate <isaac-lab-environment>
 ```
 
 ### 2. 安装 ViTacLab 扩展
@@ -23,6 +27,10 @@ conda activate env_isaaclab_510
 
 ```bash
 python -m pip install -e source/ViTacLab
+python -m pip install -r requirements/repro.txt
+python -m venv .venv_hf
+.venv_hf/bin/python -m pip install -U huggingface_hub
+bash bash_command/download_hf_assets.sh Yanlj/ViTacLab-assets
 ```
 
 ### 3. 验证注册与基础运行
@@ -45,12 +53,12 @@ python scripts/zero_agent.py \
 
 ## 运行触觉操作任务
 
-多数论文规模的操作任务依赖未包含在公开代码仓库中的机器人/物体 USD、触觉标定资产和匹配的 checkpoint；目前也没有统一公开的资产下载链接。安装相应任务资产后，从 `scripts/list_envs.py` 的输出选择准确的 Gym ID：
-
 ```bash
+bash bash_command/verify_repro_env.sh
+
 python scripts/zero_agent.py \
-  --task YOUR_TASK_ID \
-  --num_envs 1 --enable_cameras
+  --task Isaac-UR10eShadowHand-BlindGrasp-Direct-v0 \
+  --num_envs 1 --max-steps 20 --enable_cameras --headless
 ```
 
 需要触觉 RGB 或相机观测的任务通常必须添加 `--enable_cameras`。无显示器运行、相机渲染和常见排错请参阅[相机与 headless 指南](enable_cameras_headless_rl.md)。

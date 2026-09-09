@@ -7,33 +7,22 @@
 
 from isaaclab.utils import configclass
 
-from ViTacLab.assets.robot.ur10e_dual_shadowhand_direct_base.ur10e_dual_shadowhand_direct_base_cfg import (
-    UR10eDualShadowHandTacSLSceneCfg,
+from ViTacLab.tasks.direct.medium_dexhand.bi_peg.bi_peg_env_cfg import (
+    UR10eDualShadowHandBiPegEnvCfg,
+    UR10eDualShadowHandBiPegSceneCfg,
 )
-from ViTacLab.tasks.direct.medium_dexhand.bi_peg.bi_peg_env_cfg import UR10eDualShadowHandBiPegEnvCfg
-
-
-@configclass
-class UR10eDualShadowHandBiBlindPegSceneCfg(UR10eDualShadowHandTacSLSceneCfg):
-    """TacSL contacts ``hole`` or ``peg`` (same prims as Bi-Peg rigid bodies)."""
-
-    @classmethod
-    def _tactile_params(cls) -> dict:
-        p = super()._tactile_params()
-        p["contact_object_prim_path_expr"] = "/World/envs/env_.*/(hole|peg)"
-        return p
 
 
 @configclass
 class UR10eDualShadowHandBiBlindPegEnvCfg(UR10eDualShadowHandBiPegEnvCfg):
     """Same as :class:`UR10eDualShadowHandBiPegEnvCfg` but:
 
-    - Uses :class:`UR10eDualShadowHandBiBlindPegSceneCfg` so ``enable_cameras=True`` spawns
-      GelSight / TacSL sensors (not the default ``object`` prim).
+    - Reuses :class:`UR10eDualShadowHandBiPegSceneCfg` so ``enable_cameras=True`` spawns
+      GelSight / TacSL sensors against the shared ``hole|peg`` object expression.
     - Sets :attr:`enable_third_person_camera` to False so no tiled third-person RGB camera is added.
     """
 
-    scene: UR10eDualShadowHandBiBlindPegSceneCfg = UR10eDualShadowHandBiBlindPegSceneCfg(
+    scene: UR10eDualShadowHandBiPegSceneCfg = UR10eDualShadowHandBiPegSceneCfg(
         num_envs=256,
         env_spacing=1.5,
         replicate_physics=True,

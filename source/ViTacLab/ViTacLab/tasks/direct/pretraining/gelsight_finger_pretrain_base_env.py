@@ -12,7 +12,7 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.sim.utils.stage import use_stage
 
-from ViTacLab.assets.sensor.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
+from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
 
 from .gelsight_finger_pretrain_base_cfg import (
     GelsightFingerPretrainSceneCfg,
@@ -42,6 +42,7 @@ class GelsightFingerPretrainBaseEnv(DirectRLEnv):
             art._is_initialized = True
 
     def _setup_scene(self) -> None:
+        self._expected_tactile_sensor_names = (TACTILE_SENSOR_NAME,)
         self.robot = Articulation(self.cfg.robot_cfg)
 
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
@@ -121,3 +122,70 @@ class GelsightFingerPretrainBaseEnv(DirectRLEnv):
             sf_hw = data.tactile_shear_force
             self._tactile_normal_mean = nf.mean(dim=1, keepdim=True)
             self._tactile_shear_mean = sf_hw.mean(dim=1)
+
+    def _build_record_dict(self) -> dict[str, torch.Tensor]:
+        """Return the canonical single-GelSight pose/force/RGB record schema.
+
+        Compact or dense tactile policy observations remain controlled by
+        ``use_full_tactile_obs`` in each pretraining task.  This method is an
+        independent data/acceptance path and therefore does not change the
+        registered observation dimension.
+        """
+
+        self._update_tactile_data()
+        record: dict[str, torch.Tensor] = {
+            "joint_pos": self.robot.data.joint_pos.detach().cpu(),
+        }
+
+        sensor = self.scene.sensors.get(TACTILE_SENSOR_NAME)
+        pose = None
+        if sensor is not None:
+            data = sensor.data
+            pos_w = getattr(data, "pos_w", None)
+            quat_w = getattr(data, "quat_w_ros", None)
+            if quat_w is None:
+                quat_w = getattr(data, "quat_w", None)
+            if pos_w is not None and quat_w is not None:
+                pose = torch.cat((pos_w - self.scene.env_origins, quat_w), dim=-1)
+        if pose is None:
+            # TacSL V2 does not expose a standard pose field on every build.
+            # The short-finger articulation's final rigid body is the closest
+            # stable physical pose source for the elastomer.
+            body_idx = max(0, len(self.robot.body_names) - 1)
+            pose = torch.cat(
+                (
+                    self.robot.data.body_pos_w[:, body_idx] - self.scene.env_origins,
+                    self.robot.data.body_quat_w[:, body_idx],
+                ),
+                dim=-1,
+            )
+        record["tactile_pos"] = pose.unsqueeze(1).detach().cpu()
+
+        if sensor is None:
+            return record
+
+        data = sensor.data
+        height, width = tuple(sensor.cfg.tactile_array_size)
+        normal = getattr(data, "tactile_normal_force", None)
+        shear = getattr(data, "tactile_shear_force", None)
+        rgb = getattr(data, "tactile_rgb_image", None)
+        if normal is not None:
+            record["tactile_normal_force"] = (
+                normal.reshape(self.num_envs, 1, height, width, 1).detach().cpu()
+            )
+        if shear is not None:
+            record["tactile_shear_force"] = (
+                shear.reshape(self.num_envs, 1, height, width, 2).detach().cpu()
+            )
+        if rgb is not None:
+            rgb_u8 = rgb.detach()
+            if rgb_u8.dtype != torch.uint8:
+                if rgb_u8.numel() and float(rgb_u8.max().item()) <= 1.5:
+                    rgb_u8 = rgb_u8 * 255.0
+                rgb_u8 = torch.clamp(rgb_u8, 0.0, 255.0).to(torch.uint8)
+            image_h = int(sensor.cfg.render_cfg.image_height)
+            image_w = int(sensor.cfg.render_cfg.image_width)
+            if rgb_u8.ndim == 2 and rgb_u8.shape[1] == image_h * image_w * 3:
+                rgb_u8 = rgb_u8.reshape(self.num_envs, image_h, image_w, 3)
+            record["tactile_rgb_image"] = rgb_u8.unsqueeze(1).cpu()
+        return record

@@ -1,3 +1,7 @@
+"""Shadow Hand environment implementation.
+
+This module is the canonical ViTacLab task-side code for simulation, data collection, and policy inference. Keep task-specific logic here and avoid creating version-suffixed copies; update the registered Gym task/config entry instead."""
+
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
@@ -10,21 +14,38 @@ import torch
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
-from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import TiledCamera, TiledCameraCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import quat_apply
 
 from isaaclab_tasks.direct.inhand_manipulation.inhand_manipulation_env import InHandManipulationEnv, unscale
 
+from ViTacLab.assets.sensor.shadow_hand_tacsl import (
+    build_shadow_hand_tactile_record,
+    initialize_tacsl_nominal_render,
+    shadow_hand_tacsl_sensor_keys,
+)
+
 from .feature_extractor import FeatureExtractor, FeatureExtractorCfg
-from .shadow_hand_env_cfg import ShadowHandEnvCfg
+from .shadow_hand_env_cfg import ShadowHandEnvCfg, ShadowHandSceneCfg
 
 
 @configclass
 class ShadowHandVisionEnvCfg(ShadowHandEnvCfg):
-    # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1225, env_spacing=2.0, replicate_physics=True)
+    """Vision reorientation with five real GelSight sensors in the record path.
+
+    The existing policy/critic dimensions remain vision + proprioception only.
+    Dense tactile data is exposed through :meth:`ShadowHandVisionEnv._build_record_dict`
+    and is not appended to observations unless a future task configuration
+    explicitly defines a compatible policy/checkpoint layout.
+    """
+
+    scene: ShadowHandSceneCfg = ShadowHandSceneCfg(
+        num_envs=1225,
+        env_spacing=2.0,
+        replicate_physics=True,
+        clone_in_fabric=False,
+    )
 
     # camera
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
@@ -47,14 +68,6 @@ class ShadowHandVisionEnvCfg(ShadowHandEnvCfg):
     state_space = 187 + 27  # asymettric states + vision CNN embedding
 
 
-@configclass
-class ShadowHandVisionEnvPlayCfg(ShadowHandVisionEnvCfg):
-    # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=64, env_spacing=2.0, replicate_physics=True)
-    # inference for CNN
-    feature_extractor = FeatureExtractorCfg(train=False, load_checkpoint=True)
-
-
 class ShadowHandVisionEnv(InHandManipulationEnv):
     cfg: ShadowHandVisionEnvCfg
 
@@ -74,6 +87,7 @@ class ShadowHandVisionEnv(InHandManipulationEnv):
         self.goal_keypoints = torch.ones(self.num_envs, 8, 3, dtype=torch.float32, device=self.device)
 
     def _setup_scene(self):
+        self._expected_tactile_sensor_names = shadow_hand_tacsl_sensor_keys()
         # add hand, in-hand object, and goal object
         self.hand = Articulation(self.cfg.robot_cfg)
         self.object = RigidObject(self.cfg.object_cfg)
@@ -92,6 +106,7 @@ class ShadowHandVisionEnv(InHandManipulationEnv):
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
+        initialize_tacsl_nominal_render(self, self._expected_tactile_sensor_names)
 
     def _compute_image_observations(self):
         # generate ground truth keypoints for in-hand cube
@@ -167,6 +182,31 @@ class ShadowHandVisionEnv(InHandManipulationEnv):
 
         observations = {"policy": obs, "critic": state}
         return observations
+
+    def _build_record_dict(self) -> dict[str, torch.Tensor]:
+        """Return canonical tactile pose/force/RGB without changing policy observations."""
+
+        record = build_shadow_hand_tactile_record(
+            self,
+            ((self.hand, shadow_hand_tacsl_sensor_keys()),),
+        )
+        if self._tiled_camera is not None:
+            camera_output = self._tiled_camera.data.output
+            rgb = camera_output.get("rgb")
+            if rgb is not None:
+                record["third_person_camera"] = rgb.detach().cpu()
+            depth = camera_output.get("depth")
+            if depth is not None:
+                record["third_person_camera_depth"] = depth.detach().cpu()
+            camera_quat = getattr(self._tiled_camera.data, "quat_w_ros", None)
+            if camera_quat is None:
+                camera_quat = getattr(self._tiled_camera.data, "quat_w", None)
+            if camera_quat is not None:
+                camera_pos_env = self._tiled_camera.data.pos_w - self.scene.env_origins
+                record["third_person_camera_pos"] = (
+                    torch.cat((camera_pos_env, camera_quat), dim=-1).unsqueeze(1).detach().cpu()
+                )
+        return record
 
 
 @torch.jit.script

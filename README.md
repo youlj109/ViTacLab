@@ -21,7 +21,10 @@
 > [!NOTE]
 > ViTacLab is under active research development. Runtime support depends on the task, Isaac Sim/Isaac Lab version, local assets, and matching policy checkpoints. Run `scripts/list_envs.py` in your installed checkout before large-scale experiments.
 
-<a id="paper"></a>
+**Runtime assets:** [Hugging Face Dataset — `Yanlj/ViTacLab-assets`](https://huggingface.co/datasets/Yanlj/ViTacLab-assets).
+Download and verification instructions are in [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md).
+
+---
 
 ## 📄 Paper
 
@@ -77,7 +80,17 @@ ViTacSim uses PhysX solver contacts as physical anchors while retaining dense, G
 - **Local dense force array (`T_dense`)** for spatially resolved normal and tangential forces.
 - **Local tactile image (`T_img`)** for vision-compatible tactile sensing.
 
-Its correction pipeline combines local stiffness alignment for the normal response, decoupled slip–stick tangential reconstruction, and a joint projection that preserves the sparse PhysX force/torque while enforcing local Coulomb friction constraints.
+| Topic | Location |
+|-------|----------|
+| **完整复现（Git + Hugging Face 资产 + 验证）** | [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) |
+| **Quick install (中文)** | [`docs/QUICK_INSTALL.md`](docs/QUICK_INSTALL.md) |
+| RSL-RL training (commands, Hydra, IK-RL) | [`scripts/rsl_rl/README.md`](scripts/rsl_rl/README.md), [`scripts/rsl_rl/QUICKSTART.md`](scripts/rsl_rl/QUICKSTART.md) |
+| IK-RL team guide (env / reward / recording) | [`docs/ik_rl_modification_guide.md`](docs/ik_rl_modification_guide.md) |
+| IK-RL YAML configs | [`scripts/rsl_rl/ik_rl/configs/README.md`](scripts/rsl_rl/ik_rl/configs/README.md) |
+| Video teleop (calibration, sender/receiver, UR10e task) | [`scripts/teleoperation/video_teleop/QUICK_START.md`](scripts/teleoperation/video_teleop/QUICK_START.md), [`scripts/teleoperation/video_teleop/README.md`](scripts/teleoperation/video_teleop/README.md) |
+| `video_teleop` package internals | [`source/video_teleop/docs/README.md`](source/video_teleop/docs/README.md), [`source/video_teleop/docs/ENGINEERING_SUMMARY.md`](source/video_teleop/docs/ENGINEERING_SUMMARY.md) |
+| Headless training vs `enable_cameras` | [`docs/enable_cameras_headless_rl.md`](docs/enable_cameras_headless_rl.md) |
+| **ViTacSim Xense calibration & validation** | [`docs/VITACSIM_CALIBRATION.md`](docs/VITACSIM_CALIBRATION.md) (see **Advisor release** above) |
 
 <p align="center">
   <a href="docs/media/paper/sim-validation.png">
