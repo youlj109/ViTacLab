@@ -4,8 +4,9 @@
 
 **Physically Consistent Visuo-Tactile Simulation, Benchmarking, and Representation Learning for Robotic Manipulation**
 
-[Paper](#paper) · [Highlights](#overview) · [Benchmark](#vitacbench) · [Results](#results) · [Quick Start](#quick-start) · [Documentation](#documentation) · [Citation](#citation)
+[Project Website](https://youlj109.github.io/ViTacLab/) · [Paper](#paper) · [Highlights](#overview) · [Benchmark](#vitacbench) · [Results](#results) · [Quick Start](#quick-start) · [Documentation](#documentation) · [Citation](#citation)
 
+[![Website](https://img.shields.io/badge/Website-GitHub%20Pages-53B9E8?logo=githubpages&logoColor=white)](https://youlj109.github.io/ViTacLab/)
 [![Isaac Lab](https://img.shields.io/badge/Isaac%20Lab-extension-76B900?logo=nvidia&logoColor=white)](https://github.com/isaac-sim/IsaacLab)
 [![Python](https://img.shields.io/badge/Python-%E2%89%A53.10-3776AB?logo=python&logoColor=white)](source/ViTacLab/setup.py)
 [![Paper](https://img.shields.io/badge/Paper-coming%20soon-8A63D2)](#paper)
@@ -295,6 +296,7 @@ Checkpoints are task-specific: camera order, tactile type and count, state/actio
 
 | Topic | Document |
 |---|---|
+| Project website | [Website](https://youlj109.github.io/ViTacLab/) · [Maintenance notes](docs/PROJECT_WEBSITE.md) |
 | Installation | [Quick install (中文)](docs/QUICK_INSTALL.md) |
 | Environment inventory (development snapshot) | [Environment and compatibility matrix](docs/ENVIRONMENT_MATRIX.md) |
 | Executable scripts and CLI options | [Script usage reference](docs/SCRIPT_USAGE.md) |

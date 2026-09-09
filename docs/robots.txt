@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://youlj109.github.io/ViTacLab/sitemap.xml

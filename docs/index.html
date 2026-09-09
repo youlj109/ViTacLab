@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ViTacLab is a full-stack framework for physically consistent visuo-tactile simulation, benchmarking, and representation learning for robotic manipulation.">
+  <meta name="theme-color" content="#11182c">
+  <meta name="color-scheme" content="light">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self' 'sha256-WZRJfWvsnNCPcxzZwvyhovnZGqhZaC+8gPGPRbx6wTk=' 'sha256-ybddq/ud3rAqh4UaqcR4LXttjASalzSHDnB2tP5TuNk='; object-src 'none'; base-uri 'self'; form-action 'none'">
+
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://youlj109.github.io/ViTacLab/">
+  <meta property="og:title" content="ViTacLab — Visuo-Tactile Robot Learning">
+  <meta property="og:description" content="Physically consistent tactile simulation, hierarchical benchmarking, and sensor-agnostic representation learning for robotic manipulation.">
+  <meta property="og:image" content="https://youlj109.github.io/ViTacLab/media/paper/vitaclab-teaser.png">
+  <meta property="og:image:width" content="2200">
+  <meta property="og:image:height" content="976">
+  <meta property="og:image:alt" content="Overview of the ViTacSim, ViTacBench, and ViTacPolicy components in ViTacLab">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="ViTacLab — Visuo-Tactile Robot Learning">
+  <meta name="twitter:description" content="Physically consistent tactile simulation, benchmarking, and representation learning for robotic manipulation.">
+  <meta name="twitter:image" content="https://youlj109.github.io/ViTacLab/media/paper/vitaclab-teaser.png">
+  <meta name="twitter:image:alt" content="Overview of the ViTacSim, ViTacBench, and ViTacPolicy components in ViTacLab">
+
+  <link rel="canonical" href="https://youlj109.github.io/ViTacLab/">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="manifest" href="site.webmanifest">
+  <script>document.documentElement.classList.add("js");</script>
+  <link rel="stylesheet" href="assets/site.css">
+
+  <title>ViTacLab — Visuo-Tactile Robot Learning</title>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "ScholarlyArticle",
+    "name": "ViTacLab: Physically Consistent Visuo-Tactile Simulation, Benchmarking, and Representation Learning for Robotic Manipulation",
+    "url": "https://youlj109.github.io/ViTacLab/",
+    "subjectOf": {
+      "@type": "SoftwareSourceCode",
+      "name": "ViTacLab",
+      "codeRepository": "https://github.com/youlj109/ViTacLab"
+    },
+    "author": [
+      {"@type": "Person", "name": "Linjing You"},
+      {"@type": "Person", "name": "Zeming Yang"},
+      {"@type": "Person", "name": "Zhenhao Shen"},
+      {"@type": "Person", "name": "Shengqiang Xu"},
+      {"@type": "Person", "name": "Guanda Li"},
+      {"@type": "Person", "name": "Wenxuan Li"},
+      {"@type": "Person", "name": "Jasper Lu"},
+      {"@type": "Person", "name": "Jingkai Xu"},
+      {"@type": "Person", "name": "Shawn Xie"},
+      {"@type": "Person", "name": "Zhu Junjie"},
+      {"@type": "Person", "name": "Siyu Wu"},
+      {"@type": "Person", "name": "Ruochong Li"},
+      {"@type": "Person", "name": "Jian Liu"},
+      {"@type": "Person", "name": "Changhao Zhang"},
+      {"@type": "Person", "name": "Weiqiang Wang"},
+      {"@type": "Person", "name": "Chen Xie"},
+      {"@type": "Person", "name": "Zeyi Li"},
+      {"@type": "Person", "name": "Ruihai Wu", "email": "wuruihai@pku.edu.cn"}
+    ]
+  }
+  </script>
+</head>
+
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+
+  <header class="site-header" data-header>
+    <div class="nav-shell">
+      <a class="brand" href="#top" aria-label="ViTacLab home">
+        <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+        <span>ViTacLab</span>
+      </a>
+
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-navigation" data-nav-toggle>
+        <span class="sr-only">Toggle navigation</span>
+        <span></span><span></span><span></span>
+      </button>
+
+      <nav class="site-nav" id="site-navigation" aria-label="Primary navigation" data-nav>
+        <a href="#overview">Overview</a>
+        <a href="#simulator">ViTacSim</a>
+        <a href="#benchmark">ViTacBench</a>
+        <a href="#policy">ViTacPolicy</a>
+        <a href="#results">Results</a>
+        <a href="#start">Get started</a>
+        <a class="nav-cta" href="https://github.com/youlj109/ViTacLab" target="_blank" rel="noreferrer">GitHub <span aria-hidden="true">↗</span></a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <section class="hero" id="top" aria-labelledby="hero-title">
+      <div class="hero-grid" aria-hidden="true"></div>
+      <div class="hero-orb hero-orb-one" aria-hidden="true"></div>
+      <div class="hero-orb hero-orb-two" aria-hidden="true"></div>
+
+      <div class="shell hero-content">
+        <p class="eyebrow"><span></span> A full-stack framework for visuo-tactile robot learning</p>
+        <h1 id="hero-title">ViTac<span>Lab</span></h1>
+        <p class="hero-subtitle">Physically Consistent Visuo-Tactile Simulation, Benchmarking, and Representation Learning for Robotic Manipulation</p>
+
+        <div class="authors" aria-label="Paper authors">
+          <span class="equal">Linjing You<sup>*</sup></span>,
+          <span class="equal">Zeming Yang<sup>*</sup></span>,
+          <span class="equal">Zhenhao Shen<sup>*</sup></span>,
+          <span class="equal">Shengqiang Xu<sup>*</sup></span>,
+          <span>Guanda Li</span>, <span>Wenxuan Li</span>, <span>Jasper Lu</span>,
+          <span>Jingkai Xu</span>, <span>Shawn Xie</span>, <span>Zhu Junjie</span>,
+          <span>Siyu Wu</span>, <span>Ruochong Li</span>, <span>Jian Liu</span>,
+          <span>Changhao Zhang</span>, <span>Weiqiang Wang</span>, <span>Chen Xie</span>,
+          <span>Zeyi Li</span>, <a href="mailto:wuruihai@pku.edu.cn">Ruihai Wu<sup>†</sup></a>
+        </div>
+        <p class="author-note"><sup>*</sup> Equal contribution. <sup>†</sup> Corresponding author.</p>
+
+        <div class="hero-actions" aria-label="Project links">
+          <span class="button button-primary button-disabled" aria-disabled="true">Paper · Coming soon</span>
+          <a class="button button-secondary" href="https://github.com/youlj109/ViTacLab" target="_blank" rel="noreferrer">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .7A11.5 11.5 0 0 0 8.4 23c.6.1.8-.2.8-.6v-2.2c-3.4.7-4.1-1.4-4.1-1.4-.6-1.4-1.4-1.8-1.4-1.8-1.1-.8.1-.8.1-.8 1.2.1 1.9 1.3 1.9 1.3 1.1 1.9 2.9 1.4 3.6 1.1.1-.8.4-1.4.8-1.7-2.7-.3-5.5-1.4-5.5-5.7 0-1.3.4-2.3 1.2-3.1-.1-.3-.5-1.6.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0C15.9 4.7 17 5 17 5c.6 1.5.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.8 5.4-5.5 5.7.4.4.8 1.1.8 2.2v3.3c0 .4.2.7.8.6A11.5 11.5 0 0 0 12 .7Z"/></svg>
+            Code
+          </a>
+          <a class="button button-ghost" href="#benchmark">Explore benchmark <span aria-hidden="true">↓</span></a>
+        </div>
+      </div>
+    </section>
+
+    <section class="hero-figure-section" aria-label="ViTacLab overview figure">
+      <div class="shell shell-wide">
+        <figure class="paper-figure hero-paper-figure">
+          <div class="figure-scroll" tabindex="0" aria-label="Scrollable paper overview figure">
+            <img src="media/paper/vitaclab-teaser.png" width="2200" height="976" alt="ViTacLab overview showing ViTacSim tactile modeling, ViTacBench embodiments and vision-to-touch regimes, and ViTacPolicy representation learning" fetchpriority="high" decoding="async">
+          </div>
+          <figcaption><strong>Figure 1.</strong> ViTacLab unifies physically aligned tactile simulation, hierarchical benchmarking, and sensor-agnostic policy learning.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="section" id="overview" aria-labelledby="overview-title">
+      <div class="shell content-shell">
+        <div class="section-heading centered" data-reveal>
+          <p class="section-kicker">Overview</p>
+          <h2 id="overview-title">From contact physics to learned manipulation</h2>
+          <p>ViTacLab studies how robotic control shifts from vision toward touch across parallel grippers, dexterous hands, and bimanual systems.</p>
+        </div>
+
+        <div class="abstract-card" data-reveal>
+          <div>
+            <p class="card-label">Abstract</p>
+            <h3>One stack, three connected research problems.</h3>
+          </div>
+          <p>ViTacLab addresses the tension between tactile fidelity and GPU scalability, the narrow embodiment coverage of existing tactile benchmarks, and the difficulty of aligning representations across modalities while handling variable sensor layouts. It combines a PhysX-anchored tactile simulator, a 15-task benchmark organized by embodiment and modality dependence, and a pose-conditioned policy with shared-codebook tactile pretraining.</p>
+        </div>
+
+        <ul class="metric-grid" aria-label="Project highlights" data-reveal>
+          <li class="metric-card"><strong>15</strong><span>benchmark tasks</span></li>
+          <li class="metric-card"><strong>3</strong><span>embodiment families</span></li>
+          <li class="metric-card"><strong>3</strong><span>vision-to-touch regimes</span></li>
+          <li class="metric-card"><strong>0.42 N</strong><span>normal-force RMSE</span></li>
+          <li class="metric-card"><strong>0.53 N</strong><span>tangential-force RMSE</span></li>
+          <li class="metric-card"><strong>2,482.9</strong><span>tactile-pipeline FPS at 256 envs</span></li>
+        </ul>
+        <p class="metric-note">Reported manuscript results. Normal and tangential force errors use a Hertzian indentation reference and controlled real-sensor sliding, respectively. Throughput includes dense force-field computation and tactile rendering on an Intel Core Ultra 9 285K with an RTX 4090D.</p>
+      </div>
+    </section>
+
+    <section class="section section-tinted" aria-labelledby="components-title">
+      <div class="shell">
+        <div class="section-heading" data-reveal>
+          <p class="section-kicker">Three components</p>
+          <h2 id="components-title">A connected visuo-tactile research stack</h2>
+        </div>
+
+        <div class="pillar-grid">
+          <article class="pillar pillar-blue" data-reveal>
+            <div class="pillar-number">01</div>
+            <p class="pillar-tag">Simulation</p>
+            <h3>ViTacSim</h3>
+            <p>PhysX-anchored sparse forces, dense normal/tangential force arrays, and optical tactile images—with corrections designed to preserve physical consistency at GPU scale.</p>
+            <a href="#simulator">Explore the simulator <span aria-hidden="true">→</span></a>
+          </article>
+
+          <article class="pillar pillar-green" data-reveal>
+            <div class="pillar-number">02</div>
+            <p class="pillar-tag">Benchmark</p>
+            <h3>ViTacBench</h3>
+            <p>Fifteen contact-rich tasks across parallel grippers, dexterous hands, and bimanual systems, progressing from vision-dominant to tactile-dominant control.</p>
+            <a href="#benchmark">Explore the tasks <span aria-hidden="true">→</span></a>
+          </article>
+
+          <article class="pillar pillar-purple" data-reveal>
+            <div class="pillar-number">03</div>
+            <p class="pillar-tag">Representation</p>
+            <h3>ViTacPolicy</h3>
+            <p>Pose-conditioned Transformer aggregation for variable sensor layouts, paired with shared-codebook learning across dense force arrays and tactile images.</p>
+            <a href="#policy">Explore the policy <span aria-hidden="true">→</span></a>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="simulator" aria-labelledby="simulator-title">
+      <div class="shell">
+        <div class="split-heading" data-reveal>
+          <div>
+            <p class="section-kicker section-kicker-blue">ViTacSim</p>
+            <h2 id="simulator-title">Physically aligned tactile simulation at GPU scale</h2>
+          </div>
+          <p>At each simulation step, ViTacSim derives complementary tactile observations from sparse PhysX solver contacts while maintaining dense, GPU-parallel outputs.</p>
+        </div>
+
+        <div class="modality-grid" data-reveal>
+          <article><span>T<sub>sparse</sub></span><h3>Global sparse force</h3><p>Contact topology and solver-wrench anchors from PhysX.</p></article>
+          <article><span>T<sub>dense</sub></span><h3>Local dense force</h3><p>Spatial normal and tangential forces over active taxels.</p></article>
+          <article><span>T<sub>img</sub></span><h3>Local tactile image</h3><p>Optical tactile observations compatible with image encoders.</p></article>
+        </div>
+
+        <div class="method-callout" data-reveal>
+          <div class="method-index">PhysX</div>
+          <div>
+            <h3>Solver-anchored physical correction</h3>
+            <p>Local stiffness alignment corrects normal response, decoupled slip–stick reconstruction recovers tangential fields, and a joint projection matches the integrated dense wrench to the sparse PhysX wrench while enforcing local Coulomb constraints.</p>
+          </div>
+        </div>
+
+        <figure class="paper-figure" data-reveal>
+          <div class="figure-scroll figure-scroll-wide" tabindex="0" aria-label="Scrollable ViTacSim validation plots">
+            <img src="media/paper/sim-validation.png" width="4260" height="1152" alt="ViTacSim validation: normal and tangential force RMSE decrease by 81.8% and 71.4%, while throughput and GPU-memory plots compare scaling with TacSL" loading="lazy" decoding="async">
+          </div>
+          <figcaption><strong>Force fidelity and systems scaling.</strong> ViTacSim reduces normal RMSE from 2.31 to 0.42 N and tangential RMSE from 1.85 to 0.53 N. Swipe horizontally on small screens.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="section section-dark" id="benchmark" aria-labelledby="benchmark-title">
+      <div class="shell">
+        <div class="split-heading split-heading-light" data-reveal>
+          <div>
+            <p class="section-kicker section-kicker-green">ViTacBench</p>
+            <h2 id="benchmark-title">Embodiment complexity meets modality dependence</h2>
+          </div>
+          <p>The benchmark evaluates parallel grippers, single-handed dexterity, and bimanual manipulation while progressively reducing direct visual access to contact state.</p>
+        </div>
+
+        <figure class="paper-figure paper-figure-dark" data-reveal>
+          <div class="figure-scroll" tabindex="0" aria-label="Scrollable ViTacBench task figure">
+            <img src="media/paper/vitacbench.png" width="2200" height="1220" alt="ViTacBench overview of 15 tasks across three robot embodiments and L1 vision-dominant, L2 vision-and-touch, and L3 tactile-dominant regimes" loading="lazy" decoding="async">
+          </div>
+          <figcaption><strong>ViTacBench.</strong> The numbered paper figure spans 15 tasks along embodiment and vision-to-touch axes.</figcaption>
+        </figure>
+
+        <div class="task-grid" data-reveal>
+          <article>
+            <div class="task-level">Gripper</div>
+            <h3>Parallel gripper</h3>
+            <p>Peg Insert · Gear Mesh · Nut Thread</p>
+            <span>Tasks 1–3</span>
+          </article>
+          <article>
+            <div class="task-level level-one">L1</div>
+            <h3>Vision-dominant</h3>
+            <p>Grasp · In-hand · Handover · BiStab</p>
+            <span>Tasks 4–7</span>
+          </article>
+          <article>
+            <div class="task-level level-two">L2</div>
+            <h3>Vision &amp; tactile</h3>
+            <p>Peg Insert · Gear Mesh · Nut Thread · Bottle Open</p>
+            <span>Tasks 8–11</span>
+          </article>
+          <article>
+            <div class="task-level level-three">L3</div>
+            <h3>Tactile-dominant</h3>
+            <p>Blind Grasp · Blind Targeted Grasp · Blind Drop · Blind Targeted Drop</p>
+            <span>Tasks 12–15</span>
+          </article>
+        </div>
+
+        <div class="benchmark-note" data-reveal>
+          <strong>Level 3 protocol</strong>
+          <p>Wrist-camera observations are fully masked and the remaining global view is occluded by design. Policies receive no direct wrist-view object pixels, making these tasks a deliberately difficult test of tactile control.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="policy" aria-labelledby="policy-title">
+      <div class="shell">
+        <div class="split-heading" data-reveal>
+          <div>
+            <p class="section-kicker section-kicker-purple">ViTacPolicy</p>
+            <h2 id="policy-title">One policy interface for heterogeneous touch</h2>
+          </div>
+          <p>ViTacPolicy decouples policy learning from a fixed sensor count, modality, or placement by turning tactile observations and their spatial poses into a variable set of tokens.</p>
+        </div>
+
+        <figure class="paper-figure" data-reveal>
+          <div class="figure-scroll" tabindex="0" aria-label="Scrollable ViTacPolicy architecture figure">
+            <img src="media/paper/vitacpolicy.png" width="2200" height="1227" alt="ViTacPolicy architecture with shared-codebook cross-modal tactile pretraining and pose-conditioned Transformer aggregation" loading="lazy" decoding="async">
+          </div>
+          <figcaption><strong>ViTacPolicy.</strong> Shared-codebook pretraining aligns force arrays and tactile images; pose-aware tokens support variable sensor layouts.</figcaption>
+        </figure>
+
+        <div class="policy-steps">
+          <article data-reveal><span>1</span><h3>Encode modality</h3><p>Separate encoders process dense force arrays and optical tactile images.</p></article>
+          <article data-reveal><span>2</span><h3>Add spatial pose</h3><p>A learned embedding maps each sensor's 3D position and 6D orientation.</p></article>
+          <article data-reveal><span>3</span><h3>Aggregate tokens</h3><p>A Transformer and pooling layer produce a fixed-size tactile representation.</p></article>
+          <article data-reveal><span>4</span><h3>Condition control</h3><p>The downstream policy combines RGB, touch, and proprioceptive state.</p></article>
+        </div>
+
+        <div class="policy-evidence" data-reveal>
+          <div>
+            <p class="card-label">Matched pretraining study</p>
+            <h3>Shared-codebook point estimates exceed the strongest unimodal VQ baseline</h3>
+          </div>
+          <div class="evidence-values" aria-label="Full shared-codebook versus strongest unimodal VQ success rates">
+            <div><span>Gear</span><strong>18 <small>vs 14</small></strong></div>
+            <div><span>Bottle</span><strong>24 <small>vs 18</small></strong></div>
+            <div><span>L3 Peg</span><strong>12 <small>vs 5</small></strong></div>
+          </div>
+          <p>Success rate (%), Full shared-codebook versus the stronger unimodal VQ variant. This controlled study uses a separate evaluation protocol; its absolute rates are not directly comparable with the main simulation table below.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-tinted" id="results" aria-labelledby="results-title">
+      <div class="shell">
+        <div class="section-heading centered" data-reveal>
+          <p class="section-kicker">Representative results</p>
+          <h2 id="results-title">Measured gains, with the hard cases left visible</h2>
+          <p>The full policy leads on four of six representative simulation tasks. Improvements are task-dependent, and tactile-dominant manipulation remains far from solved.</p>
+        </div>
+
+        <div class="result-layout">
+          <div class="table-card" data-reveal>
+            <div class="table-heading">
+              <div><span>Simulation</span><h3>Success rate (%)</h3></div>
+              <p>5 seeds · 200 evaluation episodes per seed</p>
+            </div>
+            <div class="table-scroll" tabindex="0">
+              <table>
+                <caption class="sr-only">Representative ViTacBench simulation success rates by method</caption>
+                <thead><tr><th scope="col">Method</th><th scope="col">Peg</th><th scope="col">Gear</th><th scope="col">Nut</th><th scope="col">Grasp</th><th scope="col">Bottle</th><th scope="col">Blind</th></tr></thead>
+                <tbody>
+                  <tr><th scope="row">DP</th><td>16.0</td><td>39.5</td><td>38.5</td><td>29.0</td><td>0.0</td><td>0.0</td></tr>
+                  <tr><th scope="row">ADM-DP</th><td>20.0</td><td>44.5</td><td>34.0</td><td>—</td><td>—</td><td>—</td></tr>
+                  <tr><th scope="row">ViTacFormer</th><td>—</td><td>—</td><td>—</td><td>31.0</td><td>2.0</td><td>1.5</td></tr>
+                  <tr><th scope="row">Ours w/o PT</th><td>21.0</td><td class="best">72.0</td><td>38.0</td><td>82.5</td><td class="best">5.0</td><td>2.0</td></tr>
+                  <tr class="primary-row"><th scope="row">ViTacPolicy</th><td class="best">24.0</td><td>69.0</td><td class="best">44.0</td><td class="best">90.0</td><td>4.5</td><td class="best">3.0</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="table-note">A dash denotes an unevaluated combination, not a failed trial. Blind Grasp remains at or below 3% for every evaluated method.</p>
+          </div>
+
+          <aside class="real-result" data-reveal>
+            <p class="card-label">Real-robot transfer</p>
+            <strong>61.3<span>%</span></strong>
+            <h3>average gripper success</h3>
+            <p>Across 50 physical trials per task, compared with 48.7% without pretraining and 44.7% for the penetration-only model.</p>
+            <dl>
+              <div><dt>Peg Insert</dt><dd>38%</dd></div>
+              <div><dt>Nut Thread</dt><dd>80%</dd></div>
+              <div><dt>Gear Mesh</dt><dd>66%</dd></div>
+            </dl>
+          </aside>
+        </div>
+
+        <div class="statistics-note" data-reveal>
+          <strong>Statistical qualification</strong>
+          <p>Individual task-wise Fisher tests between the full and no-pretraining models were not statistically significant. A task-stratified Cochran–Mantel–Haenszel analysis reported a common odds ratio of 1.82 (95% CI 1.11–2.98, <em>p</em> = 0.018), supporting an aggregate benefit without implying significance on every task.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="availability" aria-labelledby="availability-title">
+      <div class="shell">
+        <div class="split-heading" data-reveal>
+          <div>
+            <p class="section-kicker">Public availability</p>
+            <h2 id="availability-title">What this checkout contains</h2>
+          </div>
+          <p>The website distinguishes manuscript methods and results from the code, assets, and checkpoints currently available in the public repository.</p>
+        </div>
+
+        <div class="availability-grid">
+          <article data-reveal><span class="status status-ready">Available</span><h3>Extension smoke run</h3><p>An Isaac Lab template that needs no paper-specific external assets verifies installation and environment registration.</p></article>
+          <article data-reveal><span class="status status-partial">Partial</span><h3>ViTacSim &amp; ViTacBench</h3><p>Simulator and environment code/configurations are included; most paper-scale tasks require external robot, object, and calibration assets.</p></article>
+          <article data-reveal><span class="status status-partial">Partial</span><h3>ViTacPolicy</h3><p>Downstream encoders, policy code, and checkpoint-loader hooks are present. Shared-codebook training code and pretrained checkpoints are not included.</p></article>
+          <article data-reveal><span class="status status-soon">Not packaged</span><h3>Full paper reproduction</h3><p>The current advisor release is a calibration snapshot, not a one-command reproduction package for every paper result.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section start-section" id="start" aria-labelledby="start-title">
+      <div class="shell start-grid">
+        <div data-reveal>
+          <p class="section-kicker section-kicker-blue">Get started</p>
+          <h2 id="start-title">Install as an Isaac Lab extension</h2>
+          <p>The documented reference environment is Isaac Sim 5.1.0 with Isaac Lab 2.3.2. <a href="https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html" target="_blank" rel="noreferrer">Install Isaac Lab first</a> and use a Python interpreter that can import it. The template command below checks extension wiring without requiring the paper's external task assets.</p>
+          <div class="link-row">
+            <a href="https://github.com/youlj109/ViTacLab#quick-start" target="_blank" rel="noreferrer">Full quick start <span aria-hidden="true">↗</span></a>
+            <a href="https://github.com/youlj109/ViTacLab/blob/main/docs/QUICK_INSTALL.md" target="_blank" rel="noreferrer">中文安装 <span aria-hidden="true">↗</span></a>
+          </div>
+        </div>
+
+        <div class="code-card" data-reveal>
+          <div class="code-toolbar"><span>Terminal</span><button type="button" data-copy-code aria-label="Copy installation commands">Copy</button></div>
+          <pre><code>git clone https://github.com/youlj109/ViTacLab.git
+cd ViTacLab
+python -m pip install -e source/ViTacLab
+
+python scripts/zero_agent.py \
+  --task Template-Vitaclab-Direct-v0 \
+  --num_envs 1 --headless</code></pre>
+          <p class="copy-status" aria-live="polite" data-copy-status></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-dark paper-status" id="paper" aria-labelledby="paper-title">
+      <div class="shell paper-status-grid">
+        <div data-reveal>
+          <p class="section-kicker section-kicker-purple">Paper &amp; citation</p>
+          <h2 id="paper-title">Public preprint metadata is coming soon</h2>
+          <p>The official paper URL, publication details, affiliations, and BibTeX will be posted when the public record is available.</p>
+        </div>
+        <div class="citation-placeholder" data-reveal>
+          <span aria-hidden="true">{ }</span>
+          <div><strong>BibTeX</strong><p>Official citation coming soon.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section limitations" aria-labelledby="limitations-title">
+      <div class="shell content-shell" data-reveal>
+        <p class="section-kicker">Current scope</p>
+        <h2 id="limitations-title">Current scope and open problems</h2>
+        <p>ViTacLab does not yet fully model deformable objects, adhesion, wear, or large elastomer deformation, and assumes contact remains within active tactile patches. Dense spatial-field error, tactile-image fidelity, numerical wrench residuals across diverse contact distributions, and controlled parameter sensitivity remain open evaluation areas. Broader physical trials and higher-budget tactile-dominant studies are important next steps.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="shell footer-grid">
+      <div>
+        <a class="brand footer-brand" href="#top"><span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span><span>ViTacLab</span></a>
+        <p>Simulation · Benchmarking · Representation learning</p>
+      </div>
+      <nav aria-label="Footer navigation">
+        <a href="https://github.com/youlj109/ViTacLab" target="_blank" rel="noreferrer">Code</a>
+        <a href="https://github.com/youlj109/ViTacLab/issues" target="_blank" rel="noreferrer">Issues</a>
+        <a href="https://github.com/youlj109/ViTacLab/releases" target="_blank" rel="noreferrer">Releases</a>
+        <a href="https://github.com/youlj109/ViTacLab/blob/main/LICENSE" target="_blank" rel="noreferrer">Apache-2.0</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="assets/site.js" defer></script>
+</body>
+</html>
