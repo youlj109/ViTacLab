@@ -99,6 +99,44 @@ class GelSightRenderCfg:
 
     taxim_height_scale: float = 1.0
     """Scale penetration depth (m) before Taxim RGB synthesis (Task2 ``rgb_diff_scale``)."""
+    taxim_rgb_response_gain: float = 1.0
+    """Gain on Taxim RGB polynomial response before adding background."""
+    taxim_smoothing_kernel_size: int = 5
+    """Gaussian smoothing kernel size for height map before Taxim gradient lookup."""
+    taxim_contact_edge_denoise_blend: float = 0.0
+    """Blend ratio for depth-domain denoising on the contact boundary band before Taxim lookup."""
+    taxim_contact_edge_denoise_kernel_size: int = 9
+    """Gaussian kernel size used by depth-domain contact-edge denoise (odd integer; even is auto-adjusted)."""
+    taxim_contact_edge_denoise_center: float = 0.10
+    """Normalized-depth center of the boundary denoise band (0~1; lower values target shallower edge transitions)."""
+    taxim_contact_edge_denoise_bandwidth: float = 0.10
+    """Bandwidth of the boundary denoise band in normalized depth units (0~1)."""
+    taxim_gradient_edge_suppress: float = 0.0
+    """Blend ratio to suppress sharp gradient spikes on contact edges before Taxim binning."""
+    taxim_contact_chroma_gain: float = 1.0
+    """Depth-aware gain on (RGB-bg) to boost deep-contact color response."""
+    taxim_contact_soften_blend: float = 0.0
+    """Blend ratio for local blur inside contact area to mimic real optical edge softening."""
+    taxim_edge_soften_strength: float = 0.0
+    """Additional blur on high-gradient contact edges to reduce hard dark outlines."""
+    taxim_contact_red_tilt_strength: float = 0.0
+    """Right-side red-channel emphasis inside contact area (approximates real illumination asymmetry)."""
+    taxim_contact_red_tilt_power: float = 1.0
+    """Exponent on contact weighting for red-tilt modulation (higher focuses tilt on deeper contact)."""
+    taxim_contact_red_tilt_additive: float = 0.0
+    """Additive red offset inside contact (in 0-255 RGB units) to avoid underpowered multiplicative tint."""
+    taxim_contact_psf_blend: float = 0.0
+    """Global contact-region Gaussian PSF blend ratio to reduce overly crisp synthetic contours."""
+    taxim_contact_psf_kernel_size: int = 5
+    """Gaussian kernel size used by contact PSF blend (odd integer; even values are auto-adjusted)."""
+    taxim_illumination_reference_path: str = ""
+    """Optional real no-contact image path used to build low-frequency illumination alignment maps."""
+    taxim_illumination_blend: float = 0.0
+    """Blend of multiplicative low-frequency illumination gain map (0 disables)."""
+    taxim_illumination_bias_blend: float = 0.0
+    """Blend of additive low-frequency illumination bias map (0 disables)."""
+    taxim_illumination_kernel_size: int = 81
+    """Gaussian kernel size for low-frequency illumination map extraction."""
 
     enable_marker_simulation: bool = False
     """Whether to overlay FOTS-style marker motion on Taxim RGB (TacEx-compatible)."""
@@ -325,6 +363,14 @@ class VisuoTactileSensorCfg(SensorBaseCfg):
 
     Lab advisor alignment: positive du samples from the right, positive dv from below,
     moving the contact imprint toward the lab Xense image coordinates.
+    """
+
+    depth_footprint_scale: float = 1.0
+    """Spatial zoom on depth/height maps before Taxim render (>1 widens FOV, shrinks contact footprint).
+
+    Calibrates GelSight-R15 camera projection vs Xense pixel scale without changing contact-object
+    geometry or PhysX forces. ``1.0`` leaves the raw depth image unchanged; ``~2.0`` targets the
+    observed ~2× sim-vs-real M2 footprint mismatch (0.0877 / 0.04375 mm/px).
     """
 
     normal_correction_max_stiffness_ratio: float = 0.0

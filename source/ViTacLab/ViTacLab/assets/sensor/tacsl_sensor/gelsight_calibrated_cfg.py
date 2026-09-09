@@ -105,12 +105,50 @@ def advisor_xense_render_cfg(
             if pattern:
                 marker_pattern = str(pattern)
 
+    # Boost depth-to-RGB response for deep presses to better match Xense color saturation.
     extra.setdefault("taxim_height_scale", 0.45)
+    # Keep neutral RGB response by default; tune only through explicit fitting if needed.
+    extra.setdefault("taxim_rgb_response_gain", 1.0)
+    # Slightly larger pre-Taxim smoothing for less "hard-edge" geometric contours.
+    extra.setdefault("taxim_smoothing_kernel_size", 7)
+    # Mentor suggestion: smooth only contact-boundary depth transitions before depth->RGB conversion.
+    extra.setdefault("taxim_contact_edge_denoise_blend", 0.78)
+    extra.setdefault("taxim_contact_edge_denoise_kernel_size", 11)
+    extra.setdefault("taxim_contact_edge_denoise_center", 0.11)
+    extra.setdefault("taxim_contact_edge_denoise_bandwidth", 0.09)
+    extra.setdefault("taxim_gradient_edge_suppress", 0.72)
+    # Keep moderate deep-contact chroma boost; shape fidelity is prioritized.
+    extra.setdefault("taxim_contact_chroma_gain", 1.6)
+    # Contact-region optical softening to mimic real sensor blur/gel scattering.
+    extra.setdefault("taxim_contact_soften_blend", 0.80)
+    # Reduce sharp dark contour lines around hex/circle edges.
+    extra.setdefault("taxim_edge_soften_strength", 1.05)
+    # Additional contact PSF to suppress overly crisp synthetic contour boundaries.
+    extra.setdefault("taxim_contact_psf_blend", 0.90)
+    extra.setdefault("taxim_contact_psf_kernel_size", 11)
+    # Approximate real right-side reddish illumination asymmetry.
+    extra.setdefault("taxim_contact_red_tilt_strength", 1.45)
+    extra.setdefault("taxim_contact_red_tilt_power", 0.55)
+    extra.setdefault("taxim_contact_red_tilt_additive", 24.0)
+    # Align low-frequency no-contact illumination field with lab capture.
+    extra.setdefault("taxim_illumination_reference_path", "data/calibration/tactile/real/normal_force/no_contact/rgb.png")
+    extra.setdefault("taxim_illumination_blend", 0.55)
+    extra.setdefault("taxim_illumination_bias_blend", 0.35)
+    extra.setdefault("taxim_illumination_kernel_size", 101)
+    # Advisor release snapshots should resemble lab marker appearance first.
+    # Keep marker motion in a realistic range for Xense (avoid hard-cap saturation).
+    extra.setdefault("marker_displacement_gain", 0.15)
+    extra.setdefault("marker_blend_alpha", 1.0)
 
     local_dir = local_xense_lab_data_dir()
     base = GELSIGHT_R15_CFG
     bg_name = "bg_clean.jpg" if (local_dir / "bg_clean.jpg").is_file() else "bg.jpg"
     marker_rest = "marker_rest.npy" if (local_dir / "marker_rest.npy").is_file() else ""
+    if bool(enable_marker_simulation) and str(marker_pattern).lower() == "xense" and not marker_rest:
+        raise FileNotFoundError(
+            f"Missing lab marker map: {(local_dir / 'marker_rest.npy')}. "
+            "Run scripts/calibration/import_advisor_tactile_videos.py --install-bg."
+        )
 
     cfg = _local_gelsight_render_cfg(
         base_data_path=str(local_dir.parent),

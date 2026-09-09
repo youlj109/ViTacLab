@@ -31,7 +31,7 @@ from calibration_io import repo_root  # noqa: E402
 from import_ball_calib_video import (  # noqa: E402
     XENSE_BALL_RADIUS_MM,
     XENSE_SENSING_MM,
-    _contact_blob,
+    _contact_blob_legacy,
     _load_rgb,
     _save_rgb,
 )
@@ -92,7 +92,7 @@ def _build_datapack(data_dir: Path, *, pixmm: float) -> Path:
     for p in ball_paths:
         frame_rgb = _load_rgb(p)
         frame_bgr = _rgb_to_bgr(frame_rgb)
-        (cy, cx), radius_px, diff_mean = _contact_blob(bg_rgb, frame_rgb)
+        (cy, cx), radius_px, diff_mean, _circularity, _radial_norm = _contact_blob_legacy(bg_rgb, frame_rgb)
 
         if radius_px < 3.0:
             h, w = frame_rgb.shape[:2]
@@ -132,7 +132,17 @@ def _build_datapack(data_dir: Path, *, pixmm: float) -> Path:
     return out
 
 
-def _run_poly_table_calib(data_dir: Path, taxim_repo: Path, *, pixmm: float, num_bins: int) -> Path:
+def _run_poly_table_calib(
+    data_dir: Path,
+    taxim_repo: Path,
+    *,
+    pixmm: float,
+    num_bins: int,
+    deep_weight_gamma: float = 1.0,
+    edge_weight_min: float = 0.20,
+    edge_weight_power: float = 2.0,
+    grad_table_smooth_sigma: float = 0.0,
+) -> Path:
     """Run Taxim polyTableCalib with Xense params and NaN-safe polynomial fit."""
     import scipy.ndimage
     from scipy import interpolate
@@ -182,7 +192,7 @@ def _run_poly_table_calib(data_dir: Path, taxim_repo: Path, *, pixmm: float, num
         gd1 = interpolate.griddata((x1, y1), newarr.ravel(), (xx, yy), method="nearest", fill_value=0)
         return np.nan_to_num(gd1, nan=0.0, posinf=0.0, neginf=0.0)
 
-    def _fit_poly_params(xf: np.ndarray, yf: np.ndarray, b: np.ndarray) -> np.ndarray:
+    def _fit_poly_params(xf: np.ndarray, yf: np.ndarray, b: np.ndarray, w: np.ndarray | None = None) -> np.ndarray:
         xf = np.asarray(xf, dtype=np.float64).ravel()
         yf = np.asarray(yf, dtype=np.float64).ravel()
         b = np.asarray(b, dtype=np.float64).ravel()
@@ -191,6 +201,13 @@ def _run_poly_table_calib(data_dir: Path, taxim_repo: Path, *, pixmm: float, num
             return np.zeros(6, dtype=np.float64)
         xf, yf, b = xf[mask], yf[mask], b[mask]
         a = np.array([xf * xf, yf * yf, xf * yf, xf, yf, np.ones(xf.shape)]).T
+        if w is not None:
+            ww = np.asarray(w, dtype=np.float64).ravel()[mask]
+            ww = np.nan_to_num(ww, nan=1.0, posinf=1.0, neginf=1.0)
+            ww = np.clip(ww, 1.0e-6, None)
+            sw = np.sqrt(ww)
+            a = a * sw[:, None]
+            b = b * sw
         params, *_ = lstsq(a, b)
         return np.nan_to_num(params, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -199,6 +216,12 @@ def _run_poly_table_calib(data_dir: Path, taxim_repo: Path, *, pixmm: float, num
     locy_list: list[np.ndarray] = []
     bins = int(psp.numBins)
     ball_radius_pix = float(psp.ball_radius) / float(psp.pixmm)
+
+    radius_max = float(np.max(radius_record)) if np.size(radius_record) > 0 else 1.0
+    frame_weights: list[float] = []
+    gamma = max(float(deep_weight_gamma), 0.0)
+    edge_min = float(np.clip(edge_weight_min, 0.0, 1.0))
+    edge_pow = max(float(edge_weight_power), 0.0)
 
     for idx_i in range(int(np.shape(imgs)[0])):
         print(f"# iter {idx_i}")
@@ -234,9 +257,11 @@ def _run_poly_table_calib(data_dir: Path, taxim_repo: Path, *, pixmm: float, num
         value_map = np.zeros((bins, bins, 3))
         loc_x_map = np.zeros((bins, bins))
         loc_y_map = np.zeros((bins, bins))
-        valid_r = dI[:, :, 0][valid_id]
-        valid_g = dI[:, :, 1][valid_id]
-        valid_b = dI[:, :, 2][valid_id]
+        edge_ratio = np.clip(rvalid / max(float(radius), 1.0e-6), 0.0, 1.0)
+        edge_weight = edge_min + (1.0 - edge_min) * ((1.0 - edge_ratio) ** edge_pow)
+        valid_r = dI[:, :, 0][valid_id] * edge_weight
+        valid_g = dI[:, :, 1][valid_id] * edge_weight
+        valid_b = dI[:, :, 2][valid_id] * edge_weight
         valid_x = xqq[valid_id]
         valid_y = yqq[valid_id]
         value_map[idx_x, idx_y, 0] += valid_r
@@ -252,21 +277,43 @@ def _run_poly_table_calib(data_dir: Path, taxim_repo: Path, *, pixmm: float, num
         value_list.append(value_map)
         locx_list.append(loc_x_map)
         locy_list.append(loc_y_map)
+        r_norm = float(radius_record[idx_i]) / max(radius_max, 1.0e-6)
+        w_i = float(np.clip(r_norm, 1.0e-6, 1.0) ** gamma)
+        frame_weights.append(max(w_i, 1.0e-6))
 
     table_v = np.array(value_list)
     table_x = np.array(locx_list)
     table_y = np.array(locy_list)
+    table_w = np.asarray(frame_weights, dtype=np.float64)
     grad_r = np.zeros((bins, bins, 6))
     grad_g = np.zeros((bins, bins, 6))
     grad_b = np.zeros((bins, bins, 6))
     for i in range(table_v.shape[1]):
         for j in range(table_v.shape[2]):
-            grad_r[i, j, :] = _fit_poly_params(table_x[:, i, j], table_y[:, i, j], table_v[:, i, j, 0])
-            grad_g[i, j, :] = _fit_poly_params(table_x[:, i, j], table_y[:, i, j], table_v[:, i, j, 1])
-            grad_b[i, j, :] = _fit_poly_params(table_x[:, i, j], table_y[:, i, j], table_v[:, i, j, 2])
+            grad_r[i, j, :] = _fit_poly_params(table_x[:, i, j], table_y[:, i, j], table_v[:, i, j, 0], table_w)
+            grad_g[i, j, :] = _fit_poly_params(table_x[:, i, j], table_y[:, i, j], table_v[:, i, j, 1], table_w)
+            grad_b[i, j, :] = _fit_poly_params(table_x[:, i, j], table_y[:, i, j], table_v[:, i, j, 2], table_w)
+
+    sigma = max(float(grad_table_smooth_sigma), 0.0)
+    if sigma > 1.0e-6:
+        # Smooth over (grad_mag_bin, grad_dir_bin) only; keep polynomial coefficient axis intact.
+        for k in range(6):
+            grad_r[:, :, k] = scipy.ndimage.gaussian_filter(grad_r[:, :, k], sigma=sigma, mode="nearest")
+            grad_g[:, :, k] = scipy.ndimage.gaussian_filter(grad_g[:, :, k], sigma=sigma, mode="nearest")
+            grad_b[:, :, k] = scipy.ndimage.gaussian_filter(grad_b[:, :, k], sigma=sigma, mode="nearest")
 
     out = data_dir / "polycalib.npz"
-    np.savez(out, bins=bins, grad_r=grad_r, grad_g=grad_g, grad_b=grad_b)
+    np.savez(
+        out,
+        bins=bins,
+        grad_r=grad_r,
+        grad_g=grad_g,
+        grad_b=grad_b,
+        deep_weight_gamma=gamma,
+        edge_weight_min=edge_min,
+        edge_weight_power=edge_pow,
+        grad_table_smooth_sigma=sigma,
+    )
     print(f"[OK] polycalib -> {out}")
     return out
 
@@ -289,6 +336,30 @@ def main() -> int:
         help="mm/px for Taxim (default: Xense sensing width / 400).",
     )
     parser.add_argument("--bg-install", type=str, default="", help="Optional bg_clean.jpg for xense_lab_data.")
+    parser.add_argument(
+        "--deep-weight-gamma",
+        type=float,
+        default=1.0,
+        help="Weight larger contact-radius samples higher during poly fit (1.0=linear, >1 deep-biased).",
+    )
+    parser.add_argument(
+        "--edge-weight-min",
+        type=float,
+        default=0.20,
+        help="Minimum per-pixel weight near contact rim in ball calibration fitting (0~1). Lower softens edge response.",
+    )
+    parser.add_argument(
+        "--edge-weight-power",
+        type=float,
+        default=2.0,
+        help="Power on (1-r/radius) for edge weighting. Higher suppresses rim samples more strongly.",
+    )
+    parser.add_argument(
+        "--grad-table-smooth-sigma",
+        type=float,
+        default=0.0,
+        help="Gaussian smoothing sigma on fitted grad tables across bins (0 disables).",
+    )
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir).expanduser().resolve()
@@ -311,7 +382,16 @@ def main() -> int:
         subprocess.run(import_cmd, check=True)
 
     _build_datapack(data_dir, pixmm=pixmm)
-    polycalib_path = _run_poly_table_calib(data_dir, taxim_repo, pixmm=pixmm, num_bins=TAXIM_NUM_BINS)
+    polycalib_path = _run_poly_table_calib(
+        data_dir,
+        taxim_repo,
+        pixmm=pixmm,
+        num_bins=TAXIM_NUM_BINS,
+        deep_weight_gamma=float(args.deep_weight_gamma),
+        edge_weight_min=float(args.edge_weight_min),
+        edge_weight_power=float(args.edge_weight_power),
+        grad_table_smooth_sigma=float(args.grad_table_smooth_sigma),
+    )
 
     install_cmd = [
         sys.executable,

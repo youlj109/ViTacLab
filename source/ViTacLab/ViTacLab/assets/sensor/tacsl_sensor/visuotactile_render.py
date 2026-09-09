@@ -159,8 +159,16 @@ class GelsightRender:
         self.x_binr = 0.5 * np.pi / binm  # x [0,pi/2]
         self.y_binr = 2 * np.pi / binm  # y [-pi, pi]
 
-        kernel = self._get_filtering_kernel(kernel_size=5)
+        kernel_size = int(getattr(self.cfg, "taxim_smoothing_kernel_size", 5))
+        if kernel_size < 1:
+            kernel_size = 1
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+        kernel = self._get_filtering_kernel(kernel_size=kernel_size)
         self.kernel = torch.tensor(kernel, dtype=torch.float, device=self.device)
+        edge_kernel_size = self._normalize_kernel_size(int(getattr(self.cfg, "taxim_contact_edge_denoise_kernel_size", 9)))
+        edge_kernel = self._get_filtering_kernel(kernel_size=edge_kernel_size)
+        self._edge_denoise_kernel = torch.tensor(edge_kernel, dtype=torch.float, device=self.device)
 
         self.calib_data_grad_r = torch.tensor(calib_grad_r, device=self.device)
         self.calib_data_grad_g = torch.tensor(calib_grad_g, device=self.device)
@@ -168,14 +176,39 @@ class GelsightRender:
 
         self.A_tensor = torch.tensor(self.A.reshape(image_height, image_width, 6), device=self.device).unsqueeze(0)
         self.background_tensor = torch.tensor(self.background, device=self.device)
+        self._illum_gain_tensor: torch.Tensor | None = None
+        self._illum_bias_tensor: torch.Tensor | None = None
+
+        illum_ref = str(getattr(self.cfg, "taxim_illumination_reference_path", "") or "").strip()
+        if illum_ref:
+            illum_ref_path = os.path.expanduser(illum_ref)
+            if os.path.isfile(illum_ref_path):
+                ref_rgb = cv2.cvtColor(cv2.imread(illum_ref_path), cv2.COLOR_BGR2RGB)
+                if ref_rgb.shape[0] != image_height or ref_rgb.shape[1] != image_width:
+                    ref_rgb = cv2.resize(ref_rgb, (image_width, image_height), interpolation=cv2.INTER_AREA)
+                illum_kernel_size = self._normalize_kernel_size(
+                    int(getattr(self.cfg, "taxim_illumination_kernel_size", 81))
+                )
+                illum_kernel_np = self._get_filtering_kernel(kernel_size=illum_kernel_size)
+                illum_kernel = torch.tensor(illum_kernel_np, dtype=torch.float, device=self.device)
+                ref_tensor = torch.tensor(ref_rgb, dtype=torch.float, device=self.device).unsqueeze(0)
+                bg_tensor = self.background_tensor.to(torch.float).unsqueeze(0)
+                ref_lf = self._gaussian_filtering_rgb(ref_tensor, illum_kernel)
+                bg_lf = self._gaussian_filtering_rgb(bg_tensor, illum_kernel)
+                self._illum_gain_tensor = torch.clamp(ref_lf / (bg_lf + 1.0e-6), min=0.6, max=1.6)
+                self._illum_bias_tensor = torch.clamp(ref_lf - bg_lf, min=-45.0, max=45.0)
+            else:
+                logger.warning("illumination reference image not found: %s", illum_ref_path)
 
         # Pre-allocate buffer for RGB output (will be resized if needed)
         self._sim_img_rgb_buffer = torch.empty((1, image_height, image_width, 3), device=self.device)
 
         self._marker_sim: MarkerSimulator | None = None
         self._last_marker_displacements: torch.Tensor | None = None
-        if bool(self.cfg.enable_marker_simulation) and self.cfg.marker_pattern != "none":
-            pattern = str(self.cfg.marker_pattern)
+        enable_markers = bool(getattr(self.cfg, "enable_marker_simulation", False))
+        marker_pattern = str(getattr(self.cfg, "marker_pattern", "none"))
+        if enable_markers and marker_pattern != "none":
+            pattern = marker_pattern
             rest_override = None
             rest_file = str(getattr(self.cfg, "marker_rest_path", "") or "").strip()
             if rest_file:
@@ -187,11 +220,11 @@ class GelsightRender:
                 image_height=image_height,
                 image_width=image_width,
                 device=self.device,
-                lambda_d=float(self.cfg.marker_lambda_d),
-                displacement_gain=float(self.cfg.marker_displacement_gain),
-                shear_gain=float(self.cfg.marker_shear_gain),
-                deadband_mm=float(self.cfg.marker_deadband_mm),
-                blend_alpha=float(self.cfg.marker_blend_alpha),
+                lambda_d=float(getattr(self.cfg, "marker_lambda_d", 0.0025)),
+                displacement_gain=float(getattr(self.cfg, "marker_displacement_gain", 0.35)),
+                shear_gain=float(getattr(self.cfg, "marker_shear_gain", 8.0)),
+                deadband_mm=float(getattr(self.cfg, "marker_deadband_mm", 0.02)),
+                blend_alpha=float(getattr(self.cfg, "marker_blend_alpha", 0.85)),
                 max_displacement_px=float(getattr(self.cfg, "marker_max_displacement_px", 25.0)),
                 rest_xy_override=rest_override,
             )
@@ -231,6 +264,18 @@ class GelsightRender:
         taxim_scale = float(getattr(self.cfg, "taxim_height_scale", 1.0))
         if abs(taxim_scale - 1.0) > 1e-9:
             height_map = height_map * taxim_scale
+        edge_denoise_blend = float(getattr(self.cfg, "taxim_contact_edge_denoise_blend", 0.0))
+        if edge_denoise_blend > 1.0e-6:
+            # Source-level smoothing: denoise only around the contact boundary before Taxim gradient lookup.
+            depth_abs = torch.abs(height_map)
+            depth_max = torch.amax(depth_abs, dim=(1, 2), keepdim=True).clamp(min=1.0e-6)
+            depth_n = torch.clamp(depth_abs / depth_max, min=0.0, max=1.0)
+            band_center = float(getattr(self.cfg, "taxim_contact_edge_denoise_center", 0.10))
+            band_width = max(float(getattr(self.cfg, "taxim_contact_edge_denoise_bandwidth", 0.10)), 1.0e-4)
+            band = torch.exp(-((depth_n - band_center) ** 2) / (2.0 * band_width * band_width))
+            h_blur = self._gaussian_filtering(height_map.unsqueeze(-1), self._edge_denoise_kernel).squeeze(-1)
+            alpha = torch.clamp(edge_denoise_blend * band, min=0.0, max=1.0)
+            height_map = (1.0 - alpha) * height_map + alpha * h_blur
         height_map = self._height_m_to_taxim_mm(height_map)
 
         grad_mag, grad_dir = self._generate_normals(height_map)
@@ -256,9 +301,96 @@ class GelsightRender:
         sim_img_rgb[..., 0] = torch.sum(self.A_tensor * params_r, dim=-1)  # R
         sim_img_rgb[..., 1] = torch.sum(self.A_tensor * params_g, dim=-1)  # G
         sim_img_rgb[..., 2] = torch.sum(self.A_tensor * params_b, dim=-1)  # B
+        rgb_gain = float(getattr(self.cfg, "taxim_rgb_response_gain", 1.0))
+        if abs(rgb_gain - 1.0) > 1e-9:
+            sim_img_rgb = sim_img_rgb * rgb_gain
 
         # write tactile image
         sim_img = sim_img_rgb + self.background_tensor  # /255.0
+        illum_blend = float(getattr(self.cfg, "taxim_illumination_blend", 0.0))
+        illum_bias_blend = float(getattr(self.cfg, "taxim_illumination_bias_blend", 0.0))
+        if self._illum_gain_tensor is not None and illum_blend > 1.0e-6:
+            gain = 1.0 + (self._illum_gain_tensor - 1.0) * illum_blend
+            sim_img = sim_img * gain
+        if self._illum_bias_tensor is not None and illum_bias_blend > 1.0e-6:
+            sim_img = sim_img + self._illum_bias_tensor * illum_bias_blend
+        chroma_gain = float(getattr(self.cfg, "taxim_contact_chroma_gain", 1.0))
+        if abs(chroma_gain - 1.0) > 1e-9:
+            # Emphasize deep-contact chroma without changing no-contact background.
+            depth_mm = torch.abs(height_map)
+            depth_max = torch.amax(depth_mm, dim=(1, 2), keepdim=True).clamp(min=1.0e-6)
+            depth_w = torch.clamp(depth_mm / depth_max, min=0.0, max=1.0) ** 0.8
+            local_gain = 1.0 + (chroma_gain - 1.0) * depth_w.unsqueeze(-1)
+            sim_img = self.background_tensor + (sim_img - self.background_tensor) * local_gain
+        soften_blend = float(getattr(self.cfg, "taxim_contact_soften_blend", 0.0))
+        if soften_blend > 1.0e-6:
+            depth_mm = torch.abs(height_map)
+            depth_max = torch.amax(depth_mm, dim=(1, 2), keepdim=True).clamp(min=1.0e-6)
+            depth_w = torch.clamp(depth_mm / depth_max, min=0.0, max=1.0)
+            blur = torch.nn.functional.avg_pool2d(
+                sim_img.permute(0, 3, 1, 2), kernel_size=3, stride=1, padding=1
+            ).permute(0, 2, 3, 1)
+            blur_wide = torch.nn.functional.avg_pool2d(
+                sim_img.permute(0, 3, 1, 2), kernel_size=7, stride=1, padding=3
+            ).permute(0, 2, 3, 1)
+            gy_s, gx_s = torch.gradient(depth_mm, dim=(1, 2))
+            gmag_s = torch.sqrt(gx_s * gx_s + gy_s * gy_s)
+            gmax_s = torch.amax(gmag_s, dim=(1, 2), keepdim=True).clamp(min=1.0e-6)
+            edge_s = torch.clamp(gmag_s / gmax_s, min=0.0, max=1.0).unsqueeze(-1)
+            jelly = (1.0 - edge_s) * blur + edge_s * blur_wide
+            alpha = (soften_blend * (depth_w**0.65)).unsqueeze(-1)
+            sim_img = (1.0 - alpha) * sim_img + alpha * jelly
+        edge_soften = float(getattr(self.cfg, "taxim_edge_soften_strength", 0.0))
+        if edge_soften > 1.0e-6:
+            depth_mm = torch.abs(height_map)
+            gy, gx = torch.gradient(depth_mm, dim=(1, 2))
+            gmag = torch.sqrt(gx * gx + gy * gy)
+            gmax = torch.amax(gmag, dim=(1, 2), keepdim=True).clamp(min=1.0e-6)
+            edge_w = torch.clamp(gmag / gmax, min=0.0, max=1.0).unsqueeze(-1)
+            blur_edge = torch.nn.functional.avg_pool2d(
+                sim_img.permute(0, 3, 1, 2), kernel_size=3, stride=1, padding=1
+            ).permute(0, 2, 3, 1)
+            blur_edge_wide = torch.nn.functional.avg_pool2d(
+                sim_img.permute(0, 3, 1, 2), kernel_size=5, stride=1, padding=2
+            ).permute(0, 2, 3, 1)
+            blur_edge_mix = 0.45 * blur_edge + 0.55 * blur_edge_wide
+            alpha_e = edge_soften * (edge_w**0.78)
+            sim_img = (1.0 - alpha_e) * sim_img + alpha_e * blur_edge_mix
+        psf_blend = float(getattr(self.cfg, "taxim_contact_psf_blend", 0.0))
+        if psf_blend > 1.0e-6:
+            depth_mm = torch.abs(height_map)
+            depth_max = torch.amax(depth_mm, dim=(1, 2), keepdim=True).clamp(min=1.0e-6)
+            contact_w = torch.clamp(depth_mm / depth_max, min=0.0, max=1.0).unsqueeze(-1)
+            psf_kernel_size = self._normalize_kernel_size(int(getattr(self.cfg, "taxim_contact_psf_kernel_size", 5)))
+            psf_kernel = torch.tensor(self._get_filtering_kernel(psf_kernel_size), dtype=torch.float, device=self.device)
+            psf_img = self._gaussian_filtering_rgb(sim_img, psf_kernel)
+            # Additional broad PSF pass to suppress synthetic polygonal edge hardness.
+            wide_kernel = torch.tensor(
+                self._get_filtering_kernel(self._normalize_kernel_size(psf_kernel_size + 6)),
+                dtype=torch.float,
+                device=self.device,
+            )
+            psf_img_wide = self._gaussian_filtering_rgb(sim_img, wide_kernel)
+            psf_mix = 0.45 * psf_img + 0.55 * psf_img_wide
+            alpha_psf = psf_blend * (0.35 + 0.65 * (contact_w**0.45))
+            sim_img = (1.0 - alpha_psf) * sim_img + alpha_psf * psf_mix
+        red_tilt = float(getattr(self.cfg, "taxim_contact_red_tilt_strength", 0.0))
+        if abs(red_tilt) > 1.0e-6:
+            depth_mm = torch.abs(height_map)
+            depth_max = torch.amax(depth_mm, dim=(1, 2), keepdim=True).clamp(min=1.0e-6)
+            red_tilt_power = float(getattr(self.cfg, "taxim_contact_red_tilt_power", 1.0))
+            contact_w = torch.clamp(depth_mm / depth_max, min=0.0, max=1.0).unsqueeze(-1) ** max(red_tilt_power, 1.0e-6)
+            w = sim_img.shape[2]
+            x = torch.linspace(-1.0, 1.0, w, device=sim_img.device, dtype=sim_img.dtype).view(1, 1, w, 1)
+            right = torch.clamp((x + 1.0) * 0.5, min=0.0, max=1.0) ** 1.25
+            tint = contact_w * right * (0.35 + 0.65 * torch.clamp(depth_mm / depth_max, min=0.0, max=1.0).unsqueeze(-1))
+            sim_img_r = sim_img[..., 0:1] * (1.0 + 1.10 * red_tilt * tint)
+            sim_img_g = sim_img[..., 1:2] * (1.0 - 0.28 * red_tilt * tint)
+            sim_img_b = sim_img[..., 2:3] * (1.0 - 0.14 * red_tilt * tint)
+            sim_img = torch.cat((sim_img_r, sim_img_g, sim_img_b), dim=-1)
+            red_add = float(getattr(self.cfg, "taxim_contact_red_tilt_additive", 0.0))
+            if abs(red_add) > 1.0e-6:
+                sim_img[..., 0:1] = sim_img[..., 0:1] + red_add * tint
         sim_img = torch.clip(sim_img, 0, 255, out=sim_img).to(torch.uint8)
 
         if self._marker_sim is not None and self._marker_sim.enabled:
@@ -325,6 +457,17 @@ class GelsightRender:
         dzdx, dzdy = img_grad
 
         grad_mag_orig = torch.sqrt(dzdx**2 + dzdy**2)
+        grad_suppress = float(getattr(self.cfg, "taxim_gradient_edge_suppress", 0.0))
+        if grad_suppress > 1.0e-6:
+            depth_abs = torch.abs(img)
+            depth_max = torch.amax(depth_abs, dim=(1, 2), keepdim=True).clamp(min=1.0e-6)
+            depth_n = torch.clamp(depth_abs / depth_max, min=0.0, max=1.0)
+            band_center = float(getattr(self.cfg, "taxim_contact_edge_denoise_center", 0.10))
+            band_width = max(float(getattr(self.cfg, "taxim_contact_edge_denoise_bandwidth", 0.10)), 1.0e-4)
+            band = torch.exp(-((depth_n - band_center) ** 2) / (2.0 * band_width * band_width))
+            grad_blur = self._gaussian_filtering(grad_mag_orig.unsqueeze(-1), self._edge_denoise_kernel).squeeze(-1)
+            alpha = torch.clamp(grad_suppress * band, min=0.0, max=1.0)
+            grad_mag_orig = (1.0 - alpha) * grad_mag_orig + alpha * grad_blur
         grad_mag = torch.arctan(grad_mag_orig)  # seems that arctan is used as a squashing function
         grad_dir = torch.arctan2(dzdx, dzdy)
         grad_dir[grad_mag_orig == 0] = 0
@@ -353,6 +496,13 @@ class GelsightRender:
         kernel = filter_1D @ filter_1D.T
         return kernel
 
+    def _normalize_kernel_size(self, kernel_size: int) -> int:
+        if kernel_size < 1:
+            kernel_size = 1
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+        return kernel_size
+
     def _gaussian_filtering(self, img: torch.Tensor, kernel: torch.Tensor) -> torch.Tensor:
         """Apply Gaussian filtering to the input image tensor.
 
@@ -367,3 +517,10 @@ class GelsightRender:
             img.permute(0, 3, 1, 2), kernel.unsqueeze(0).unsqueeze(0), stride=1, padding="same"
         ).permute(0, 2, 3, 1)
         return img_output
+
+    def _gaussian_filtering_rgb(self, img: torch.Tensor, kernel: torch.Tensor) -> torch.Tensor:
+        channels = []
+        for c in range(3):
+            ch = self._gaussian_filtering(img[..., c : c + 1], kernel)
+            channels.append(ch)
+        return torch.cat(channels, dim=-1)
