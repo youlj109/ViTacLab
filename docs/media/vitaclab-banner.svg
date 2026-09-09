@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-labelledby="title desc">
+  <title id="title">ViTacLab visuo-tactile robotics banner</title>
+  <desc id="desc">An abstract pipeline connecting visual perception and tactile contact to dexterous robot manipulation.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#071426"/>
+      <stop offset="0.55" stop-color="#102d46"/>
+      <stop offset="1" stop-color="#183d52"/>
+    </linearGradient>
+    <linearGradient id="vision" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#53e5d7"/>
+      <stop offset="1" stop-color="#2f80ed"/>
+    </linearGradient>
+    <linearGradient id="touch" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff8fb5"/>
+      <stop offset="1" stop-color="#b56cff"/>
+    </linearGradient>
+    <linearGradient id="action" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#b8f36b"/>
+      <stop offset="1" stop-color="#38c98b"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="14"/>
+    </filter>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#b9d9ec" stroke-opacity="0.07" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1280" height="360" rx="28" fill="url(#background)"/>
+  <rect width="1280" height="360" rx="28" fill="url(#grid)"/>
+  <circle cx="230" cy="-10" r="150" fill="#1ed8ca" fill-opacity="0.13" filter="url(#glow)"/>
+  <circle cx="1070" cy="350" r="180" fill="#8d66ff" fill-opacity="0.13" filter="url(#glow)"/>
+
+  <text x="640" y="55" text-anchor="middle" fill="#a9c3d4" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" letter-spacing="5">SIMULATION · REPRESENTATION · CONTROL</text>
+
+  <g transform="translate(120 92)">
+    <rect width="250" height="164" rx="22" fill="#0a1c30" stroke="#65e5da" stroke-opacity="0.45"/>
+    <rect x="67" y="42" width="116" height="79" rx="16" fill="none" stroke="url(#vision)" stroke-width="7"/>
+    <circle cx="125" cy="81.5" r="25" fill="none" stroke="#64e4dc" stroke-width="7"/>
+    <path d="M183 63l30-18v73l-30-18z" fill="url(#vision)" opacity="0.9"/>
+    <text x="125" y="147" text-anchor="middle" fill="#d9fbf8" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" letter-spacing="3">VISION</text>
+  </g>
+
+  <g transform="translate(435 92)">
+    <rect width="250" height="164" rx="22" fill="#0a1c30" stroke="#d78cff" stroke-opacity="0.45"/>
+    <g transform="translate(0 -12)">
+      <path d="M93 32c-22 13-35 39-35 66 0 24 14 42 37 42h60c23 0 37-18 37-42 0-27-13-53-35-66z" fill="none" stroke="url(#touch)" stroke-width="6"/>
+      <g fill="#efadff">
+        <circle cx="95" cy="70" r="5"/><circle cx="125" cy="62" r="5"/><circle cx="155" cy="70" r="5"/>
+        <circle cx="86" cy="98" r="5"/><circle cx="125" cy="91" r="8"/><circle cx="164" cy="98" r="5"/>
+        <circle cx="100" cy="121" r="5"/><circle cx="150" cy="121" r="5"/>
+      </g>
+      <circle cx="125" cy="91" r="25" fill="#c878ff" fill-opacity="0.18"/>
+    </g>
+    <text x="125" y="147" text-anchor="middle" fill="#f4dcff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" letter-spacing="3">TACTILE</text>
+  </g>
+
+  <g fill="none" stroke="#92b9cc" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M387 174h30" stroke-width="4"/>
+    <path d="M405 160l14 14-14 14" stroke-width="4"/>
+    <path d="M702 174h30" stroke-width="4"/>
+    <path d="M720 160l14 14-14 14" stroke-width="4"/>
+  </g>
+
+  <g transform="translate(750 92)">
+    <rect width="410" height="164" rx="22" fill="#0a1c30" stroke="#7fe0aa" stroke-opacity="0.45"/>
+    <g fill="none" stroke="url(#action)" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M65 126h68l45-38 48 9 49-40" stroke-width="14"/>
+      <circle cx="132" cy="126" r="18" fill="#102f35" stroke-width="7"/>
+      <circle cx="179" cy="88" r="17" fill="#102f35" stroke-width="7"/>
+      <circle cx="227" cy="97" r="15" fill="#102f35" stroke-width="7"/>
+      <path d="M274 57l30-22m-30 22l37 2m-37-2l19 32" stroke-width="9"/>
+    </g>
+    <g fill="#baf778">
+      <circle cx="326" cy="72" r="5"/><circle cx="349" cy="60" r="4"/><circle cx="347" cy="88" r="4"/>
+    </g>
+    <text x="205" y="147" text-anchor="middle" fill="#e2fbd0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" letter-spacing="3">DEXTEROUS MANIPULATION</text>
+  </g>
+
+  <text x="640" y="318" text-anchor="middle" fill="#eef8ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="25" font-weight="600">See contact. Feel interaction. Learn manipulation.</text>
+</svg>
