@@ -121,7 +121,10 @@ class UR10eShadowHandDirectBaseEnv(DirectRLEnv):
     def __init__(self, cfg, render_mode: str | None = None, **kwargs):
         # TacSL nominal backgrounds must be captured only after DirectRLEnv has
         # completed its normal scene/EventManager/simulation-start lifecycle.
+        # Subclasses (e.g. Forge) may call _maybe_init_tacsl_nominal_render from
+        # _setup_scene during super().__init__(); set flags before super().
         self._tacsl_nominal_render_initialized = False
+        self._shadow_render_sensors_enabled = bool(getattr(cfg, "enable_cameras", False))
         super().__init__(cfg, render_mode, **kwargs)
 
         self.num_robot_dofs = self.robot.num_joints
@@ -144,10 +147,23 @@ class UR10eShadowHandDirectBaseEnv(DirectRLEnv):
         self.actions = torch.zeros((self.num_envs, self.num_actions), device=self.device)
         self._use_rl_control = True
 
-        self._shadow_render_sensors_enabled = bool(getattr(self.cfg, "enable_cameras", False))
         self._ur10e_stacked_tacsl_names = self._resolve_ur10e_stacked_tacsl_sensor_names()
         self._init_ur10e_stacked_tacsl_buffers()
         self._maybe_init_tacsl_nominal_render()
+
+    def _ur10e_tacsl_nominal_render_complete(self) -> bool:
+        """True when every camera TacSL sensor has captured its nominal baseline."""
+
+        if not hasattr(self, "_ur10e_stacked_tacsl_names"):
+            return True
+
+        for name in self._ur10e_stacked_tacsl_names:
+            if name not in self.scene.sensors:
+                continue
+            tactile = self.scene[name]
+            if getattr(tactile.cfg, "enable_camera_tactile", False) and getattr(tactile, "_nominal_tactile", None) is None:
+                return False
+        return True
 
     def _maybe_init_tacsl_nominal_render(self) -> None:
         """Capture TacSL nominal backgrounds once, after the normal simulation start."""
@@ -155,16 +171,23 @@ class UR10eShadowHandDirectBaseEnv(DirectRLEnv):
         if self._tacsl_nominal_render_initialized or not self._shadow_render_sensors_enabled:
             return
 
+        if not hasattr(self, "_ur10e_stacked_tacsl_names"):
+            self._ur10e_stacked_tacsl_names = self._resolve_ur10e_stacked_tacsl_sensor_names()
+
         for name in self._ur10e_stacked_tacsl_names:
             if name not in self.scene.sensors:
                 continue
             tactile = self.scene[name]
-            if getattr(tactile.cfg, "enable_camera_tactile", False):
-                try:
-                    tactile.get_initial_render()
-                except Exception as e:
-                    print(f"[WARN] TacSL get_initial_render failed for {name}: {e}")
-        self._tacsl_nominal_render_initialized = True
+            if not getattr(tactile.cfg, "enable_camera_tactile", False):
+                continue
+            if getattr(tactile, "_nominal_tactile", None) is not None:
+                continue
+            try:
+                tactile.get_initial_render()
+            except Exception as e:
+                print(f"[WARN] TacSL get_initial_render failed for {name}: {e}")
+
+        self._tacsl_nominal_render_initialized = self._ur10e_tacsl_nominal_render_complete()
 
     def _initialize_deferred_tacsl_nominal_render(self) -> None:
         """Backward-compatible alias for the canonical deferred initializer."""

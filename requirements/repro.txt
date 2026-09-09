@@ -1,0 +1,12 @@
+# Install only after Isaac Sim 5.1.0 and Isaac Lab 2.3.2 are working.
+# PyTorch, CUDA libraries, NumPy, and Isaac packages intentionally come from
+# the matching Isaac Lab environment and are not independently pinned here.
+
+psutil
+toml
+prettytable
+PyYAML>=6.0
+scipy>=1.9
+matplotlib>=3.7
+opencv-python>=4.8,<5
+Pillow==11.3.0

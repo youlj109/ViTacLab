@@ -17,6 +17,7 @@ from .ur10e_dual_shadowhand_direct_base_cfg import (
     UR10eDualShadowHandTacSLSceneCfg,
     build_ur10e_dual_shadowhand_tacsl_sensor_cfgs,
     build_ur10e_dual_shadowhand_third_person_camera_cfg,
+    build_ur10e_dual_shadowhand_twist_camera_cfg,
 )
 
 # Order matches :func:`build_ur10e_dual_shadowhand_tacsl_sensor_cfgs` per arm, left then right.
@@ -44,6 +45,7 @@ class UR10eDualShadowHandDirectMARLBaseEnv(DirectMARLEnv):
     left_hand: Articulation
 
     def _setup_scene(self) -> None:
+        self._expected_tactile_sensor_names = _DUAL_TACSL_SENSOR_KEYS
         self.right_hand = Articulation(self.cfg.right_robot_cfg)
         self.left_hand = Articulation(self.cfg.left_robot_cfg)
 
@@ -59,7 +61,34 @@ class UR10eDualShadowHandDirectMARLBaseEnv(DirectMARLEnv):
         if getattr(self.cfg, "enable_cameras", False):
             if getattr(self.cfg, "enable_third_person_camera", True) and "third_person_camera" not in self.scene.sensors:
                 cam_cfg = build_ur10e_dual_shadowhand_third_person_camera_cfg()
+                if hasattr(self.cfg, "third_person_camera_pos"):
+                    cam_cfg.offset.pos = tuple(getattr(self.cfg, "third_person_camera_pos"))
+                if hasattr(self.cfg, "third_person_camera_rot"):
+                    cam_cfg.offset.rot = tuple(getattr(self.cfg, "third_person_camera_rot"))
+                if hasattr(self.cfg, "third_person_camera_width"):
+                    cam_cfg.width = int(getattr(self.cfg, "third_person_camera_width"))
+                if hasattr(self.cfg, "third_person_camera_height"):
+                    cam_cfg.height = int(getattr(self.cfg, "third_person_camera_height"))
+                if hasattr(self.cfg, "third_person_camera_horizontal_aperture"):
+                    cam_cfg.spawn.horizontal_aperture = float(
+                        getattr(self.cfg, "third_person_camera_horizontal_aperture")
+                    )
                 self.scene.sensors["third_person_camera"] = cam_cfg.class_type(cam_cfg)
+
+            if getattr(self.cfg, "enable_twist_camera", False) and "twist_camera" not in self.scene.sensors:
+                twist_cfg = build_ur10e_dual_shadowhand_twist_camera_cfg(
+                    robot_prim_name=str(getattr(self.cfg, "twist_camera_robot_prim_name", "RightRobot")),
+                    parent_link_name=str(getattr(self.cfg, "twist_camera_parent_link_name", "wrist_3_link")),
+                )
+                if hasattr(self.cfg, "twist_camera_pos"):
+                    twist_cfg.offset.pos = tuple(getattr(self.cfg, "twist_camera_pos"))
+                if hasattr(self.cfg, "twist_camera_rot"):
+                    twist_cfg.offset.rot = tuple(getattr(self.cfg, "twist_camera_rot"))
+                if hasattr(self.cfg, "twist_camera_width"):
+                    twist_cfg.width = int(getattr(self.cfg, "twist_camera_width"))
+                if hasattr(self.cfg, "twist_camera_height"):
+                    twist_cfg.height = int(getattr(self.cfg, "twist_camera_height"))
+                self.scene.sensors["twist_camera"] = twist_cfg.class_type(twist_cfg)
 
             if isinstance(self.cfg.scene, UR10eDualShadowHandTacSLSceneCfg):
                 for arm_prefix, prim_name in (("left_", "LeftRobot"), ("right_", "RightRobot")):
@@ -100,8 +129,12 @@ class UR10eDualShadowHandDirectMARLBaseEnv(DirectMARLEnv):
                 continue
         return ee_idx
 
-    def _get_observations(self) -> dict:
-        base: dict = {}
+    def _build_record_dict(self) -> dict[str, torch.Tensor]:
+        """Build the canonical dual-arm record schema used by collectors and policies."""
+        return self.build_npz_record_dict()
+
+    def build_npz_record_dict(self) -> dict[str, torch.Tensor]:
+        """Task-agnostic tactile / camera tensors for NPZ export (dual-arm panel videos)."""
 
         r_idx = getattr(self, "_record_ee_body_idx_right", None)
         if r_idx is None:
@@ -144,6 +177,11 @@ class UR10eDualShadowHandDirectMARLBaseEnv(DirectMARLEnv):
             tactile_pos = torch.stack(pose_list, dim=1)
 
         record_dict: dict[str, torch.Tensor] = {
+            "joint_pos": torch.cat(
+                (self.right_hand.data.joint_pos, self.left_hand.data.joint_pos), dim=-1
+            )
+            .detach()
+            .cpu(),
             "joint_pos_right": self.right_hand.data.joint_pos.detach().cpu(),
             "joint_pos_left": self.left_hand.data.joint_pos.detach().cpu(),
             "tactile_pos": tactile_pos.detach().cpu(),
@@ -217,8 +255,10 @@ class UR10eDualShadowHandDirectMARLBaseEnv(DirectMARLEnv):
                     .cpu()
                 )
 
-        base["record"] = record_dict
-        return base
+        return record_dict
+
+    def _get_observations(self) -> dict:
+        return {"record": self._build_record_dict()}
 
     def _maybe_init_tacsl_nominal_render(self) -> None:
         from isaaclab.sim.utils.stage import use_stage

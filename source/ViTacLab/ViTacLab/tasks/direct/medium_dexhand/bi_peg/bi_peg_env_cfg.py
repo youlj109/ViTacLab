@@ -17,7 +17,7 @@ from isaaclab_tasks.direct.factory.factory_tasks_cfg import FixedAssetCfg, HeldA
 from ViTacLab.assets.robot.ur10e_dual_shadowhand_direct_base.ur10e_dual_shadowhand_direct_base_cfg import (
     UR10E_DUAL_SHADOWHAND_LEFT_CFG,
     UR10E_DUAL_SHADOWHAND_RIGHT_CFG,
-    UR10eDualShadowHandDirectSceneCfg,
+    UR10eDualShadowHandTacSLSceneCfg,
 )
 
 WASHER_USD_PATH: str = "source/ViTacLab/ViTacLab/assets/data/Objects/cosmos_assets/b_Washers/b_Washers.usd"
@@ -108,6 +108,23 @@ class BiPegObjectPosesCfg:
 
 
 @configclass
+class UR10eDualShadowHandBiPegSceneCfg(UR10eDualShadowHandTacSLSceneCfg):
+    """Canonical dual-hand TacSL scene for tasks containing ``hole`` and ``peg`` objects.
+
+    Bi-Peg, Bi-Blind-Peg, and Bi-Blind-Grasp share the same pair of contact
+    object prims.  Keeping the contact expression here gives all three tasks
+    one sensor implementation while allowing each task to independently
+    choose whether a third-person camera is enabled.
+    """
+
+    @classmethod
+    def _tactile_params(cls) -> dict:
+        params = super()._tactile_params()
+        params["contact_object_prim_path_expr"] = "/World/envs/env_.*/(hole|peg)"
+        return params
+
+
+@configclass
 class UR10eDualShadowHandBiPegEnvCfg(DirectMARLEnvCfg):
     """Dual-arm peg-style task: rigid hole + peg USDs; rewards use Factory keypoint squashing (not ``ForgePegInsert``)."""
 
@@ -136,7 +153,7 @@ class UR10eDualShadowHandBiPegEnvCfg(DirectMARLEnvCfg):
         ),
     )
 
-    scene: UR10eDualShadowHandDirectSceneCfg = UR10eDualShadowHandDirectSceneCfg(
+    scene: UR10eDualShadowHandBiPegSceneCfg = UR10eDualShadowHandBiPegSceneCfg(
         num_envs=256,
         env_spacing=1.5,
         replicate_physics=True,

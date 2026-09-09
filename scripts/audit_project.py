@@ -25,6 +25,7 @@ from collections import Counter, defaultdict
 import hashlib
 from pathlib import Path
 import re
+import subprocess
 import sys
 from typing import Any
 
@@ -127,6 +128,28 @@ class Audit:
         self.info.append(message)
 
 
+def _repository_files(root: Path) -> list[Path]:
+    """Return tracked release files, excluding local ignored/generated trees."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z"],
+            check=True,
+            capture_output=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        excluded = {".git", "dist", "logs", "vendor", "play_records", "checkpoints", "wandb"}
+        return [
+            path
+            for path in root.rglob("*")
+            if path.is_file() and not excluded.intersection(path.relative_to(root).parts)
+        ]
+    return [
+        root / relative
+        for relative in result.stdout.decode("utf-8", errors="surrogateescape").split("\0")
+        if relative and (root / relative).is_file()
+    ]
+
+
 def _is_main_guard(node: ast.AST) -> bool:
     return (
         isinstance(node, ast.If)
@@ -227,7 +250,7 @@ def _entry_target_exists(root: Path, entry: str) -> tuple[bool, str]:
 
 
 def audit_python(audit: Audit) -> None:
-    python_files = [path for path in audit.root.rglob("*.py") if ".git" not in path.parts]
+    python_files = [path for path in _repository_files(audit.root) if path.suffix == ".py"]
     executable_count = 0
     vitac_source_root = audit.root / "source" / "ViTacLab"
     export_cache: dict[Path, set[str]] = {}
@@ -500,9 +523,8 @@ def audit_tactile_contract(audit: Audit, registrations: list[dict[str, str]]) ->
 
 
 def audit_layout_and_duplicates(audit: Audit) -> None:
-    for path in audit.root.rglob("*"):
-        if not path.is_file() or ".git" in path.parts:
-            continue
+    repository_files = _repository_files(audit.root)
+    for path in repository_files:
         if path.suffix.lower() in {".py", ".sh"} and VERSIONED_STEM_RE.search(path.stem):
             audit.error(f"Version/backup-suffixed executable filename: {audit.rel(path)}")
 
@@ -526,7 +548,9 @@ def audit_layout_and_duplicates(audit: Audit) -> None:
     )
     for base in duplicate_scopes:
         digest_map: defaultdict[tuple[str, int], list[Path]] = defaultdict(list)
-        for path in base.rglob("*.py"):
+        for path in repository_files:
+            if path.suffix != ".py" or base not in path.parents:
+                continue
             data = path.read_bytes()
             if len(data) < 256 or path.name == "__init__.py":
                 continue
@@ -536,8 +560,8 @@ def audit_layout_and_duplicates(audit: Audit) -> None:
                 audit.error("Byte-for-byte duplicate Python modules: " + ", ".join(audit.rel(path) for path in paths))
 
     searchable_suffixes = {".py", ".md", ".yaml", ".yml", ".toml", ".sh", ".json"}
-    for path in audit.root.rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in searchable_suffixes or ".git" in path.parts:
+    for path in repository_files:
+        if path.suffix.lower() not in searchable_suffixes:
             continue
         if path.resolve() == Path(__file__).resolve():
             continue
@@ -570,7 +594,9 @@ def audit_layout_and_duplicates(audit: Audit) -> None:
     }
     for policy_name, forbidden_name in forbidden_cross_imports.items():
         policy_root = audit.root / "policy" / policy_name
-        for path in policy_root.rglob("*.py"):
+        for path in repository_files:
+            if path.suffix != ".py" or policy_root not in path.parents:
+                continue
             if forbidden_name in path.read_text(encoding="utf-8", errors="replace"):
                 audit.error(
                     f"{policy_name} imports the other policy core {forbidden_name!r}: {audit.rel(path)}"
@@ -579,8 +605,12 @@ def audit_layout_and_duplicates(audit: Audit) -> None:
     reference_pattern = re.compile(
         r"(?<![\w./-])(scripts/data_collection/[A-Za-z0-9_./-]+\.(?:ya?ml|json))(?![\w./-])"
     )
-    for path in (audit.root / "scripts" / "data_collection").rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in {".yaml", ".yml"}:
+    data_collection_root = audit.root / "scripts" / "data_collection"
+    for path in repository_files:
+        if (
+            path.suffix.lower() not in {".yaml", ".yml"}
+            or data_collection_root not in path.parents
+        ):
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         for relative in reference_pattern.findall(text):
@@ -631,6 +661,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="ViTacLab repository root (default: inferred from this script).",
     )
     parser.add_argument("--verbose", action="store_true", help="Print all informational audit counters.")
+    parser.add_argument(
+        "--repro-only",
+        action="store_true",
+        help="Run only task/tactile/asset checks that gate a reproducible runtime release.",
+    )
     return parser
 
 
@@ -641,10 +676,12 @@ def main() -> int:
         raise SystemExit(f"Not a ViTacLab repository root: {root}")
 
     audit = Audit(root, verbose=args.verbose)
-    audit_python(audit)
+    if not args.repro_only:
+        audit_python(audit)
     registrations = audit_registrations(audit)
     audit_tactile_contract(audit, registrations)
-    audit_layout_and_duplicates(audit)
+    if not args.repro_only:
+        audit_layout_and_duplicates(audit)
     audit_assets(audit)
 
     if args.verbose:

@@ -18,7 +18,7 @@ from . import agents
 inhand_task_entry = "ViTacLab.tasks.direct.simple_dexhand.inhand_manipulation"
 
 gym.register(
-    id="Isaac-Repose-Cube-Shadow-Direct-v0",
+    id="Isaac-UR10eShadowHand-Repose-Cube-Direct-v0",
     entry_point=f"{inhand_task_entry}.inhand_manipulation_env:InHandManipulationEnv",
     disable_env_checker=True,
     kwargs={
@@ -30,7 +30,7 @@ gym.register(
 )
 
 gym.register(
-    id="Isaac-Repose-Cube-Shadow-OpenAI-FF-Direct-v0",
+    id="Isaac-UR10eShadowHand-Repose-Cube-OpenAI-FF-Direct-v0",
     entry_point=f"{inhand_task_entry}.inhand_manipulation_env:InHandManipulationEnv",
     disable_env_checker=True,
     kwargs={
@@ -41,21 +41,11 @@ gym.register(
     },
 )
 
-gym.register(
-    id="Isaac-Repose-Cube-Shadow-OpenAI-LSTM-Direct-v0",
-    entry_point=f"{inhand_task_entry}.inhand_manipulation_env:InHandManipulationEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{inhand_task_entry}.inhand_manipulation_env_cfg:UR10eShadowHandInHandOpenAIEnvCfg",
-        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_cfg.yaml",
-    },
-)
-
 # UR10e + Shadow Hand with 5 GelSight tactile sensors (policy controls hand only).
 # reduced_obs=True (default): same proprio layout as full task (no tactile in policy obs).
 # reduced_obs=False: adds dense tactile channels; widen networks (e.g. ShadowHandTactilePPORunnerCfg).
 gym.register(
-    id="Isaac-Repose-Cube-Shadow-Tactile-Direct-v0",
+    id="Isaac-UR10eShadowHand-Repose-Cube-Tactile-Direct-v0",
     entry_point=f"{inhand_task_entry}.inhand_manipulation_env:InHandManipulationEnv",
     disable_env_checker=True,
     kwargs={
@@ -70,22 +60,11 @@ gym.register(
 # -------
 
 gym.register(
-    id="Isaac-Repose-Cube-Shadow-Vision-Direct-v0",
+    id="Isaac-UR10eShadowHand-Repose-Cube-Vision-Direct-v0",
     entry_point=f"{__name__}.shadow_hand_vision_env:ShadowHandVisionEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.shadow_hand_vision_env:ShadowHandVisionEnvCfg",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:ShadowHandVisionFFPPORunnerCfg",
-        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_vision_cfg.yaml",
-    },
-)
-
-gym.register(
-    id="Isaac-Repose-Cube-Shadow-Vision-Direct-Play-v0",
-    entry_point=f"{__name__}.shadow_hand_vision_env:ShadowHandVisionEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.shadow_hand_vision_env:ShadowHandVisionEnvPlayCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:ShadowHandVisionFFPPORunnerCfg",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_vision_cfg.yaml",
     },

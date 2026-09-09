@@ -27,13 +27,6 @@ gym.register(
     disable_env_checker=True,
     kwargs=_KWARGS,
 )
-# Deprecated alias (former package name ``bi_peg_no_third_person``).
-gym.register(
-    id="Isaac-UR10e-Dual-Shadow-Hand-BiPeg-NoThirdPerson-Direct-v0",
-    entry_point=_ENTRY,
-    disable_env_checker=True,
-    kwargs=_KWARGS,
-)
 
 __all__ = [
     "UR10eDualShadowHandBiBlindPegEnvCfg",
