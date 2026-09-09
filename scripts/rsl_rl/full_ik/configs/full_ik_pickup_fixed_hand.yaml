@@ -1,0 +1,46 @@
+# Full-IK pickup — aligned with ik_rl_pickup.yaml on trajectory timing:
+#   trajectory: object:150:0, goal:-1:0  →  env step 0..149 track object; step 150+ track goal (same as train_ik_rl_single).
+# Difference vs ik_rl: phase_schedule inserts a scripted grasp (hand_yaml) in the middle of the object segment:
+#   open-hand approach, then grasp pose from YAML; optional wait_hand_convergence_before_goal delays entering `goal`
+#   until actuated hand joints reach that YAML (max |q-q*| ≤ tol), so lift does not start mid–hand closure.
+#
+# Rule: sum(phase_schedule env_steps for ik_trajectory phases) MUST equal the `object:` segment length (150 here).
+
+task: Isaac-UR10eShadowHand-Pickup-Direct-v0
+
+freeze_hand_after_script: true
+
+# Until actuated hand joints reach hand_yaml (max |q-q*| ≤ tol), IK stays on last `object` step — no transition to `goal`.
+wait_hand_convergence_before_goal: true
+hand_convergence_pos_tol_rad: 0.08
+hand_convergence_max_hold_steps: 800
+
+phase_schedule:
+  - name: approach_open_hand
+    mode: ik_trajectory
+    env_steps: 125
+    hand: open
+  - name: apply_grasp_hand
+    mode: ik_trajectory
+    env_steps: 25
+    # GUI should export this file with `--task pickup --finger-mode five` (recommended).
+    hand_yaml: scripts/teleoperation/gui_teleop/config/recorded_pickup_grasp_1.yaml
+
+# Same object-horizon as scripts/rsl_rl/ik_rl/configs/ik_rl_pickup.yaml (150 env steps).
+trajectory: "object:150:0,goal:-1:0"
+object_to_palm_offset: [0.0, 0.0, 0.05]
+palm_in_wrist_pos: [0.0, 0.0, 0.35]
+palm_in_wrist_euler: [1.5707963267948966, -1.5707963267948966, 1.5707963267948966]
+
+palm_orient: pickup_down
+palm_normal_local: [0.0, 1.0, 0.0]
+palm_yaw_offset: 0.0
+world_down: [0.0, 0.0, -1.0]
+
+palm_euler: [0.0, 2.2, 0.0]
+palm_euler_in_anchor: [0.0, 0.0, 0.0]
+
+ee_body: wrist_3_link
+ik_method: dls
+ik_lambda: null
+

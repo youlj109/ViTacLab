@@ -1,0 +1,8 @@
+{
+  "task": "Isaac-UR10eShadowHand-Pickup-Direct-v0",
+  "checkpoint": null,
+  "no_checkpoint": true,
+  "record_env_index": 0,
+  "trajectory": "object:150:0,goal:-1:0",
+  "num_envs": 1
+}

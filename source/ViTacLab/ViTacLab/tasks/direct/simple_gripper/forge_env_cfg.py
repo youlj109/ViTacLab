@@ -183,21 +183,20 @@ class ForgeSceneCfg(InteractiveSceneCfg):
         offset=TiledCameraCfg.OffsetCfg(
             # pos=(1.51596, -0.0097, 0.2),
             # rot=(0, 0, 0, 1),
-            pos=(1.35521, -0.03639, 0.66108),
-            rot=(0.59765, 0.38546, 0.38104, 0.5908),
+            pos=(1.0, 0.0, 0.5),
+            rot=(0.65328, 0.27060, 0.27060, 0.65328),
             convention="None",
         ),
-        data_types=["rgb"],
+        data_types=["rgb", "distance_to_image_plane"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0,
             focus_distance=400.0,
             horizontal_aperture=20.955,
             clipping_range=(0.1, 20.0),
         ),
-        width=480,
-        height=640,
+        width=640,
+        height=480,
     )
-    
 
 
 @configclass
@@ -215,13 +214,11 @@ class ForgeEnvCfg(FactoryEnvCfg):
     ctrl: ForgeCtrlCfg = ForgeCtrlCfg()
     task: ForgeTask = ForgeTask()
     events: EventCfg = EventCfg()
-    scene: ForgeSceneCfg = ForgeSceneCfg(num_envs=128, env_spacing=2.0, replicate_physics=True)
+    scene: ForgeSceneCfg = ForgeSceneCfg(num_envs=128, env_spacing=5.0, replicate_physics=True)
     
     # Observation mode: "reduce" (without tactile) or "full" (with tactile)
     obs_mode: str = "reduce"  # Options: "reduce", "full"
 
-    # When False (default for headless RL), Forge strips tactile + third-person camera from the scene.
-    # Set True via train/play (from --enable_cameras / ENABLE_CAMERAS) or in cfg for debugging / video.
     enable_cameras: bool = False
 
     # Optional high-fidelity background scene (spawned in ForgeEnv._setup_scene when enabled).

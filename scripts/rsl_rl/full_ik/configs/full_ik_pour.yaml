@@ -1,0 +1,54 @@
+# Full-IK pour: same overall rhythm as ik_rl pour — arm follows GPU IK + `trajectory` (cup / goal_cup / ...).
+# Only the grasp-related hand shape is special: phase_schedule opens hand while approaching, then applies
+# `hand_yaml` at the grasp moment; freeze_hand_after_script keeps that pose for the pour segment.
+# Paths are relative to the ViTacLab repo root (same as train_full_ik_single.py project_root).
+#
+# Scheme:
+# 1) Arm: always GPU differential IK + trajectory (same semantics as ik_rl_pour.yaml).
+# 2) Hand: phase_schedule — open during approach; brief step(s) to apply recorded grasp YAML; optional freeze.
+# 3) freeze_hand_after_script=true: fingers fixed from grasp YAML during remaining IK; PPO may use 1-d dummy.
+#
+# ``train_env_overrides.reset_cup_pos_noise`` can be >0; arm still tracks cup anchor via trajectory.
+#
+# Run (after Isaac Sim / python.sh):
+#   ./python.sh scripts/rsl_rl/full_ik/train_full_ik_single.py --task Isaac-UR10eShadowHand-PourDeformable-Direct-v0 --num_envs 16 --headless
+#
+# freeze_hand_after_script: after scripted phases, hand fixed from grasp YAML; PPO uses 1 dummy action unless false.
+# Optional freeze_hand_yaml: if omitted, uses the last phase_schedule entry that has hand_yaml.
+
+task: Isaac-UR10eShadowHand-PourDeformable-Direct-v0
+
+freeze_hand_after_script: true
+
+# Keys must exist on the task’s DirectRLEnvCfg (Pour: see ur10e_shadowhand_pour_env_cfg.py).
+train_env_overrides:
+  reset_cup_pos_noise: 0.0
+
+phase_schedule:
+  - name: approach_open_hand
+    mode: ik_trajectory
+    env_steps: 80
+    hand: open
+  - name: apply_grasp_hand
+    mode: ik_trajectory
+    env_steps: 1
+    hand_yaml: scripts/teleoperation/gui_teleop/config/recorded_pickup_grasp_1.yaml
+
+trajectory: "cup:200:0,goal_cup:200:0,goal_cup:-1:1"
+
+object_to_palm_offset: [0.0, 0.05, -0.03]
+palm_in_wrist_pos: [0.0, 0.0, 0.35]
+palm_in_wrist_euler: [1.5707963267948966, -1.5707963267948966, 1.5707963267948966]
+
+palm_orient: pickup_down
+palm_normal_local: [0.0, 0.0, 1.0]
+palm_yaw_offset: 3.141592653589793
+world_down: [0.0, 0.0, -1.0]
+
+palm_euler: [0.0, 2.2, 0.0]
+
+palm_euler_in_anchor: [0.0, 0.0, 3.141592653589793]
+
+ee_body: wrist_3_link
+ik_method: dls
+ik_lambda: null

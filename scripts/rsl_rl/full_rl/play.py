@@ -10,6 +10,12 @@
 import argparse
 import os
 import sys
+import time
+from datetime import datetime
+import traceback
+import gymnasium as gym
+import numpy as np
+import torch
 
 # Shared helpers with ``ik_rl`` live under ``scripts/rsl_rl/ik_rl/utils``
 _RSL_RL_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -18,8 +24,8 @@ if _IK_UTILS not in sys.path:
     sys.path.insert(0, _IK_UTILS)
 
 from isaaclab.app import AppLauncher
+from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 
-# local imports
 import cli_args  # isort: skip
 
 # add argparse arguments
@@ -75,7 +81,8 @@ args_cli, hydra_args = parser.parse_known_args()
 if args_cli.video or args_cli.show_rgb or args_cli.show_ff:
     args_cli.enable_cameras = True
 
-# clear out sys.argv for Hydra
+args_cli.enable_cameras = True
+
 sys.argv = [sys.argv[0]] + hydra_args
 
 # launch omniverse app
@@ -99,9 +106,7 @@ from isaaclab.envs import (
     ManagerBasedRLEnvCfg,
 )
 from isaaclab.utils.assets import retrieve_file_path
-from isaaclab.utils.dict import print_dict
-
-from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper, export_policy_as_jit, export_policy_as_onnx
+from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper
 from isaaclab_rl.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
 
 import isaaclab_tasks  # noqa: F401
@@ -111,8 +116,87 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 import ViTacLab.tasks  # noqa: F401
 from ViTacLab.utils.vitaclab_marl_rsl import multi_agent_to_single_agent
 
-from rsl_rl_log_utils import get_rsl_rl_log_root
+from isaaclab.utils.math import (
+    transform_points,
+    unproject_depth,
+)
 
+def _farthest_point_sample(xyz: torch.Tensor, npoint: int) -> torch.Tensor:
+    """Batched farthest point sampling (FPS).
+
+    Args:
+        xyz: Point coordinates of shape (B, N, 3).
+        npoint: Number of points to sample.
+
+    Returns:
+        Tensor of shape (B, npoint, 3). If N < npoint, pads by repeating the last point.
+    """
+    B, N, _ = xyz.shape
+    if N <= npoint:
+        if N < npoint:
+            pad = npoint - N
+            xyz = torch.cat([xyz, xyz[:, -1:, :].expand(B, pad, -1)], dim=1)
+        return xyz
+    device = xyz.device
+    dtype = xyz.dtype
+    centroids = torch.zeros(B, npoint, dtype=torch.long, device=device)
+    distance = torch.full((B, N), 1e10, device=device, dtype=dtype)
+    farthest = torch.randint(0, N, (B,), dtype=torch.long, device=device)
+    batch_idx = torch.arange(B, device=device)
+    for j in range(npoint):
+        centroids[:, j] = farthest
+        center = xyz[batch_idx, farthest].unsqueeze(1)
+        dist = torch.sum((xyz - center) ** 2, dim=-1)
+        distance = torch.minimum(distance, dist)
+        farthest = torch.argmax(distance, dim=-1)
+    ii = batch_idx.unsqueeze(1).expand(B, npoint)
+    return xyz[ii, centroids]
+
+
+def _append_env_frame_to_buffer(buf, obs_record):
+    for k, v in obs_record.items():
+        if k not in buf:
+            buf[k] = []
+        buf[k].append(v.numpy())
+
+
+def _apply_farthest_point_sample(env, env_idx, buf):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # World -> env-local: same convention as root_pos_w - env_origins (parallel envs share comparable xyz).
+    env_origin = env.scene.env_origins[env_idx].to(device=device, dtype=torch.float32)
+
+    def depth_to_pointcloud(depth, camera_intrinsic, camera_pos, camera_quat):
+        depth_nhw = torch.from_numpy(depth.squeeze(-1)).to(device=device)
+        pts_cam = unproject_depth(depth_nhw, camera_intrinsic, is_ortho=True)
+        pts_w = transform_points(pts_cam, pos=camera_pos, quat=camera_quat)
+        pts_env = pts_w - env_origin.unsqueeze(0)
+        pts_env = _farthest_point_sample(pts_env.unsqueeze(0), 2048).squeeze(0).cpu().numpy()
+        return pts_env
+
+    ret_buf = dict()
+    for k, v in buf.items():
+        print(k, v[0].shape)
+        if "_depth" in k:
+            depth = buf[k]
+            camera_name = k.replace("_depth", "")
+            camera_intrinsic = env.scene[camera_name].data.intrinsic_matrices[env_idx]
+            camera_pos = env.scene[camera_name].data.pos_w[env_idx]
+            camera_quat = env.scene[camera_name].data.quat_w_ros[env_idx]
+            pointcloud_name = camera_name + "_pointcloud_env"
+            ret_buf[pointcloud_name] = [depth_to_pointcloud(depth_i, camera_intrinsic, camera_pos, camera_quat) for depth_i in depth]
+            # 判断里面有没有nan
+            if any(np.isnan(vi).any() for vi in ret_buf[pointcloud_name]):
+                print(f"nan in {k}")
+                print([np.isnan(vi).any() for vi in ret_buf[pointcloud_name]])
+        else:
+            ret_buf[k] = buf[k]
+    return ret_buf
+
+def _episode_buffer_to_npz_kwargs(env, env_idx, buf):
+    buf = _apply_farthest_point_sample(env, env_idx, buf)
+    # Skip optional keys that were never appended (e.g. no depth/pointcloud in record).
+    return {k: np.stack(v, axis=0) for k, v in buf.items() if len(v) > 0}
+    
 
 def _img_to_uint8(img: np.ndarray) -> np.ndarray:
     if img.dtype == np.uint8:
@@ -193,13 +277,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
-    # specify directory for logging experiments (default: folder name = ``--task`` id; override: ``--experiment_name``)
-    log_root_path = get_rsl_rl_log_root(args_cli.task, getattr(args_cli, "experiment_name", None))
-    print(f"[INFO] Loading experiment from directory: {log_root_path}")
+    log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
+    log_root_path = os.path.abspath(log_root_path)
+    
     if args_cli.use_pretrained_checkpoint:
         resume_path = get_published_pretrained_checkpoint("rsl_rl", train_task_name)
         if not resume_path:
-            print("[INFO] Unfortunately a pre-trained checkpoint is currently unavailable for this task.")
             return
     elif args_cli.checkpoint:
         resume_path = retrieve_file_path(args_cli.checkpoint)
@@ -207,35 +290,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
 
     log_dir = os.path.dirname(resume_path)
-
-    # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
 
-    # ViTacLab direct tasks: match sensor spawning to AppLauncher / ENABLE_CAMERAS.
-    _enable_cams = bool(getattr(args_cli, "enable_cameras", False)) or bool(int(os.environ.get("ENABLE_CAMERAS", "0")))
+    # ForgeEnv (and similar) gate tactile + third_person_camera on cfg.enable_cameras, not only AppLauncher.
+    # save_data reads obs["record"] which requires those sensors — mirror train.py injection.
+    _enable_cams = bool(getattr(args_cli, "enable_cameras", False)) or bool(
+        int(os.environ.get("ENABLE_CAMERAS", "0"))
+    )
+    if getattr(args_cli, "save_data", False):
+        _enable_cams = True
     setattr(env_cfg, "enable_cameras", _enable_cams)
 
-    # create isaac environment
-    env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array")
 
-    # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
-    # wrap for video recording
-    if args_cli.video:
-        video_kwargs = {
-            "video_folder": os.path.join(log_dir, "videos", "play"),
-            "step_trigger": lambda step: step == 0,
-            "video_length": args_cli.video_length,
-            "disable_logger": True,
-        }
-        print("[INFO] Recording videos during training.")
-        print_dict(video_kwargs, nesting=4)
-        env = gym.wrappers.RecordVideo(env, **video_kwargs)
-
-    # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+
+    env.unwrapped._use_rl_control = True
 
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     # load previously trained model
@@ -247,30 +320,67 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
     runner.load(resume_path)
 
-    # obtain the trained policy for inference
     policy = runner.get_inference_policy(device=env.unwrapped.device)
-
-    # extract the neural network module
-    # we do this in a try-except to maintain backwards compatibility.
     try:
         # version 2.3 onwards
         policy_nn = runner.alg.policy
     except AttributeError:
         # version 2.2 and below
         policy_nn = runner.alg.actor_critic
+    dt = env.unwrapped.step_dt
+    obs = env.get_observations()
 
-    # extract the normalizer
-    if hasattr(policy_nn, "actor_obs_normalizer"):
-        normalizer = policy_nn.actor_obs_normalizer
-    elif hasattr(policy_nn, "student_obs_normalizer"):
-        normalizer = policy_nn.student_obs_normalizer
+    # 多环境：从 obs 或 env 获取 num_envs
+    obs_policy = obs.get("policy", obs) if isinstance(obs, dict) else obs
+    num_envs = obs_policy.shape[0] if hasattr(obs_policy, "shape") else getattr(env.unwrapped, "num_envs", 1)
+    device = env.unwrapped.device
+
+    # 每个环境独立的 episode 缓冲；所有 env 共享同一个 global episode 步数
+    current_ep_buffers = [dict() for _ in range(num_envs)]
+    step_in_episode = 0  # global episode step counter (since last env.reset())
+    # 当前 global episode 中，各 env 是否已经保存过一条成功轨迹（避免重复保存）
+    success_saved = torch.zeros(num_envs, dtype=torch.bool, device=device)
+
+    episodes_collected = 0
+    total_timestep = 0
+    max_steps_per_episode = args_cli.max_steps if args_cli.max_steps > 0 else None
+
+    print(f"[INFO] Starting simulation. num_envs={num_envs}. Target: {args_cli.num_episodes} successful trajectories.")
+    if max_steps_per_episode is not None:
+        print(f"[INFO] Max steps per trajectory: {max_steps_per_episode} (trajectory discarded if no success by then).")
+    run_until_target = args_cli.save_data and args_cli.num_episodes > 0
+    if run_until_target:
+        print("[INFO] Data recording: only successful trajectories are saved; run until target count or app closed.")
     else:
-        normalizer = None
+        is_running = simulation_app.is_running()
+        print(f"[INFO] simulation_app.is_running() = {is_running} (loop depends on it).")
 
-    # export policy to onnx/jit
-    export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
-    export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+    # 保存收集到的多回合数据
+    if args_cli.save_data:
+        seed_val = agent_cfg.seed if agent_cfg.seed is not None else -1
+        if args_cli.data_path is not None:
+            data_dir = os.path.abspath(args_cli.data_path)
+        else:
+            current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            data_dir = os.path.abspath(os.path.join("data", "rsl_rl", task_name + "_" + str(seed_val), current_time))
+        os.makedirs(data_dir, exist_ok=True)
+        
+    if args_cli.save_data:
+        for i in range(num_envs):
+            _append_env_frame_to_buffer(
+                current_ep_buffers[i],
+                obs["record"][i],
+            )
+
+    while True:
+        if not simulation_app.is_running():
+            if run_until_target and (episodes_collected > 0 or total_timestep > 0):
+                print("[INFO] App no longer running; stopping and saving collected data.")
+            elif not run_until_target:
+                print("[INFO] App no longer running; exiting.")
+            break
+        if run_until_target and episodes_collected >= args_cli.num_episodes:
+            break
 
     dt = env.unwrapped.step_dt
 
@@ -366,14 +476,63 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         with torch.inference_mode():
             # agent stepping
             actions = policy(obs)
-            # env stepping
-            obs, _, dones, _ = env.step(actions)
-            # reset recurrent states for episodes that have terminated
-            policy_nn.reset(dones)
-        if args_cli.video:
-            timestep += 1
-            # Exit the play loop after recording one video
-            if timestep == args_cli.video_length:
+            obs, _, dones, infos = env.step(actions)
+
+        # 多环境：dones 展平为 (num_envs,)
+        dones_flat = dones.flatten() if isinstance(dones, torch.Tensor) else torch.tensor(dones, device=device).flatten()
+        if dones_flat.numel() != num_envs:
+            dones_flat = dones_flat.expand(num_envs)
+
+        if args_cli.save_data:
+            for i in range(num_envs):
+                _append_env_frame_to_buffer(
+                    current_ep_buffers[i],
+                    obs["record"][i],
+                )
+
+        total_timestep += 1
+        step_in_episode += 1
+
+        # 1) 成功：立即保存当前 buffer，但不 reset 环境；一个 global episode 中每个 env 只保存一次
+        if args_cli.save_data:
+            success_per_env = infos["curr_success_per_env"]
+            for i in range(num_envs):
+                if success_per_env[i].item() and not success_saved[i].item():
+                    ep_data_torch = current_ep_buffers[i]
+                    np.savez_compressed(
+                        os.path.join(data_dir, f"episode_{episodes_collected}.npz"),
+                        **_episode_buffer_to_npz_kwargs(env.unwrapped, i, ep_data_torch),
+                    )
+                    episodes_collected += 1
+                    success_saved[i] = True
+                    print(f"[INFO] Env {i} success at global step {step_in_episode}; saved episode {episodes_collected} / {args_cli.num_episodes}")
+            if episodes_collected >= args_cli.num_episodes:
+                break
+
+        # 2) global max_steps：此时才调用 env.reset()，并整体清空缓冲
+        if max_steps_per_episode is not None and step_in_episode >= max_steps_per_episode:
+            if args_cli.save_data:
+                for i in range(num_envs):
+                    if not success_saved[i].item():
+                        # ep_data_torch = current_ep_buffers[i]
+                        # np.savez_compressed(
+                        #     os.path.join(data_dir, f"episode_{episodes_collected}.npz"),
+                        #     **_episode_buffer_to_npz_kwargs(env.unwrapped, i, ep_data_torch),
+                        # )
+                        # episodes_collected += 1
+                        print(f"[INFO] Env {i} discarded (max_steps={max_steps_per_episode} without success).")
+            current_ep_buffers = [dict() for _ in range(num_envs)]
+            success_saved = torch.zeros(num_envs, dtype=torch.bool, device=device)
+            step_in_episode = 0
+
+            # reset policy 隐状态与环境本身
+            if policy_nn is not None and hasattr(policy_nn, "reset"):
+                with torch.inference_mode():
+                    policy_nn.reset(torch.ones(num_envs, dtype=torch.bool, device=device))
+            with torch.inference_mode():
+                obs, _ = env.reset()
+
+            if args_cli.save_data and episodes_collected >= args_cli.num_episodes:
                 break
 
         if fig is not None and (rgb_ims or ff_ims) and scene_env is not None and tactile_keys:
@@ -428,9 +587,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         plt.close("all")
     env.close()
 
-
 if __name__ == "__main__":
-    # run the main function
-    main()
-    # close sim app
-    simulation_app.close()
+    try:
+        main()
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        traceback.print_exc()
+    finally:
+        simulation_app.close()

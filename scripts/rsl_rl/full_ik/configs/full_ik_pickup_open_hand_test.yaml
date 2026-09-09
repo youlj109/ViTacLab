@@ -1,0 +1,32 @@
+# Full-IK pickup A/B test config:
+# Keep arm trajectory identical to pickup_fixed_hand, but force hand to stay fully open.
+# Use this to check whether "drag backward" is caused by hand-shape closure.
+
+task: Isaac-UR10eShadowHand-Pickup-Direct-v0
+
+# For this diagnostic run, do not freeze to a grasp YAML.
+freeze_hand_after_script: false
+wait_hand_convergence_before_goal: false
+
+phase_schedule:
+  - name: approach_open_hand_only
+    mode: ik_trajectory
+    env_steps: 150
+    hand: open
+
+trajectory: "object:150:0,goal:-1:0"
+object_to_palm_offset: [0.0, 0.0, 0.05]
+palm_in_wrist_pos: [0.0, 0.0, 0.35]
+palm_in_wrist_euler: [1.5707963267948966, -1.5707963267948966, 1.5707963267948966]
+
+palm_orient: pickup_down
+palm_normal_local: [0.0, 1.0, 0.0]
+palm_yaw_offset: 0.0
+world_down: [0.0, 0.0, -1.0]
+
+palm_euler: [0.0, 2.2, 0.0]
+palm_euler_in_anchor: [0.0, 0.0, 0.0]
+
+ee_body: wrist_3_link
+ik_method: dls
+ik_lambda: null
