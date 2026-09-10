@@ -43,4 +43,22 @@ Do not use a raw no-contact frame as the illumination reference. Gaussian
 low-pass filtering does not fully remove the printed marker grid, so the
 renderer produces gray marker halos before adding the simulated markers.
 
+## Force-corrected render amplitude
+
+The advisor M2-nut profile keeps the measured gel reference stiffness at
+`k_ref=66` and uses `corrected_force_render_depth_gain=0.20`. The gain is
+applied only after the sparse-point robust force/depth ratio (20% low and 20%
+high samples trimmed), uniformly across the complete dense height map. It does
+not blend the load-invariant raw camera depth back in and therefore preserves
+all relative depth relationships.
+
+To inspect alternative gains without rerunning PhysX, render the saved
+marker-free height maps with:
+
+```bash
+../IsaacLab/isaaclab.sh -p scripts/calibration/sweep_xense_force_depth_gain.py \
+  --headless --enable_cameras --device cuda:0 \
+  --gains 0.10 0.15 0.20 0.25 0.30 0.35
+```
+
 See [`docs/VITACSIM_CALIBRATION.md`](../../../../../../../docs/VITACSIM_CALIBRATION.md) for the full Task 2 / Task 3 pipeline.

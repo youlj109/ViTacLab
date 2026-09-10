@@ -313,7 +313,8 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
             # complete camera depth delta preserves the simulated indentation's dense shape and
             # relative depth relationships for Taxim rendering.
             scale = self._force_depth_correction_scale[env_ids].view(-1, 1, 1)
-            force_delta = depth_delta * scale
+            depth_gain = max(float(self.cfg.corrected_force_render_depth_gain), 0.0)
+            force_delta = depth_delta * scale * depth_gain
             self._force_corrected_height_map[env_ids] = force_delta
             blended = torch.clamp((1.0 - alpha) * depth_delta + alpha * force_delta, min=0.0)
             self._data.tactile_height_map_corrected[env_ids] = blended

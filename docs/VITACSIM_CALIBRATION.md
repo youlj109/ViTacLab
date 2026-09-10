@@ -160,9 +160,10 @@ data/calibration/tactile/fitted_params.json   # 真机就绪后生成
 | `marker_pattern` | **xense** | 固定 |
 | `mm_per_pixel` | **≈0.052** | 固定（GelSight 外推，待实验室确认） |
 | `bg_clean.jpg` | 实验室 file-000 | ✅ |
-| `polycalib.npz` | **GelSight R15 拷贝** | ❌ 等导师 50 次球压 |
+| `polycalib.npz` | **file-000 marker-free 50 帧拟合 + 50 帧留出验证** | ✅ |
 | `marker_displacement_gain` | 默认 0.35 → **拟合 0.15** | ✅ `fitted_params.json` |
-| `rgb_diff_scale` → `k_ref` | **0.5**（sweep 用 `k_ref /= scale`） | ✅ |
+| `normal_correction_k_ref` | **66** | 固定；真实凝胶参考刚度，不因视觉调参而改变 |
+| `corrected_force_render_depth_gain` | **0.20** | ✅ M2 全载荷深度域校准 |
 | 接触物 | M2 螺母 + G010–G210 | ✅ |
 | `finger_root_z` | 0.441 | 待 Fn 对齐 sweep |
 | TacSL | `enable_corrected_force_render=False` | depth→Taxim |
@@ -199,6 +200,13 @@ sweep 加载拟合：`FITTED_PARAMS=data/calibration/tactile/fitted_params.json 
 | `normal_contact_stiffness` | 1e4 | 待扩展 | baseline TacSL 路径 |
 | `depth_penetration_deadband` | 0.002 m | 固定 | |
 | `enable_corrected_force_render` | False（validation） | 固定 | 标定 sweep 用 depth→Taxim |
+| `corrected_force_render_depth_gain` | 通用 1.0；Advisor **0.20** | 固定 | 鲁棒力/深度比例之后统一缩放完整高度图；不改变相对深度关系 |
+
+Advisor 的 `0.20` 使 G010–G210 纠正峰值为
+`0.111 / 0.334 / 0.669 / 1.226 / 1.784 / 2.341 mm`。最高载荷接近
+6 mm 标定球覆盖的最大球冠压入约 `2.27 mm`，避免旧增益在 G210 外推到
+`11.70 mm`。`k_ref=66`、每点 `force/k_ref`、上下各裁剪 20% 后取中间
+60% 均值的算法保持不变。
 
 ### 6.3 当前联合拟合脚本实际优化的变量
 

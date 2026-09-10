@@ -35,6 +35,10 @@ ADVISOR_TACTILE_UV_SHIFT_PX = (0.0, 0.0)
 # GelSight-R15 camera depth projects the 3.8 mm M2 nut to about twice the
 # footprint implied by the Xense 17.5 mm / 400 px sensing-area calibration.
 ADVISOR_DEPTH_FOOTPRINT_SCALE = 2.0
+# The force/depth ratio uses the measured k_ref=66 unchanged. A separate
+# uniform render-depth gain keeps the M2 sweep inside the 6 mm ball calibration
+# domain (maximum calibrated spherical-cap indentation: about 2.27 mm).
+ADVISOR_FORCE_RENDER_DEPTH_GAIN = 0.20
 ADVISOR_MARKER_LOAD_REF_FN_N = 0.72
 ADVISOR_MARKER_LOAD_SCALE_EXPONENT = 0.48
 ADVISOR_MARKER_DEPTH_GAMMA = 1.2

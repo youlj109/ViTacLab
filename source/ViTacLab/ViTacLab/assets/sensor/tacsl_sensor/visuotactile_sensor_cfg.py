@@ -344,6 +344,15 @@ class VisuoTactileSensorCfg(SensorBaseCfg):
     Recommended range is ``[0, 1]``.
     """
 
+    corrected_force_render_depth_gain: float = 1.0
+    """Uniform gain applied after the robust force/depth correction ratio.
+
+    The effective dense-map scale is ``robust_ratio * depth_gain``. Unlike
+    :attr:`corrected_force_render_blend`, this preserves every relative depth
+    relationship and does not mix in the load-invariant raw camera depth.
+    ``1.0`` retains the original force-derived indentation.
+    """
+
     force_height_max_m: float = 0.006
     """Legacy force-map limit retained for configuration compatibility.
 

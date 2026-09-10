@@ -88,6 +88,13 @@ parser.add_argument(
     "(delta=fn/k_ref). <=0 uses the legacy validation fallback.",
 )
 parser.add_argument(
+    "--force-render-depth-gain",
+    type=float,
+    default=-1.0,
+    help="Uniform post-ratio gain on the complete corrected height map. "
+    "<0 uses the profile default (advisor=0.20, cylinder=1.0).",
+)
+parser.add_argument(
     "--tactile-uv-shift-u",
     type=float,
     default=-1.0,
@@ -178,6 +185,7 @@ from ViTacLab.tasks.direct.vitacsim_validation.validation_m2_nut_spawner_cfg imp
 from ViTacLab.tasks.direct.vitacsim_validation.m2_nut_spec import (
     ADVISOR_CASE_MASS_G,
     ADVISOR_DEPTH_FOOTPRINT_SCALE,
+    ADVISOR_FORCE_RENDER_DEPTH_GAIN,
     ADVISOR_FINGER_ROOT_Z,
     ADVISOR_MARKER_DEPTH_GAMMA,
     ADVISOR_MARKER_DEPTH_GAMMA_LOW_LOAD,
@@ -341,6 +349,13 @@ def _force_render_k_ref(case_id: str) -> float:
     return resolve_force_render_k_ref(case_id, float(args_cli.force_render_k_ref))
 
 
+def _force_render_depth_gain() -> float:
+    value = float(args_cli.force_render_depth_gain)
+    if value >= 0.0:
+        return value
+    return ADVISOR_FORCE_RENDER_DEPTH_GAIN if _is_advisor() else 1.0
+
+
 def _depth_footprint_scale() -> float:
     value = float(args_cli.depth_footprint_scale)
     if value > 0.0:
@@ -427,6 +442,7 @@ def _make_sensor_cfg(mode: str) -> VisuoTactileSensorV2Cfg:
         enable_slip_stick_reconstruction=use_slip,
         enable_corrected_force_render=(mode == "vitacsim"),
         corrected_force_render_blend=1.0,
+        corrected_force_render_depth_gain=_force_render_depth_gain(),
         require_physx_sparse_anchors=(mode == "vitacsim"),
         strict_target_contact_attribution=True,
         tactile_uv_shift_px=_tactile_uv_shift_px(),
@@ -617,7 +633,11 @@ def main() -> int:
 
     render_cfg = _render_cfg()
     print(f"[INFO] GelSight render: {render_cfg.base_data_path}/{render_cfg.sensor_data_dir_name}")
-    print(f"[INFO] finger_root_z={_finger_root_z():.4f} force_render_k_ref={_force_render_k_ref(case_id):.2f}")
+    print(
+        f"[INFO] finger_root_z={_finger_root_z():.4f} "
+        f"force_render_k_ref={_force_render_k_ref(case_id):.2f} "
+        f"force_render_depth_gain={_force_render_depth_gain():.3f}"
+    )
 
     sim_cfg = sim_utils.SimulationCfg(dt=0.005, device=args_cli.device)
     sim = sim_utils.SimulationContext(sim_cfg)
@@ -771,6 +791,7 @@ def main() -> int:
         "marker_pattern": args_cli.marker_pattern if _marker_enabled() else "none",
         **_marker_stats(ts),
         "force_render_k_ref": _force_render_k_ref(case_id),
+        "force_render_depth_gain": _force_render_depth_gain(),
         "fitted_params_path": str(_fitted_params_path()) if _fitted_params_path() else None,
         "fitted_rgb_diff_scale": _fitted_rgb_scale(),
         "normal_correction_k_ref": float(
@@ -814,6 +835,12 @@ def main() -> int:
         else None,
         "force_depth_correction_scale": float(
             getattr(ts, "_force_depth_correction_scale", torch.zeros(1))[0].item()
+        )
+        if hasattr(ts, "_force_depth_correction_scale")
+        else None,
+        "force_depth_correction_effective_scale": float(
+            getattr(ts, "_force_depth_correction_scale", torch.zeros(1))[0].item()
+            * _force_render_depth_gain()
         )
         if hasattr(ts, "_force_depth_correction_scale")
         else None,
