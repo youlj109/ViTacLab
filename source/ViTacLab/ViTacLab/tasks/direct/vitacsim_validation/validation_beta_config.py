@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .m2_nut_spec import ADVISOR_CASE_MASS_G
+from .m2_nut_spec import ADVISOR_CASE_MASS_G, ADVISOR_FORCE_RENDER_K_REF
 
 WEIGHT_ORDER = ("W200", "W100", "W050", "W020", "W010")
 WEIGHT_MASS_G = {"W200": 200, "W100": 100, "W050": 50, "W020": 20, "W010": 10}
@@ -45,10 +45,9 @@ def nominal_fn_n(case_id: str) -> float:
 
 
 def adaptive_force_render_k_ref(case_id: str, *, base_k: float = FORCE_RENDER_K_REF_W100) -> float:
-    """Return the physical gel stiffness, which is invariant across load cases."""
-    # Keep the historical function name for callers, but do not tune a material
-    # property per test weight. Load dependence already enters through PhysX F_n.
-    _ = case_id
+    """Return the configured effective stiffness, invariant within each profile."""
+    if case_id in ADVISOR_MASS_KG:
+        return float(ADVISOR_FORCE_RENDER_K_REF)
     return float(base_k)
 
 

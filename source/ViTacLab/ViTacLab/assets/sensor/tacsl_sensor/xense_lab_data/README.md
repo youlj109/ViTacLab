@@ -45,20 +45,21 @@ renderer produces gray marker halos before adding the simulated markers.
 
 ## Force-corrected render amplitude
 
-The advisor M2-nut profile keeps the measured gel reference stiffness at
-`k_ref=66` and uses `corrected_force_render_depth_gain=0.15`. The gain is
-applied only after the sparse-point robust force/depth ratio (20% low and 20%
-high samples trimmed), uniformly across the complete dense height map. It does
-not blend the load-invariant raw camera depth back in and therefore preserves
-all relative depth relationships.
+The advisor M2-nut profile uses the recalibrated effective point stiffness
+`k_ref=1840 N/m` and `corrected_force_render_depth_gain=1.0`. Each sparse-point
+indentation is `force/k_ref`; the lowest and highest 20% of force/depth ratios
+are discarded, the middle 60% are averaged, and that single robust ratio scales
+the complete dense height map. The global `depth_gain` remains configurable,
+but its Advisor default is the neutral value `1.0`; there is no load-dependent
+exponent.
 
-To inspect alternative gains without rerunning PhysX, render the saved
-marker-free height maps with:
+To preview the new stiffness from the legacy `k_ref=66 N/m` saved maps without
+rerunning PhysX, use the mathematically equivalent ratio `66/1840=0.03587`:
 
 ```bash
 ../IsaacLab/isaaclab.sh -p scripts/calibration/sweep_xense_force_depth_gain.py \
   --headless --enable_cameras --device cuda:0 \
-  --gains 0.10 0.15 0.20 0.25 0.30 0.35
+  --gains 0.03587
 ```
 
 See [`docs/VITACSIM_CALIBRATION.md`](../../../../../../../docs/VITACSIM_CALIBRATION.md) for the full Task 2 / Task 3 pipeline.

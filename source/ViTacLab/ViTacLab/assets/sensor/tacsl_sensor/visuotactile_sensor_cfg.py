@@ -345,12 +345,11 @@ class VisuoTactileSensorCfg(SensorBaseCfg):
     """
 
     corrected_force_render_depth_gain: float = 1.0
-    """Uniform gain applied after the robust force/depth correction ratio.
+    """Optional global linear gain after the robust force/depth ratio.
 
-    The effective dense-map scale is ``robust_ratio * depth_gain``. Unlike
-    :attr:`corrected_force_render_blend`, this preserves every relative depth
-    relationship and does not mix in the load-invariant raw camera depth.
-    ``1.0`` retains the original force-derived indentation.
+    The effective dense-map scale is ``robust_ratio * depth_gain``. The gain
+    is a single load-independent scalar and preserves all relative depth
+    relationships. ``1.0`` leaves the ``force/k_ref`` result unchanged.
     """
 
     force_height_max_m: float = 0.006

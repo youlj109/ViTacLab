@@ -91,8 +91,8 @@ parser.add_argument(
     "--force-render-depth-gain",
     type=float,
     default=-1.0,
-    help="Uniform post-ratio gain on the complete corrected height map. "
-    "<0 uses the profile default (advisor=0.15, cylinder=1.0).",
+    help="Optional global linear gain on the complete corrected height map. "
+    "<0 uses the profile default (advisor=1.0, cylinder=1.0).",
 )
 parser.add_argument(
     "--tactile-uv-shift-u",

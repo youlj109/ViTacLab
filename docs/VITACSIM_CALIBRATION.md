@@ -162,8 +162,8 @@ data/calibration/tactile/fitted_params.json   # 真机就绪后生成
 | `bg_clean.jpg` | 实验室 file-000 | ✅ |
 | `polycalib.npz` | **file-000 marker-free 50 帧拟合 + 50 帧留出验证** | ✅ |
 | `marker_displacement_gain` | 默认 0.35 → **拟合 0.15** | ✅ `fitted_params.json` |
-| `normal_correction_k_ref` | **66** | 固定；真实凝胶参考刚度，不因视觉调参而改变 |
-| `corrected_force_render_depth_gain` | **0.15** | ✅ M2 全载荷深度域校准 |
+| `normal_correction_k_ref` | **1840 N/m** | ✅ 由 G010 峰值 0.020 mm 重新标定 |
+| `corrected_force_render_depth_gain` | **1.0** | 固定；不再附加幅值修正 |
 | 接触物 | M2 螺母 + G010–G210 | ✅ |
 | `finger_root_z` | 0.441 | 待 Fn 对齐 sweep |
 | TacSL | `enable_corrected_force_render=False` | depth→Taxim |
@@ -191,7 +191,7 @@ sweep 加载拟合：`FITTED_PARAMS=data/calibration/tactile/fitted_params.json 
 
 | 参数 | 默认值 | 拟合变量 | 说明 |
 |------|--------|----------|------|
-| `normal_correction_k_ref` | 通用 1e4；Advisor **66** | 固定 | 真实凝胶参考刚度，不随载荷变化 |
+| `normal_correction_k_ref` | 通用 1e4；Advisor **1840 N/m** | 固定 | 等效点刚度；Advisor 各载荷使用同一个值 |
 | `normal_correction_knn` | 8 | 固定 | |
 | `normal_correction_trim_ratio` | 0.2 | 固定 | RobustMean |
 | `sticking_interp_sigma` | 0.02 | **`[TBD-ACO]`** | 共谋大业要求纳入联合优化 |
@@ -200,13 +200,14 @@ sweep 加载拟合：`FITTED_PARAMS=data/calibration/tactile/fitted_params.json 
 | `normal_contact_stiffness` | 1e4 | 待扩展 | baseline TacSL 路径 |
 | `depth_penetration_deadband` | 0.002 m | 固定 | |
 | `enable_corrected_force_render` | False（validation） | 固定 | 标定 sweep 用 depth→Taxim |
-| `corrected_force_render_depth_gain` | 通用 1.0；Advisor **0.15** | 固定 | 鲁棒力/深度比例之后统一缩放完整高度图；不改变相对深度关系 |
+| `corrected_force_render_depth_gain` | **1.0** | 固定 | 不附加缩放，严格保留由 `k_ref` 得到的鲁棒纠正比例 |
 
-Advisor 的 `0.15` 使 G010–G210 纠正峰值约为
-`0.084 / 0.251 / 0.502 / 0.920 / 1.338 / 1.756 mm`。最高载荷位于
-6 mm 标定球覆盖的最大球冠压入约 `2.27 mm` 以内，避免旧增益在 G210
-外推到 `11.70 mm`。`k_ref=66`、每点 `force/k_ref`、上下各裁剪 20% 后
-取中间 60% 均值的算法保持不变。
+`k_ref=1840 N/m` 由 G010 在旧 `k_ref=66 N/m` 下的实测峰值
+`0.55736 mm` 和目标 `0.020 mm` 得到：`66 × 0.55736 / 0.020 ≈ 1839.3`，
+取整为 1840。G010–G210 的纠正峰值约为
+`0.020 / 0.060 / 0.120 / 0.220 / 0.320 / 0.420 mm`。每点
+`force/k_ref`、上下各裁剪 20% 后取中间 60% 均值、再统一缩放完整深度图
+的算法保持不变；没有载荷相关指数或额外渲染增益。
 
 ### 6.3 当前联合拟合脚本实际优化的变量
 
