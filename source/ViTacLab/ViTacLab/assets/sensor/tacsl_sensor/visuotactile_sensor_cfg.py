@@ -264,7 +264,11 @@ class VisuoTactileSensorCfg(SensorBaseCfg):
     """Small epsilon used in normal-correction ratios/divisions to avoid zero-division."""
 
     normal_correction_trim_ratio: float = 0.2
-    """Trim ratio for robust local mean in V2 normal correction (0 disables trimming)."""
+    """Trim ratio for robust means in V2 normal and render correction (0 disables trimming).
+
+    The default ``0.2`` discards the lowest 20% and highest 20% of force/depth render
+    correction ratios, then averages the middle 60%.
+    """
 
     normal_correction_k_ref: float = 1e4
     """Reference stiffness ``k_ref`` for V2 normal correction.
@@ -320,8 +324,9 @@ class VisuoTactileSensorCfg(SensorBaseCfg):
     enable_corrected_force_render: bool = False
     """Enable Stage-C render correction in :class:`VisuoTactileSensorV2`.
 
-    When enabled, V2 blends the camera depth-difference height map with a force-derived
-    corrected penetration map reconstructed from corrected normal force.
+    When enabled, V2 estimates a robust scalar from sparse force/depth pairs and applies
+    that scalar to the complete camera depth-difference height map. This preserves the
+    dense contact shape and all relative depth relationships before Taxim rendering.
     """
 
     corrected_force_render_blend: float = 1.0
@@ -332,7 +337,11 @@ class VisuoTactileSensorCfg(SensorBaseCfg):
     """
 
     force_height_max_m: float = 0.006
-    """Upper bound (m) on force-derived penetration used for Taxim RGB and marker height maps."""
+    """Legacy force-map limit retained for configuration compatibility.
+
+    V2's dense, scale-based correction does not clip individual pixels because doing so
+    would destroy relative depth relationships in the simulated indentation.
+    """
 
     marker_load_ref_fn_n: float = 0.72
     """Reference PhysX normal force (N) for ViTacSim marker load scaling (advisor G110 ~0.72 N)."""

@@ -59,6 +59,8 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
         self._sample_v_idx: torch.Tensor | None = None
         self._sample_flat_idx: torch.Tensor | None = None
         self._force_corrected_height_map: torch.Tensor | None = None
+        self._force_depth_correction_scale: torch.Tensor | None = None
+        self._force_depth_correction_sample_count: torch.Tensor | None = None
         self._contact_soft_body_view: Any | None = None
         self._contact_physx_view = None
         self._sparse_anchor_warned: bool = False
@@ -100,6 +102,12 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
             (self._num_envs, int(self.cfg.camera_cfg.height), int(self.cfg.camera_cfg.width)),
             dtype=torch.float32,
             device=self._device,
+        )
+        self._force_depth_correction_scale = torch.zeros(
+            self._num_envs, dtype=torch.float32, device=self._device
+        )
+        self._force_depth_correction_sample_count = torch.zeros(
+            self._num_envs, dtype=torch.long, device=self._device
         )
         self._sparse_fn_total = torch.zeros(self._num_envs, dtype=torch.float32, device=self._device)
 
@@ -306,9 +314,18 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
         self._data.tactile_rgb_image[env_ids] = rgb_base
         marker_disp = self._tactile_rgb_render.last_marker_displacements
 
-        if bool(self.cfg.enable_corrected_force_render) and self._force_corrected_height_map is not None:
+        if (
+            bool(self.cfg.enable_corrected_force_render)
+            and self._force_corrected_height_map is not None
+            and self._force_depth_correction_scale is not None
+        ):
             alpha = float(self.cfg.corrected_force_render_blend)
-            force_delta = self._force_corrected_height_map[env_ids]
+            # Sparse force samples estimate one robust global scale. Applying that scale to the
+            # complete camera depth delta preserves the simulated indentation's dense shape and
+            # relative depth relationships for Taxim rendering.
+            scale = self._force_depth_correction_scale[env_ids].view(-1, 1, 1)
+            force_delta = depth_delta * scale
+            self._force_corrected_height_map[env_ids] = force_delta
             blended = torch.clamp((1.0 - alpha) * depth_delta + alpha * force_delta, min=0.0)
             self._data.tactile_height_map_corrected[env_ids] = blended
             rgb_corr = self._tactile_rgb_render.render(
@@ -326,35 +343,58 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
         if self._data.tactile_marker_displacement is not None and marker_disp is not None:
             self._data.tactile_marker_displacement[env_ids] = marker_disp
 
-    def _update_force_corrected_height_map(self, env_ids: Sequence[int] | slice) -> None:
-        """Reconstruct dense image-space height map from corrected normal force."""
-        if (
-            self._force_corrected_height_map is None
-            or self._sample_flat_idx is None
-            or self._sample_u_idx is None
-            or self._sample_v_idx is None
-        ):
+    def _update_force_depth_correction_scale(
+        self,
+        env_ids: Sequence[int] | slice,
+        sparse_sim_depth: torch.Tensor,
+    ) -> None:
+        """Estimate a robust per-environment scale from force/depth sample pairs.
+
+        For every sparse sample with positive simulated indentation, the force-derived
+        indentation is ``normal_force / k_ref`` and its correction ratio is
+        ``force_indentation / simulated_indentation``. The ratios are sorted, the lowest
+        and highest configured fractions are removed, and the middle values are averaged.
+        The resulting scalar is later applied to the complete dense camera depth delta.
+        """
+        if self._force_depth_correction_scale is None:
             return
         nf = self._data.tactile_normal_force[env_ids]
         if nf is None:
-            self._force_corrected_height_map[env_ids].zero_()
+            self._force_depth_correction_scale[env_ids].zero_()
+            if self._force_depth_correction_sample_count is not None:
+                self._force_depth_correction_sample_count[env_ids].zero_()
             return
 
         eps = float(max(self.cfg.normal_correction_eps, 1e-12))
         k_ref_cfg = float(self.cfg.normal_correction_k_ref)
         k_ref = float(self.cfg.normal_contact_stiffness if k_ref_cfg <= 0.0 else k_ref_cfg)
-        delta = torch.clamp(nf / (k_ref + eps), min=0.0)
-        max_h_base = float(getattr(self.cfg, "force_height_max_m", 0.006))
-        if max_h_base > 0.0:
-            load_scale = self._marker_load_scale(env_ids).view(-1, 1).clamp(min=0.05, max=3.0)
-            max_h = max_h_base * load_scale
-            delta = torch.minimum(delta, max_h)
+        force_indentation = torch.clamp(nf, min=0.0) / max(k_ref, eps)
+        sim_indentation = torch.clamp(sparse_sim_depth, min=0.0)
+        valid = (
+            (force_indentation > eps)
+            & (sim_indentation > eps)
+            & torch.isfinite(force_indentation)
+            & torch.isfinite(sim_indentation)
+        )
 
-        target = self._force_corrected_height_map[env_ids]
-        target.zero_()
-        # Vectorized scatter-max: UV indices are fixed at init (see _build_uv_sample_grid).
-        flat_idx = self._sample_flat_idx.unsqueeze(0).expand(delta.shape[0], -1)
-        target.view(delta.shape[0], -1).scatter_reduce_(1, flat_idx, delta, reduce="amax", include_self=True)
+        trim_ratio = float(max(0.0, min(0.49, self.cfg.normal_correction_trim_ratio)))
+        scales = torch.zeros(nf.shape[0], dtype=nf.dtype, device=nf.device)
+        sample_counts = torch.zeros(nf.shape[0], dtype=torch.long, device=nf.device)
+        for env_local in range(nf.shape[0]):
+            valid_local = valid[env_local]
+            values = force_indentation[env_local][valid_local] / sim_indentation[env_local][valid_local]
+            sample_counts[env_local] = values.numel()
+            if values.numel() == 0:
+                continue
+            values = torch.sort(values).values
+            trim_count = int(trim_ratio * values.numel())
+            if trim_count > 0 and values.numel() - 2 * trim_count >= 1:
+                values = values[trim_count : values.numel() - trim_count]
+            scales[env_local] = values.mean()
+
+        self._force_depth_correction_scale[env_ids] = scales
+        if self._force_depth_correction_sample_count is not None:
+            self._force_depth_correction_sample_count[env_ids] = sample_counts
 
     def _build_uv_sample_grid(self):
         rows, cols = self.cfg.tactile_array_size
@@ -553,6 +593,10 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
             return
         if self._force_corrected_height_map is not None:
             self._force_corrected_height_map[env_idx].zero_()
+        if self._force_depth_correction_scale is not None:
+            self._force_depth_correction_scale[env_idx].zero_()
+        if self._force_depth_correction_sample_count is not None:
+            self._force_depth_correction_sample_count[env_idx].zero_()
 
         elastomer_pos_w, elastomer_quat_w = self._elastomer_body_view.get_transforms().split([3, 4], dim=-1)
         elastomer_quat_w = math_utils.convert_quat(elastomer_quat_w, to="wxyz")
@@ -590,7 +634,7 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
         )
 
 
-        penetration, normals_world, points_world = self._depth_samples_to_penetration_and_geometry(
+        penetration, sparse_depth_delta, normals_world, points_world = self._depth_samples_to_penetration_and_geometry(
             z_cur, z_ref, k_mat, cam_pos_w, cam_quat_w
         )
 
@@ -645,7 +689,7 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
                 elastomer_pos_w,
                 elastomer_quat_w,
             )
-        self._update_force_corrected_height_map(env_idx)
+        self._update_force_depth_correction_scale(env_idx, sparse_depth_delta)
 
     def _grid_sample_depth(self, z_hw: torch.Tensor, u: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         """Sample depth (N,H,W) at float pixel coords (P,) per env -> (N,P)."""
@@ -676,7 +720,7 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
         k_mat: torch.Tensor,
         pos_w: torch.Tensor,
         quat_w: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         u = self._sample_u
         v = self._sample_v
         p = self.num_tactile_points
@@ -691,6 +735,7 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
         delta = z_ref_s - z_s
         db = float(self.cfg.depth_penetration_deadband)
         penetration = torch.clamp(delta - db, min=0.0)
+        depth_delta = torch.clamp(delta, min=0.0)
         u_r = torch.clamp(u + 1.0, max=float(zc.shape[2]) - 1.0)
         u_l = torch.clamp(u - 1.0, min=0.0)
         v_d = torch.clamp(v + 1.0, max=float(zc.shape[1]) - 1.0)
@@ -720,7 +765,7 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
         # Tactile pad outward normal in world frame (per env, broadcast to points); used as contact normal n_w.
         normals_world = center - pos_w.unsqueeze(1)
 
-        return penetration, normals_world, points_world
+        return penetration, depth_delta, normals_world, points_world
 
     def _compute_forces_rigid(
         self,

@@ -781,6 +781,16 @@ def main() -> int:
         "sparse_fn_total_n": float(getattr(ts, "_sparse_fn_total", torch.zeros(1))[0].item())
         if hasattr(ts, "_sparse_fn_total")
         else None,
+        "force_depth_correction_scale": float(
+            getattr(ts, "_force_depth_correction_scale", torch.zeros(1))[0].item()
+        )
+        if hasattr(ts, "_force_depth_correction_scale")
+        else None,
+        "force_depth_correction_sample_count": int(
+            getattr(ts, "_force_depth_correction_sample_count", torch.zeros(1, dtype=torch.long))[0].item()
+        )
+        if hasattr(ts, "_force_depth_correction_sample_count")
+        else None,
         "marker_load_scale": float(
             (getattr(ts, "_sparse_fn_total", torch.zeros(1))[0].item() / 0.72) ** 0.5
         )
