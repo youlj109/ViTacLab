@@ -43,7 +43,7 @@ parser.add_argument("--weight-rest-z", type=float, default=0.442)
 parser.add_argument("--weight-clearance-z", type=float, default=0.520)
 parser.add_argument("--weight-spawn-z", type=float, default=-1.0)
 parser.add_argument("--weight-drop-offset", type=float, default=0.012)
-parser.add_argument("--force-render-k-ref", type=float, default=0.0, help="<=0: auto per-weight from W100 ref.")
+parser.add_argument("--force-render-k-ref", type=float, default=0.0, help="<=0: use fixed physical-gel k_ref=66.")
 parser.add_argument(
     "--finger-root-z",
     type=float,

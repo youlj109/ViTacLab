@@ -100,6 +100,13 @@ parser.add_argument(
     help="Height-map sampling shift dv (px) before Taxim; <0 uses advisor default.",
 )
 parser.add_argument(
+    "--depth-footprint-scale",
+    type=float,
+    default=0.0,
+    help="Centered depth-map projection scale before Taxim (>1 shrinks the rendered contact); "
+    "<=0 uses the profile default.",
+)
+parser.add_argument(
     "--contact-offset-x",
     type=float,
     default=-1.0,
@@ -152,7 +159,7 @@ parser.add_argument(
     "--fitted-params",
     type=str,
     default="",
-    help="Optional fitted_params.json (marker gain + rgb_diff_scale applied to k_ref).",
+    help="Optional fitted_params.json for explicit optical/marker render overrides; never changes physical k_ref.",
 )
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -170,6 +177,7 @@ from ViTacLab.tasks.direct.vitacsim_validation.validation_weight_spawner_cfg imp
 from ViTacLab.tasks.direct.vitacsim_validation.validation_m2_nut_spawner_cfg import validation_m2_nut_spawner_cfg
 from ViTacLab.tasks.direct.vitacsim_validation.m2_nut_spec import (
     ADVISOR_CASE_MASS_G,
+    ADVISOR_DEPTH_FOOTPRINT_SCALE,
     ADVISOR_FINGER_ROOT_Z,
     ADVISOR_MARKER_DEPTH_GAMMA,
     ADVISOR_MARKER_DEPTH_GAMMA_LOW_LOAD,
@@ -236,7 +244,10 @@ def _fitted_rgb_scale() -> float | None:
     if path is None:
         return None
     data = json.loads(path.read_text(encoding="utf-8"))
-    scale = data.get("recommended_force_render_k_ref_scale")
+    scale = data.get("recommended_rgb_diff_post_scale")
+    if scale is None:
+        # Read the legacy diagnostic field for old report compatibility only.
+        scale = data.get("recommended_force_render_k_ref_scale")
     return float(scale) if scale is not None else None
 
 
@@ -327,12 +338,14 @@ def _finger_root_z() -> float:
 
 
 def _force_render_k_ref(case_id: str) -> float:
-    k = resolve_force_render_k_ref(case_id, float(args_cli.force_render_k_ref))
-    scale = _fitted_rgb_scale()
-    if scale is not None and scale > 1e-6:
-        # fit scales sim diff down when scale<1 => increase k_ref to reduce corrected height.
-        k = k / scale
-    return k
+    return resolve_force_render_k_ref(case_id, float(args_cli.force_render_k_ref))
+
+
+def _depth_footprint_scale() -> float:
+    value = float(args_cli.depth_footprint_scale)
+    if value > 0.0:
+        return value
+    return ADVISOR_DEPTH_FOOTPRINT_SCALE if _is_advisor() else 1.0
 
 
 def _marker_enabled() -> bool:
@@ -417,6 +430,7 @@ def _make_sensor_cfg(mode: str) -> VisuoTactileSensorV2Cfg:
         require_physx_sparse_anchors=(mode == "vitacsim"),
         strict_target_contact_attribution=True,
         tactile_uv_shift_px=_tactile_uv_shift_px(),
+        depth_footprint_scale=_depth_footprint_scale(),
         marker_load_ref_fn_n=marker_load_ref,
         marker_load_scale_exponent=marker_load_exp,
         marker_depth_gamma=marker_depth_gamma,
@@ -669,6 +683,7 @@ def main() -> int:
     rgb_last = rgb_corr_last = None
     nf_last = sf_last = None
     marker_disp_last = None
+    depth_height_raw_last = depth_height_projected_last = height_corr_last = None
     depth_last: dict[str, float] = {}
 
     for _ in range(int(args_cli.record_steps)):
@@ -693,6 +708,15 @@ def main() -> int:
             rgb_last = rgb[0].detach().cpu()
         if rgb_corr is not None:
             rgb_corr_last = rgb_corr[0].detach().cpu()
+        depth_height_raw = getattr(ts, "_last_depth_delta_raw", None)
+        depth_height_projected = getattr(ts, "_last_depth_delta_projected", None)
+        height_corr = getattr(data, "tactile_height_map_corrected", None)
+        if depth_height_raw is not None:
+            depth_height_raw_last = depth_height_raw[0].detach().cpu().numpy()
+        if depth_height_projected is not None:
+            depth_height_projected_last = depth_height_projected[0].detach().cpu().numpy()
+        if height_corr is not None:
+            height_corr_last = height_corr[0].detach().cpu().numpy()
         if nf is not None:
             nf_last = nf[0].detach().cpu().numpy()
         if sf is not None:
@@ -725,6 +749,12 @@ def main() -> int:
         np.save(out_dir / "tactile_shear_force.npy", sf_last)
     if marker_disp_last is not None:
         np.save(out_dir / "tactile_marker_displacement.npy", marker_disp_last)
+    if depth_height_raw_last is not None:
+        np.save(out_dir / "tactile_height_depth_raw.npy", depth_height_raw_last)
+    if depth_height_projected_last is not None:
+        np.save(out_dir / "tactile_height_depth_projected.npy", depth_height_projected_last)
+    if height_corr_last is not None:
+        np.save(out_dir / "tactile_height_corrected.npy", height_corr_last)
 
     summary = {
         "output_schema": _OUTPUT_SCHEMA,
@@ -748,6 +778,7 @@ def main() -> int:
         ),
         "finger_root_z": _finger_root_z(),
         "tactile_uv_shift_px": list(_tactile_uv_shift_px()),
+        "depth_footprint_scale": _depth_footprint_scale(),
         "contact_offset_x": _contact_offset_xy()[0],
         "contact_offset_y": _contact_offset_xy()[1],
         "weight_clearance_z": clearance_z,
@@ -790,6 +821,11 @@ def main() -> int:
             getattr(ts, "_force_depth_correction_sample_count", torch.zeros(1, dtype=torch.long))[0].item()
         )
         if hasattr(ts, "_force_depth_correction_sample_count")
+        else None,
+        "force_depth_correction_retained_count": int(
+            getattr(ts, "_force_depth_correction_retained_count", torch.zeros(1, dtype=torch.long))[0].item()
+        )
+        if hasattr(ts, "_force_depth_correction_retained_count")
         else None,
         "marker_load_scale": float(
             (getattr(ts, "_sparse_fn_total", torch.zeros(1))[0].item() / 0.72) ** 0.5

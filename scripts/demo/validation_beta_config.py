@@ -26,7 +26,9 @@ SF_PANEL_WEIGHTS = ("W200", "W100", "W050")
 SF_PANEL_FX = 0.15
 SF_BAR_FX = 0.15
 
-FORCE_RENDER_K_REF_W100 = 66.0
+FORCE_RENDER_K_REF = 66.0
+# Compatibility alias retained for older validation/report scripts.
+FORCE_RENDER_K_REF_W100 = FORCE_RENDER_K_REF
 
 
 def nominal_fn_n(weight_id: str) -> float:
@@ -34,9 +36,9 @@ def nominal_fn_n(weight_id: str) -> float:
 
 
 def adaptive_force_render_k_ref(weight_id: str, *, base_k: float = FORCE_RENDER_K_REF_W100) -> float:
-    ref_nom = nominal_fn_n("W100")
-    nom = nominal_fn_n(weight_id)
-    return base_k * ref_nom / max(nom, 1e-9)
+    """Return the load-invariant physical gel stiffness."""
+    _ = weight_id
+    return float(base_k)
 
 
 def resolve_force_render_k_ref(weight_id: str, cli_value: float) -> float:

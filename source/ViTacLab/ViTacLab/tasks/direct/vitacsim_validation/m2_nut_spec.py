@@ -32,6 +32,9 @@ ADVISOR_WEIGHT_CLEARANCE_Z = 0.518
 ADVISOR_WEIGHT_DROP_OFFSET = 0.010
 # Contact alignment is via nut pose (contact-offset-x/y), not whole-image UV shift.
 ADVISOR_TACTILE_UV_SHIFT_PX = (0.0, 0.0)
+# GelSight-R15 camera depth projects the 3.8 mm M2 nut to about twice the
+# footprint implied by the Xense 17.5 mm / 400 px sensing-area calibration.
+ADVISOR_DEPTH_FOOTPRINT_SCALE = 2.0
 ADVISOR_MARKER_LOAD_REF_FN_N = 0.72
 ADVISOR_MARKER_LOAD_SCALE_EXPONENT = 0.48
 ADVISOR_MARKER_DEPTH_GAMMA = 1.2

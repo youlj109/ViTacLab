@@ -233,7 +233,9 @@ def main() -> int:
             if args.profile == "advisor"
             else None
         ),
-        "recommended_force_render_k_ref_scale": best["rgb_diff_scale"],
+        # This grid-search term is an image-difference post-scale. It must not
+        # alter the independently measured physical gel stiffness k_ref.
+        "recommended_rgb_diff_post_scale": best["rgb_diff_scale"],
         "best_metrics": best,
         "default_metrics": {
             "marker_displacement_gain": default_gain,

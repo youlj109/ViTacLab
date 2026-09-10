@@ -190,7 +190,7 @@ sweep 加载拟合：`FITTED_PARAMS=data/calibration/tactile/fitted_params.json 
 
 | 参数 | 默认值 | 拟合变量 | 说明 |
 |------|--------|----------|------|
-| `normal_correction_k_ref` | 1e4 | 待扩展 | 法向校正参考刚度 |
+| `normal_correction_k_ref` | 通用 1e4；Advisor **66** | 固定 | 真实凝胶参考刚度，不随载荷变化 |
 | `normal_correction_knn` | 8 | 固定 | |
 | `normal_correction_trim_ratio` | 0.2 | 固定 | RobustMean |
 | `sticking_interp_sigma` | 0.02 | **`[TBD-ACO]`** | 共谋大业要求纳入联合优化 |
@@ -205,7 +205,7 @@ sweep 加载拟合：`FITTED_PARAMS=data/calibration/tactile/fitted_params.json 
 | 变量 | 搜索范围（grid） | 输出字段 |
 |------|------------------|----------|
 | `marker_displacement_gain` | 0.15 … 0.75 | `fitted_params.json` |
-| `rgb_diff_scale` | 0.6 … 1.6 | `recommended_force_render_k_ref_scale` |
+| `rgb_diff_scale` | 0.6 … 1.6 | `recommended_rgb_diff_post_scale`（仅图像评估，不修改 `k_ref`） |
 
 **`[TBD-ACO]`**：《共谋大业》要求网格搜索后再蚁群/模拟退火——**尚未实现**；实现时不得改变 `real/` 目录约定与 `rgb.png` 文件名。
 

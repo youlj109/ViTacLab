@@ -125,6 +125,12 @@ class GelSightRenderCfg:
     """Exponent on contact weighting for red-tilt modulation (higher focuses tilt on deeper contact)."""
     taxim_contact_red_tilt_additive: float = 0.0
     """Additive red offset inside contact (in 0-255 RGB units) to avoid underpowered multiplicative tint."""
+    taxim_contact_tint_gradient_weight: bool = False
+    """Weight asymmetric contact tint by height gradient instead of filled contact depth.
+
+    This is appropriate for a flat annular indenter: its optical response is concentrated
+    around the inner/outer boundaries rather than filling the complete nut face.
+    """
     taxim_contact_psf_blend: float = 0.0
     """Global contact-region Gaussian PSF blend ratio to reduce overly crisp synthetic contours."""
     taxim_contact_psf_kernel_size: int = 5

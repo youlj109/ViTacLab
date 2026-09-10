@@ -98,8 +98,6 @@ def advisor_xense_render_cfg(
             if gain is not None:
                 extra["marker_displacement_gain"] = float(gain)
             ths = rec.get("taxim_height_scale")
-            if ths is None:
-                ths = data.get("recommended_force_render_k_ref_scale")
             if ths is not None:
                 extra["taxim_height_scale"] = float(ths)
             pattern = rec.get("marker_pattern")
@@ -130,7 +128,8 @@ def advisor_xense_render_cfg(
     # Approximate real right-side reddish illumination asymmetry.
     extra.setdefault("taxim_contact_red_tilt_strength", 1.45)
     extra.setdefault("taxim_contact_red_tilt_power", 0.55)
-    extra.setdefault("taxim_contact_red_tilt_additive", 24.0)
+    extra.setdefault("taxim_contact_red_tilt_additive", 12.0)
+    extra.setdefault("taxim_contact_tint_gradient_weight", True)
     # The clean background already preserves the lab's low-frequency illumination.
     # Never derive the illumination map from a raw no-contact frame: its printed
     # markers survive Gaussian filtering as gray halos and are then duplicated by

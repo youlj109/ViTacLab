@@ -379,18 +379,41 @@ class GelsightRender:
             depth_mm = torch.abs(height_map)
             depth_max = torch.amax(depth_mm, dim=(1, 2), keepdim=True).clamp(min=1.0e-6)
             red_tilt_power = float(getattr(self.cfg, "taxim_contact_red_tilt_power", 1.0))
-            contact_w = torch.clamp(depth_mm / depth_max, min=0.0, max=1.0).unsqueeze(-1) ** max(red_tilt_power, 1.0e-6)
+            if bool(getattr(self.cfg, "taxim_contact_tint_gradient_weight", False)):
+                gy_tint, gx_tint = torch.gradient(depth_mm, dim=(1, 2))
+                grad_tint = torch.sqrt(gx_tint * gx_tint + gy_tint * gy_tint)
+                grad_tint = self._gaussian_filtering(
+                    grad_tint.unsqueeze(-1), self._edge_denoise_kernel
+                ).squeeze(-1)
+                grad_max = torch.amax(grad_tint, dim=(1, 2), keepdim=True).clamp(min=1.0e-6)
+                contact_base = torch.clamp(grad_tint / grad_max, min=0.0, max=1.0)
+            else:
+                contact_base = torch.clamp(depth_mm / depth_max, min=0.0, max=1.0)
+            contact_w = contact_base.unsqueeze(-1) ** max(red_tilt_power, 1.0e-6)
             w = sim_img.shape[2]
             x = torch.linspace(-1.0, 1.0, w, device=sim_img.device, dtype=sim_img.dtype).view(1, 1, w, 1)
             right = torch.clamp((x + 1.0) * 0.5, min=0.0, max=1.0) ** 1.25
-            tint = contact_w * right * (0.35 + 0.65 * torch.clamp(depth_mm / depth_max, min=0.0, max=1.0).unsqueeze(-1))
-            sim_img_r = sim_img[..., 0:1] * (1.0 + 1.10 * red_tilt * tint)
-            sim_img_g = sim_img[..., 1:2] * (1.0 - 0.28 * red_tilt * tint)
-            sim_img_b = sim_img[..., 2:3] * (1.0 - 0.14 * red_tilt * tint)
-            sim_img = torch.cat((sim_img_r, sim_img_g, sim_img_b), dim=-1)
+            left = torch.clamp((1.0 - x) * 0.5, min=0.0, max=1.0) ** 1.25
+            depth_factor = 0.35 + 0.65 * torch.clamp(
+                depth_mm / depth_max, min=0.0, max=1.0
+            ).unsqueeze(-1)
+            tint = contact_w * right * depth_factor
+            tint_left = contact_w * left * depth_factor
+            # Tint the Taxim contact response, not the absolute background RGB.
+            # Multiplying a bright background creates a filled pink polygon for
+            # flat indenters even though their signal should live on gradients.
+            contact_delta = sim_img - self.background_tensor
+            delta_r = contact_delta[..., 0:1] * (1.0 + 1.10 * red_tilt * tint)
+            delta_g = contact_delta[..., 1:2] * (1.0 - 0.28 * red_tilt * tint)
+            delta_b = contact_delta[..., 2:3] * (1.0 - 0.14 * red_tilt * tint)
+            sim_img = self.background_tensor + torch.cat((delta_r, delta_g, delta_b), dim=-1)
             red_add = float(getattr(self.cfg, "taxim_contact_red_tilt_additive", 0.0))
             if abs(red_add) > 1.0e-6:
-                sim_img[..., 0:1] = sim_img[..., 0:1] + red_add * tint
+                # Xense's opposed illumination produces a red right edge and a
+                # weaker cyan left edge on the real M2-nut indentation.
+                sim_img[..., 0:1] = sim_img[..., 0:1] + red_add * (tint - 0.25 * tint_left)
+                sim_img[..., 1:2] = sim_img[..., 1:2] + 0.25 * red_add * tint_left
+                sim_img[..., 2:3] = sim_img[..., 2:3] + 0.55 * red_add * tint_left
         sim_img = torch.clip(sim_img, 0, 255, out=sim_img).to(torch.uint8)
 
         if self._marker_sim is not None and self._marker_sim.enabled:

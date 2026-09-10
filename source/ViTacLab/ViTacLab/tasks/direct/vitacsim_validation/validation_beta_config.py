@@ -33,7 +33,9 @@ SF_PANEL_WEIGHTS = ("W200", "W100", "W050")
 SF_PANEL_FX = 0.15
 SF_BAR_FX = 0.15
 
-FORCE_RENDER_K_REF_W100 = 66.0
+FORCE_RENDER_K_REF = 66.0
+# Compatibility alias retained for older validation/report scripts.
+FORCE_RENDER_K_REF_W100 = FORCE_RENDER_K_REF
 
 
 def nominal_fn_n(case_id: str) -> float:
@@ -43,10 +45,11 @@ def nominal_fn_n(case_id: str) -> float:
 
 
 def adaptive_force_render_k_ref(case_id: str, *, base_k: float = FORCE_RENDER_K_REF_W100) -> float:
-    """Scale k_ref inversely with mass so heavier weights get stronger corrected RGB at similar fn_peak."""
-    ref_nom = nominal_fn_n("W100" if case_id not in ADVISOR_MASS_KG else "G110")
-    nom = nominal_fn_n(case_id)
-    return base_k * ref_nom / max(nom, 1e-9)
+    """Return the physical gel stiffness, which is invariant across load cases."""
+    # Keep the historical function name for callers, but do not tune a material
+    # property per test weight. Load dependence already enters through PhysX F_n.
+    _ = case_id
+    return float(base_k)
 
 
 def resolve_force_render_k_ref(case_id: str, cli_value: float) -> float:

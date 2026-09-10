@@ -61,6 +61,9 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
         self._force_corrected_height_map: torch.Tensor | None = None
         self._force_depth_correction_scale: torch.Tensor | None = None
         self._force_depth_correction_sample_count: torch.Tensor | None = None
+        self._force_depth_correction_retained_count: torch.Tensor | None = None
+        self._last_depth_delta_raw: torch.Tensor | None = None
+        self._last_depth_delta_projected: torch.Tensor | None = None
         self._contact_soft_body_view: Any | None = None
         self._contact_physx_view = None
         self._sparse_anchor_warned: bool = False
@@ -107,6 +110,9 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
             self._num_envs, dtype=torch.float32, device=self._device
         )
         self._force_depth_correction_sample_count = torch.zeros(
+            self._num_envs, dtype=torch.long, device=self._device
+        )
+        self._force_depth_correction_retained_count = torch.zeros(
             self._num_envs, dtype=torch.long, device=self._device
         )
         self._sparse_fn_total = torch.zeros(self._num_envs, dtype=torch.float32, device=self._device)
@@ -172,20 +178,25 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
         return base * scale
 
     def _shift_vector_maps(self, maps: torch.Tensor) -> torch.Tensor:
-        """Apply configured (du, dv) pixel shift to batch maps (N, H, W, C)."""
+        """Apply the calibrated centered footprint zoom and UV shift to vector maps."""
         shift = getattr(self.cfg, "tactile_uv_shift_px", (0.0, 0.0))
         du = float(shift[0]) if shift else 0.0
         dv = float(shift[1]) if len(shift) > 1 else 0.0
-        if abs(du) < 1e-6 and abs(dv) < 1e-6:
+        footprint_scale = float(max(getattr(self.cfg, "depth_footprint_scale", 1.0), 1.0e-6))
+        if abs(du) < 1e-6 and abs(dv) < 1e-6 and abs(footprint_scale - 1.0) < 1e-6:
             return maps
-        n, ht, wd, ch = maps.shape
+        n, ht, wd, _channels = maps.shape
         yy, xx = torch.meshgrid(
             torch.arange(ht, device=maps.device, dtype=torch.float32),
             torch.arange(wd, device=maps.device, dtype=torch.float32),
             indexing="ij",
         )
-        src_x = xx.unsqueeze(0).expand(n, -1, -1) + du
-        src_y = yy.unsqueeze(0).expand(n, -1, -1) + dv
+        center_x = 0.5 * float(wd - 1)
+        center_y = 0.5 * float(ht - 1)
+        src_x = center_x + (xx - center_x) * footprint_scale + du
+        src_y = center_y + (yy - center_y) * footprint_scale + dv
+        src_x = src_x.unsqueeze(0).expand(n, -1, -1)
+        src_y = src_y.unsqueeze(0).expand(n, -1, -1)
         gx = 2.0 * src_x / max(float(wd - 1), 1.0) - 1.0
         gy = 2.0 * src_y / max(float(ht - 1), 1.0) - 1.0
         grid = torch.stack((gx, gy), dim=-1)
@@ -226,11 +237,17 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
         return self._shift_vector_maps(out)
 
     def _shift_height_maps(self, height_m: torch.Tensor) -> torch.Tensor:
-        """Apply configured (du, dv) pixel shift to batch height maps (N, H, W)."""
+        """Apply the calibrated centered footprint zoom and UV shift to height maps.
+
+        ``depth_footprint_scale > 1`` samples a wider source region into the same
+        output size, shrinking the rendered contact without changing its depth
+        values or the physical collision geometry.
+        """
         shift = getattr(self.cfg, "tactile_uv_shift_px", (0.0, 0.0))
         du = float(shift[0]) if shift else 0.0
         dv = float(shift[1]) if len(shift) > 1 else 0.0
-        if abs(du) < 1e-6 and abs(dv) < 1e-6:
+        footprint_scale = float(max(getattr(self.cfg, "depth_footprint_scale", 1.0), 1.0e-6))
+        if abs(du) < 1e-6 and abs(dv) < 1e-6 and abs(footprint_scale - 1.0) < 1e-6:
             return height_m
         n, ht, wd = height_m.shape
         yy, xx = torch.meshgrid(
@@ -238,8 +255,12 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
             torch.arange(wd, device=height_m.device, dtype=torch.float32),
             indexing="ij",
         )
-        src_x = xx.unsqueeze(0).expand(n, -1, -1) + du
-        src_y = yy.unsqueeze(0).expand(n, -1, -1) + dv
+        center_x = 0.5 * float(wd - 1)
+        center_y = 0.5 * float(ht - 1)
+        src_x = center_x + (xx - center_x) * footprint_scale + du
+        src_y = center_y + (yy - center_y) * footprint_scale + dv
+        src_x = src_x.unsqueeze(0).expand(n, -1, -1)
+        src_y = src_y.unsqueeze(0).expand(n, -1, -1)
         gx = 2.0 * src_x / max(float(wd - 1), 1.0) - 1.0
         gy = 2.0 * src_y / max(float(ht - 1), 1.0) - 1.0
         grid = torch.stack((gx, gy), dim=-1)
@@ -250,40 +271,6 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
             padding_mode="zeros",
             align_corners=True,
         ).squeeze(1)
-
-    def _tactile_uv_shift_du_dv(self) -> tuple[float, float]:
-        shift = getattr(self.cfg, "tactile_uv_shift_px", (0.0, 0.0))
-        if not shift:
-            return 0.0, 0.0
-        du = float(shift[0])
-        dv = float(shift[1]) if len(shift) > 1 else 0.0
-        return du, dv
-
-    def _shift_rgb_batch(self, rgb: torch.Tensor) -> torch.Tensor:
-        """Shift rendered tactile RGB (N,H,W,3) to align sim contact with lab Xense."""
-        du, dv = self._tactile_uv_shift_du_dv()
-        if abs(du) < 1e-6 and abs(dv) < 1e-6:
-            return rgb
-        n, ht, wd, _ = rgb.shape
-        yy, xx = torch.meshgrid(
-            torch.arange(ht, device=rgb.device, dtype=torch.float32),
-            torch.arange(wd, device=rgb.device, dtype=torch.float32),
-            indexing="ij",
-        )
-        src_x = xx.unsqueeze(0).expand(n, -1, -1) + du
-        src_y = yy.unsqueeze(0).expand(n, -1, -1) + dv
-        gx = 2.0 * src_x / max(float(wd - 1), 1.0) - 1.0
-        gy = 2.0 * src_y / max(float(ht - 1), 1.0) - 1.0
-        grid = torch.stack((gx, gy), dim=-1)
-        rgb_chw = rgb.permute(0, 3, 1, 2).float()
-        out = torch.nn.functional.grid_sample(
-            rgb_chw,
-            grid,
-            mode="bilinear",
-            padding_mode="zeros",
-            align_corners=True,
-        )
-        return out.permute(0, 2, 3, 1).to(dtype=rgb.dtype)
 
     def _update_camera_tactile(self, env_ids: Sequence[int] | slice):
         """Update camera tactile images, with optional Stage-C force-corrected rendering."""
@@ -302,7 +289,10 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
 
         self._data.tactile_depth_image[env_ids] = camera_data.output[depth_key][env_ids].clone()
         diff = self._nominal_tactile[depth_key][env_ids] - self._data.tactile_depth_image[env_ids]
-        depth_delta = torch.clamp(diff.squeeze(-1), min=0.0)
+        depth_delta_raw = torch.clamp(diff.squeeze(-1), min=0.0)
+        depth_delta = self._shift_height_maps(depth_delta_raw)
+        self._last_depth_delta_raw = depth_delta_raw.detach()
+        self._last_depth_delta_projected = depth_delta.detach()
         marker_h = self._height_map_for_markers(depth_delta, env_ids)
         shear_map = self._shear_map_for_markers(env_ids)
         rgb_base = self._tactile_rgb_render.render(
@@ -310,7 +300,6 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
             marker_height_map=marker_h,
             marker_shear_map=shear_map,
         )
-        rgb_base = self._shift_rgb_batch(rgb_base)
         self._data.tactile_rgb_image[env_ids] = rgb_base
         marker_disp = self._tactile_rgb_render.last_marker_displacements
 
@@ -333,7 +322,6 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
                 marker_height_map=marker_h,
                 marker_shear_map=shear_map,
             )
-            rgb_corr = self._shift_rgb_batch(rgb_corr)
             self._data.tactile_rgb_image_corrected[env_ids] = rgb_corr
             marker_disp = self._tactile_rgb_render.last_marker_displacements
         else:
@@ -363,26 +351,30 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
             self._force_depth_correction_scale[env_ids].zero_()
             if self._force_depth_correction_sample_count is not None:
                 self._force_depth_correction_sample_count[env_ids].zero_()
+            if self._force_depth_correction_retained_count is not None:
+                self._force_depth_correction_retained_count[env_ids].zero_()
             return
 
         eps = float(max(self.cfg.normal_correction_eps, 1e-12))
         k_ref_cfg = float(self.cfg.normal_correction_k_ref)
         k_ref = float(self.cfg.normal_contact_stiffness if k_ref_cfg <= 0.0 else k_ref_cfg)
-        force_indentation = torch.clamp(nf, min=0.0) / max(k_ref, eps)
-        sim_indentation = torch.clamp(sparse_sim_depth, min=0.0)
-        valid = (
-            (force_indentation > eps)
-            & (sim_indentation > eps)
-            & torch.isfinite(force_indentation)
-            & torch.isfinite(sim_indentation)
-        )
-
         trim_ratio = float(max(0.0, min(0.49, self.cfg.normal_correction_trim_ratio)))
         scales = torch.zeros(nf.shape[0], dtype=nf.dtype, device=nf.device)
         sample_counts = torch.zeros(nf.shape[0], dtype=torch.long, device=nf.device)
+        retained_counts = torch.zeros(nf.shape[0], dtype=torch.long, device=nf.device)
         for env_local in range(nf.shape[0]):
-            valid_local = valid[env_local]
-            values = force_indentation[env_local][valid_local] / sim_indentation[env_local][valid_local]
+            # The tactile grid is the sparse field in the reconstruction
+            # algorithm. Use each grid point's corrected local force and its
+            # corresponding sampled camera depth, then trim the ratio samples.
+            force_indentation = torch.clamp(nf[env_local], min=0.0) / max(k_ref, eps)
+            sim_indentation = torch.clamp(sparse_sim_depth[env_local], min=0.0)
+            valid = (
+                (force_indentation > eps)
+                & (sim_indentation > eps)
+                & torch.isfinite(force_indentation)
+                & torch.isfinite(sim_indentation)
+            )
+            values = force_indentation[valid] / sim_indentation[valid]
             sample_counts[env_local] = values.numel()
             if values.numel() == 0:
                 continue
@@ -390,11 +382,14 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
             trim_count = int(trim_ratio * values.numel())
             if trim_count > 0 and values.numel() - 2 * trim_count >= 1:
                 values = values[trim_count : values.numel() - trim_count]
+            retained_counts[env_local] = values.numel()
             scales[env_local] = values.mean()
 
         self._force_depth_correction_scale[env_ids] = scales
         if self._force_depth_correction_sample_count is not None:
             self._force_depth_correction_sample_count[env_ids] = sample_counts
+        if self._force_depth_correction_retained_count is not None:
+            self._force_depth_correction_retained_count[env_ids] = retained_counts
 
     def _build_uv_sample_grid(self):
         rows, cols = self.cfg.tactile_array_size
@@ -597,6 +592,8 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
             self._force_depth_correction_scale[env_idx].zero_()
         if self._force_depth_correction_sample_count is not None:
             self._force_depth_correction_sample_count[env_idx].zero_()
+        if self._force_depth_correction_retained_count is not None:
+            self._force_depth_correction_retained_count[env_idx].zero_()
 
         elastomer_pos_w, elastomer_quat_w = self._elastomer_body_view.get_transforms().split([3, 4], dim=-1)
         elastomer_quat_w = math_utils.convert_quat(elastomer_quat_w, to="wxyz")
@@ -1300,10 +1297,20 @@ class VisuoTactileSensorV2(VisuoTactileSensor):
                     p_w = points[sl]
                     fn_vals = torch.clamp(forces[sl].reshape(-1), min=0.0)
                     p_pad = math_utils.quat_apply_inverse(q.unsqueeze(0).expand(cnt, -1), p_w - p0.unsqueeze(0))
-                    # Anchor depth proxy: nearest dense penetration.
-                    dist_ap = torch.cdist(p_pad.unsqueeze(0), p_pad_dense[e_local].unsqueeze(0)).squeeze(0)  # (A,P)
-                    nn_d = torch.argmin(dist_ap, dim=-1)
-                    d_anchor = torch.clamp(penetration[e_local, nn_d], min=0.0) + eps
+                    # Pair each PhysX contact with the nearest *contacting* depth
+                    # sample. A thin ring can fall between cells of the 32x32
+                    # force grid; choosing from all cells would then pair a valid
+                    # force with zero depth and discard the anchor entirely.
+                    depth_e = torch.clamp(penetration[e_local], min=0.0)
+                    depth_contact = depth_e > eps
+                    if bool(depth_contact.any()):
+                        p_depth = p_pad_dense[e_local, depth_contact]
+                        d_depth = depth_e[depth_contact]
+                        dist_ap = torch.cdist(p_pad.unsqueeze(0), p_depth.unsqueeze(0)).squeeze(0)
+                        nn_d = torch.argmin(dist_ap, dim=-1)
+                        d_anchor = d_depth[nn_d]
+                    else:
+                        d_anchor = torch.zeros(cnt, device=self._device, dtype=torch.float32)
                     n_list_pos.append(p_pad)
                     n_list_fn.append(fn_vals)
                     n_list_depth.append(d_anchor)
