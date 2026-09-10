@@ -114,6 +114,7 @@ def main() -> int:
     renderer = GelsightRender(cfg, args.device)
 
     predictions: list[np.ndarray] = []
+    sign_matched_predictions: list[np.ndarray] = []
     heights: list[np.ndarray] = []
     rows: list[dict[str, float | int | str | bool]] = []
     height, width = background.shape[:2]
@@ -132,7 +133,18 @@ def main() -> int:
             .cpu()
             .numpy()
         )
+        # Diagnostic ablation: the calibration builder uses inward-facing sphere
+        # directions, while the runtime renderer produces outward-facing gradients
+        # for its documented positive-penetration input. A negative height map
+        # aligns those conventions without changing gradient magnitude.
+        sign_matched_prediction = (
+            renderer.render(torch.from_numpy(-height_map).unsqueeze(0).to(args.device))[0]
+            .detach()
+            .cpu()
+            .numpy()
+        )
         predictions.append(prediction)
+        sign_matched_predictions.append(sign_matched_prediction)
         heights.append(height_map)
 
         cx, cy = float(center[0]), float(center[1])
@@ -140,14 +152,29 @@ def main() -> int:
         disk = ((xx - cx) ** 2 + (yy - cy) ** 2 <= valid_radius * valid_radius) & ~marker_masks[index]
         real_delta = real_clean[index].astype(np.float64) - background.astype(np.float64)
         sim_delta = prediction.astype(np.float64) - background.astype(np.float64)
+        sign_matched_delta = sign_matched_prediction.astype(np.float64) - background.astype(np.float64)
         response_rmse = float(np.sqrt(np.mean((real_delta[disk] - sim_delta[disk]) ** 2)))
         response_mae = float(np.mean(np.abs(real_delta[disk] - sim_delta[disk])))
+        sign_matched_rmse = float(
+            np.sqrt(np.mean((real_delta[disk] - sign_matched_delta[disk]) ** 2))
+        )
+        sign_matched_mae = float(np.mean(np.abs(real_delta[disk] - sign_matched_delta[disk])))
         if int(disk.sum()) >= 2:
             corr = float(np.corrcoef(real_delta[disk].reshape(-1), sim_delta[disk].reshape(-1))[0, 1])
+            sign_matched_corr = float(
+                np.corrcoef(
+                    real_delta[disk].reshape(-1),
+                    sign_matched_delta[disk].reshape(-1),
+                )[0, 1]
+            )
         else:
             corr = float("nan")
+            sign_matched_corr = float("nan")
         real_crop = _crop_about_center(real_clean[index], (cx, cy), ball_radius_px)
         sim_crop = _crop_about_center(prediction, (cx, cy), ball_radius_px)
+        sign_matched_crop = _crop_about_center(
+            sign_matched_prediction, (cx, cy), ball_radius_px
+        )
         rows.append(
             {
                 "frame_index": index,
@@ -162,6 +189,10 @@ def main() -> int:
                 "response_mae": response_mae,
                 "response_correlation": corr,
                 "crop_ssim": _ssim_gray(real_crop, sim_crop),
+                "sign_matched_response_rmse": sign_matched_rmse,
+                "sign_matched_response_mae": sign_matched_mae,
+                "sign_matched_response_correlation": sign_matched_corr,
+                "sign_matched_crop_ssim": _ssim_gray(real_crop, sign_matched_crop),
             }
         )
 
@@ -177,7 +208,13 @@ def main() -> int:
         raw_rgb = cv2.cvtColor(raw_bgr, cv2.COLOR_BGR2RGB)
         real_rgb = real_clean[index]
         sim_rgb = predictions[index]
+        sign_matched_rgb = sign_matched_predictions[index]
         error = np.clip(np.abs(real_rgb.astype(np.int16) - sim_rgb.astype(np.int16)) * 4, 0, 255).astype(np.uint8)
+        sign_matched_error = np.clip(
+            np.abs(real_rgb.astype(np.int16) - sign_matched_rgb.astype(np.int16)) * 4,
+            0,
+            255,
+        ).astype(np.uint8)
         height_norm = np.clip(heights[index] / max(float(heights[index].max()), 1.0e-9), 0.0, 1.0)
         height_rgb = cv2.applyColorMap((height_norm * 255.0).astype(np.uint8), cv2.COLORMAP_VIRIDIS)
         height_rgb = cv2.cvtColor(height_rgb, cv2.COLOR_BGR2RGB)
@@ -185,8 +222,10 @@ def main() -> int:
             [
                 _label(raw_rgb, f"{names[index]} raw real"),
                 _label(real_rgb, "marker-clean real"),
-                _label(sim_rgb, "polycalib replay"),
-                _label(error, "|real-sim| x4"),
+                _label(sim_rgb, "current +depth replay"),
+                _label(sign_matched_rgb, "sign-matched replay (diagnostic)"),
+                _label(error, "|real-current| x4"),
+                _label(sign_matched_error, "|real-sign-matched| x4"),
                 _label(height_rgb, "sphere height"),
             ],
             axis=1,
@@ -195,6 +234,7 @@ def main() -> int:
     panel = np.concatenate(panel_rows, axis=0)
     cv2.imwrite(str(out_dir / "ball_real_vs_polycalib.png"), cv2.cvtColor(panel, cv2.COLOR_RGB2BGR))
 
+    sign_matched_rmse = np.asarray([float(row["sign_matched_response_rmse"]) for row in rows])
     summary = {
         "frame_count": len(rows),
         "ball_radius_mm": ball_radius_mm,
@@ -219,6 +259,15 @@ def main() -> int:
             np.nanmean([float(row["response_correlation"]) for row in rows])
         ),
         "crop_ssim_mean": float(np.mean([float(row["crop_ssim"]) for row in rows])),
+        "sign_matched_response_rmse_mean": float(sign_matched_rmse.mean()),
+        "sign_matched_response_rmse_median": float(np.median(sign_matched_rmse)),
+        "sign_matched_response_rmse_max": float(sign_matched_rmse.max()),
+        "sign_matched_response_correlation_mean": float(
+            np.nanmean([float(row["sign_matched_response_correlation"]) for row in rows])
+        ),
+        "sign_matched_crop_ssim_mean": float(
+            np.mean([float(row["sign_matched_crop_ssim"]) for row in rows])
+        ),
         "representative_frame_indices": representative,
         "per_frame": rows,
     }
