@@ -7,7 +7,7 @@ This directory holds **local-only** Taxim / FOTS files for the advisor Xense sen
 
 | File | Purpose |
 |------|---------|
-| `bg_clean.jpg` | Gel-only background (markers inpainted out) |
+| `bg_clean.jpg` | Gel-only background (markers inpainted out); also used as the low-frequency illumination reference |
 | `polycalib.npz` | Taxim height → RGB calibration |
 | `marker_rest.npy` | Rest marker centers `(M, 2)` in pixels (220 for 11×20 grid) |
 
@@ -25,5 +25,9 @@ python3 scripts/calibration/install_taxim_polycalib.py --src data/calibration/ta
 ```
 
 Joint fit output (`data/calibration/tactile/fitted_params.json`) is also local-only; scripts load it when present.
+
+Do not use a raw no-contact frame as the illumination reference. Gaussian
+low-pass filtering does not fully remove the printed marker grid, so the
+renderer produces gray marker halos before adding the simulated markers.
 
 See [`docs/VITACSIM_CALIBRATION.md`](../../../../../../../docs/VITACSIM_CALIBRATION.md) for the full Task 2 / Task 3 pipeline.

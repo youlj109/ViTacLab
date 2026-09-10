@@ -85,6 +85,7 @@ def advisor_xense_render_cfg(
 ):
     """Lab Xense advisor cfg: native 400x700, clean bg, lab marker rest coordinates."""
 
+    local_dir = local_xense_lab_data_dir()
     extra: dict = {}
     if fitted_params_path is not None:
         path = Path(fitted_params_path).expanduser()
@@ -130,8 +131,11 @@ def advisor_xense_render_cfg(
     extra.setdefault("taxim_contact_red_tilt_strength", 1.45)
     extra.setdefault("taxim_contact_red_tilt_power", 0.55)
     extra.setdefault("taxim_contact_red_tilt_additive", 24.0)
-    # Align low-frequency no-contact illumination field with lab capture.
-    extra.setdefault("taxim_illumination_reference_path", "data/calibration/tactile/real/normal_force/no_contact/rgb.png")
+    # The clean background already preserves the lab's low-frequency illumination.
+    # Never derive the illumination map from a raw no-contact frame: its printed
+    # markers survive Gaussian filtering as gray halos and are then duplicated by
+    # the explicit FOTS marker overlay.
+    extra.setdefault("taxim_illumination_reference_path", str(local_dir / "bg_clean.jpg"))
     extra.setdefault("taxim_illumination_blend", 0.55)
     extra.setdefault("taxim_illumination_bias_blend", 0.35)
     extra.setdefault("taxim_illumination_kernel_size", 101)
@@ -140,7 +144,6 @@ def advisor_xense_render_cfg(
     extra.setdefault("marker_displacement_gain", 0.15)
     extra.setdefault("marker_blend_alpha", 1.0)
 
-    local_dir = local_xense_lab_data_dir()
     base = GELSIGHT_R15_CFG
     bg_name = "bg_clean.jpg" if (local_dir / "bg_clean.jpg").is_file() else "bg.jpg"
     marker_rest = "marker_rest.npy" if (local_dir / "marker_rest.npy").is_file() else ""
