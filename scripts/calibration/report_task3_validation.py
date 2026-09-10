@@ -60,7 +60,7 @@ def _resize_rgb(img: np.ndarray, *, width: int | None = None, height: int | None
         from PIL import Image
     except ImportError:
         return img
-    return np.asarray(Image.fromarray(img.astype(np.uint8)).resize((width, height)), dtype=np.uint8)
+    return np.asarray(Image.fromarray(img.astype(np.uint8)).resize((w, h)), dtype=np.uint8)
 
 
 def _align_rgb(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
