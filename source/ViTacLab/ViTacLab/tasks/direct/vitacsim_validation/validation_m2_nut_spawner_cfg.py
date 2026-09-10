@@ -25,14 +25,54 @@ if TYPE_CHECKING:
 
 def _hex_ring_mesh(outer_r: float, inner_r: float, height: float) -> trimesh.Trimesh:
     """Hexagonal nut ring (6-sided outer, cylindrical hole)."""
-    outer = trimesh.creation.cylinder(radius=outer_r, height=height, sections=6)
-    inner = trimesh.creation.cylinder(radius=inner_r, height=height * 1.25, sections=24)
-    try:
-        ring = outer.difference(inner)
-    except Exception:
-        # Fallback: solid hex if boolean fails (still M2-sized contact patch).
-        ring = outer
-    ring.apply_translation([0.0, 0.0, height * 0.5])
+    # Construct the annular prism explicitly. ``Trimesh.difference`` requires an
+    # optional boolean backend which is not included in the Isaac Lab image; the
+    # old fallback silently produced a solid hexagon and erased the nut hole.
+    segments_per_edge = 4
+    count = 6 * segments_per_edge
+    corner_angles = np.pi / 6.0 + np.arange(6, dtype=np.float64) * (np.pi / 3.0)
+    corners = np.stack((np.cos(corner_angles), np.sin(corner_angles)), axis=-1) * float(outer_r)
+
+    outer_xy: list[np.ndarray] = []
+    for edge in range(6):
+        start = corners[edge]
+        end = corners[(edge + 1) % 6]
+        for step in range(segments_per_edge):
+            t = float(step) / float(segments_per_edge)
+            outer_xy.append((1.0 - t) * start + t * end)
+    outer_xy_arr = np.asarray(outer_xy, dtype=np.float64)
+    inner_angles = np.linspace(0.0, 2.0 * np.pi, count, endpoint=False, dtype=np.float64)
+    inner_xy_arr = np.stack((np.cos(inner_angles), np.sin(inner_angles)), axis=-1) * float(inner_r)
+
+    def _layer(xy: np.ndarray, z: float) -> np.ndarray:
+        return np.column_stack((xy, np.full(xy.shape[0], z, dtype=np.float64)))
+
+    # Vertex blocks: outer-bottom, inner-bottom, outer-top, inner-top.
+    vertices = np.vstack(
+        (
+            _layer(outer_xy_arr, 0.0),
+            _layer(inner_xy_arr, 0.0),
+            _layer(outer_xy_arr, float(height)),
+            _layer(inner_xy_arr, float(height)),
+        )
+    )
+    faces: list[tuple[int, int, int]] = []
+    for i in range(count):
+        j = (i + 1) % count
+        ob_i, ob_j = i, j
+        ib_i, ib_j = count + i, count + j
+        ot_i, ot_j = 2 * count + i, 2 * count + j
+        it_i, it_j = 3 * count + i, 3 * count + j
+
+        # Top and bottom annuli.
+        faces.extend(((ot_i, ot_j, it_j), (ot_i, it_j, it_i)))
+        faces.extend(((ob_i, ib_j, ob_j), (ob_i, ib_i, ib_j)))
+        # Outer wall and inward-facing cylindrical hole wall.
+        faces.extend(((ob_i, ob_j, ot_j), (ob_i, ot_j, ot_i)))
+        faces.extend(((ib_i, it_j, ib_j), (ib_i, it_i, it_j)))
+
+    ring = trimesh.Trimesh(vertices=vertices, faces=np.asarray(faces, dtype=np.int64), process=True)
+    ring.fix_normals()
     return ring
 
 
