@@ -4,8 +4,9 @@
 Pipeline:
   1. Optional: import_ball_calib_video.py
   2. Auto-generate dataPack.npz (circle detection; Taxim GUI not required)
-  3. Run Taxim polyTableCalib.py with Xense sensor params
-  4. Install polycalib (+ bg) into xense_lab_data/
+  3. Detect/inpaint printed markers and exclude their pixels from the optical fit
+  4. Run Taxim polyTableCalib.py with Xense sensor params
+  5. Install polycalib (+ the paired clean background) into xense_lab_data/
 
 Usage::
 
@@ -28,10 +29,16 @@ if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
 from calibration_io import repo_root  # noqa: E402
+from advisor_image_utils import (  # noqa: E402
+    build_advisor_marker_rest,
+    build_marker_inpaint_mask,
+    detect_printed_markers,
+    measure_marker_residual,
+)
 from import_ball_calib_video import (  # noqa: E402
     XENSE_BALL_RADIUS_MM,
     XENSE_SENSING_MM,
-    _contact_blob_legacy,
+    _contact_blob,
     _load_rgb,
     _save_rgb,
 )
@@ -46,17 +53,13 @@ def _default_taxim_repo() -> Path:
     return repo_root() / "third_party" / "Taxim"
 
 
-def _find_bg(data_dir: Path) -> Path:
-    for rel in (
-        "bg/no_contact.png",
-        "bg/no_contact.jpg",
-        "bg.jpg",
-        "no_contact.png",
-    ):
-        p = data_dir / rel
-        if p.is_file():
-            return p
-    raise FileNotFoundError(f"No background image under {data_dir}")
+def _default_background_paths() -> tuple[Path, Path]:
+    advisor_dir = repo_root() / "data" / "calibration" / "tactile" / "advisor_processed"
+    return advisor_dir / "bg.jpg", advisor_dir / "bg_clean.jpg"
+
+
+def _default_marker_rest_path() -> Path:
+    return repo_root() / "data" / "calibration" / "tactile" / "advisor_processed" / "marker_rest.npy"
 
 
 def _list_ball_images(data_dir: Path) -> list[Path]:
@@ -74,33 +77,116 @@ def _rgb_to_bgr(rgb: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(rgb.astype(np.uint8), cv2.COLOR_RGB2BGR)
 
 
-def _build_datapack(data_dir: Path, *, pixmm: float) -> Path:
+def _inpaint_with_mask(rgb: np.ndarray, mask: np.ndarray, *, radius: int = 10) -> np.ndarray:
+    """Inpaint a marker mask while preserving RGB channel order."""
     import cv2
 
-    bg_path = _find_bg(data_dir)
+    bgr = cv2.cvtColor(rgb.astype(np.uint8), cv2.COLOR_RGB2BGR)
+    cleaned_bgr = cv2.inpaint(bgr, mask.astype(np.uint8), int(radius), cv2.INPAINT_NS)
+    return cv2.cvtColor(cleaned_bgr, cv2.COLOR_BGR2RGB)
+
+
+def _mask_rgb(mask: np.ndarray) -> np.ndarray:
+    return np.repeat((mask > 0).astype(np.uint8)[:, :, None] * 255, 3, axis=2)
+
+
+def _build_datapack(
+    data_dir: Path,
+    *,
+    pixmm: float,
+    bg_raw_path: Path | None = None,
+    bg_clean_path: Path | None = None,
+    marker_rest_path: Path | None = None,
+) -> Path:
+    import cv2
+
+    default_bg_raw, default_bg_clean = _default_background_paths()
+    bg_raw_path = (bg_raw_path or default_bg_raw).expanduser().resolve()
+    bg_clean_path = (bg_clean_path or default_bg_clean).expanduser().resolve()
+    marker_rest_path = (marker_rest_path or _default_marker_rest_path()).expanduser().resolve()
+    if not bg_raw_path.is_file():
+        raise FileNotFoundError(f"No-contact background with markers not found: {bg_raw_path}")
+    if not bg_clean_path.is_file():
+        raise FileNotFoundError(f"No-contact clean background not found: {bg_clean_path}")
+
     ball_paths = _list_ball_images(data_dir)
 
-    bg_rgb = _load_rgb(bg_path)
-    bg_bgr = _rgb_to_bgr(bg_rgb)
+    bg_rgb = _load_rgb(bg_raw_path)
+    bg_clean_rgb = _load_rgb(bg_clean_path)
+    if bg_clean_rgb.shape != bg_rgb.shape:
+        raise ValueError(
+            f"Clean background shape {bg_clean_rgb.shape} does not match raw background {bg_rgb.shape}"
+        )
+    h, w = bg_rgb.shape[:2]
+    if marker_rest_path.is_file():
+        marker_rest = np.asarray(np.load(marker_rest_path), dtype=np.float32)
+        if marker_rest.ndim != 2 or marker_rest.shape[1] != 2 or not np.isfinite(marker_rest).all():
+            raise ValueError(f"Invalid marker rest array in {marker_rest_path}: {marker_rest.shape}")
+        marker_radius_px = 2.5
+    else:
+        marker_rest, marker_radius_px = build_advisor_marker_rest(
+            bg_rgb,
+            pattern="xense",
+            image_height=h,
+            image_width=w,
+        )
+    bg_marker_mask = build_marker_inpaint_mask(
+        bg_rgb,
+        marker_rest,
+        radius_px=marker_radius_px,
+    )
+    bg_bgr = _rgb_to_bgr(bg_clean_rgb)
 
     imgs: list[np.ndarray] = []
+    marker_masks: list[np.ndarray] = []
     centers: list[list[float]] = []
     radii: list[float] = []
     names: list[str] = []
     records: list[dict] = []
+    diagnostics_dir = data_dir / "diagnostics" / "polycalib_marker_masking"
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    _save_rgb(bg_rgb, diagnostics_dir / "background_raw.png")
+    _save_rgb(_mask_rgb(bg_marker_mask), diagnostics_dir / "background_marker_mask.png")
+    _save_rgb(bg_clean_rgb, diagnostics_dir / "background_clean.png")
+    _save_rgb(bg_clean_rgb, data_dir / "bg_clean.png")
 
-    for p in ball_paths:
+    for frame_index, p in enumerate(ball_paths):
         frame_rgb = _load_rgb(p)
-        frame_bgr = _rgb_to_bgr(frame_rgb)
-        (cy, cx), radius_px, diff_mean, _circularity, _radial_norm = _contact_blob_legacy(bg_rgb, frame_rgb)
+        if frame_rgb.shape != bg_rgb.shape:
+            raise ValueError(
+                f"Calibration frame {p} has shape {frame_rgb.shape}, expected {bg_rgb.shape}"
+            )
+        (cy, cx), radius_px, diff_mean = _contact_blob(bg_rgb, frame_rgb)
 
         if radius_px < 3.0:
             h, w = frame_rgb.shape[:2]
             cy, cx, radius_px = h / 2.0, w / 2.0, max(radius_px, 8.0)
 
-        # Taxim stores touch_center as [row, col] = [y, x].
-        imgs.append(frame_bgr)
-        centers.append([float(cy), float(cx)])
+        # Refine from the rest positions on every frame: markers can move under contact.
+        tracked_marker_mask = build_marker_inpaint_mask(
+            frame_rgb,
+            marker_rest,
+            radius_px=marker_radius_px,
+        )
+        direct_markers, direct_marker_radius = detect_printed_markers(frame_rgb)
+        if direct_markers.shape[0] >= 80:
+            direct_marker_mask = build_marker_inpaint_mask(
+                frame_rgb,
+                direct_markers,
+                radius_px=direct_marker_radius,
+                refine_centers=False,
+            )
+            marker_mask = cv2.bitwise_or(tracked_marker_mask, direct_marker_mask)
+        else:
+            marker_mask = tracked_marker_mask
+        frame_clean_rgb = _inpaint_with_mask(frame_rgb, marker_mask)
+
+        # Official Taxim stores touch_center as OpenCV coordinates [x, y]. Circle
+        # detection stays on the raw frame, while the optical model sees
+        # marker-free intensities.
+        imgs.append(_rgb_to_bgr(frame_clean_rgb))
+        marker_masks.append(marker_mask > 0)
+        centers.append([float(cx), float(cy)])
         radii.append(float(radius_px))
         names.append(p.name)
         records.append(
@@ -111,14 +197,26 @@ def _build_datapack(data_dir: Path, *, pixmm: float) -> Path:
                 "diff_mean": diff_mean,
                 "ball_radius_mm": XENSE_BALL_RADIUS_MM,
                 "pixmm": pixmm,
+                "direct_marker_count": int(direct_markers.shape[0]),
+                "marker_mask_fraction": float(np.mean(marker_mask > 0)),
             }
         )
+
+        if frame_index == 0:
+            _save_rgb(frame_rgb, diagnostics_dir / "ball_000_raw.png")
+            _save_rgb(_mask_rgb(marker_mask), diagnostics_dir / "ball_000_marker_mask.png")
+            _save_rgb(frame_clean_rgb, diagnostics_dir / "ball_000_clean.png")
 
     out = data_dir / "dataPack.npz"
     np.savez(
         out,
         f0=bg_bgr,
+        f0_raw=_rgb_to_bgr(bg_rgb),
         imgs=np.stack(imgs, axis=0),
+        marker_masks=np.stack(marker_masks, axis=0),
+        marker_rest_xy=marker_rest.astype(np.float32),
+        marker_radius_px=np.asarray(marker_radius_px, dtype=np.float32),
+        marker_mask_version=np.asarray("xense-v1"),
         touch_center=np.asarray(centers, dtype=np.float32),
         touch_radius=np.asarray(radii, dtype=np.float32),
         names=np.asarray(names),
@@ -127,8 +225,30 @@ def _build_datapack(data_dir: Path, *, pixmm: float) -> Path:
 
     ann_path = data_dir / "auto_annotation.json"
     ann_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+    frame_mask_fractions = np.asarray([r["marker_mask_fraction"] for r in records], dtype=np.float64)
+    mask_report = {
+        "marker_count": int(marker_rest.shape[0]),
+        "marker_radius_px": float(marker_radius_px),
+        "background_with_markers": str(bg_raw_path),
+        "background_clean": str(bg_clean_path),
+        "marker_rest": str(marker_rest_path) if marker_rest_path.is_file() else "detected_from_background",
+        "background_mask_fraction": float(np.mean(bg_marker_mask > 0)),
+        "frame_mask_fraction_min": float(np.min(frame_mask_fractions)),
+        "frame_mask_fraction_mean": float(np.mean(frame_mask_fractions)),
+        "frame_mask_fraction_max": float(np.max(frame_mask_fractions)),
+        "background_residual": measure_marker_residual(bg_clean_rgb, marker_rest),
+        "fit_policy": "inpaint marker pixels, then exclude the same per-frame mask from polynomial fitting",
+        "diagnostics_dir": str(diagnostics_dir),
+    }
+    mask_report_path = data_dir / "marker_mask_report.json"
+    mask_report_path.write_text(json.dumps(mask_report, indent=2), encoding="utf-8")
     print(f"[OK] dataPack -> {out} ({len(imgs)} frames)")
     print(f"[OK] auto_annotation -> {ann_path}")
+    print(
+        "[OK] marker masking -> "
+        f"{mask_report_path} ({marker_rest.shape[0]} markers, "
+        f"mean frame coverage={np.mean(frame_mask_fractions):.2%})"
+    )
     return out
 
 
@@ -165,6 +285,22 @@ def _run_poly_table_calib(
     imgs = data_file["imgs"]
     radius_record = data_file["touch_radius"]
     touch_center_record = data_file["touch_center"]
+    marker_masks = (
+        np.asarray(data_file["marker_masks"], dtype=bool)
+        if "marker_masks" in data_file.files
+        else np.zeros(imgs.shape[:3], dtype=bool)
+    )
+    if marker_masks.shape != imgs.shape[:3]:
+        raise ValueError(
+            f"marker_masks shape {marker_masks.shape} does not match calibration frames {imgs.shape[:3]}"
+        )
+    marker_mask_version = (
+        str(np.asarray(data_file["marker_mask_version"]).item())
+        if "marker_mask_version" in data_file.files
+        else "none"
+    )
+    if "marker_masks" not in data_file.files:
+        print("[WARN] dataPack has no marker_masks; fitting without marker exclusion")
 
     kscale = pr.kscale
     img_d = f0.astype("float")
@@ -222,6 +358,7 @@ def _run_poly_table_calib(
     gamma = max(float(deep_weight_gamma), 0.0)
     edge_min = float(np.clip(edge_weight_min, 0.0, 1.0))
     edge_pow = max(float(edge_weight_power), 0.0)
+    fit_mask_records: list[dict[str, int | float]] = []
 
     for idx_i in range(int(np.shape(imgs)[0])):
         print(f"# iter {idx_i}")
@@ -241,7 +378,25 @@ def _run_poly_table_calib(
         rsqcoord = xq * xq + yq * yq
         rad_sq = radius * radius
         valid_rad = min(rad_sq, int(ball_radius_pix * ball_radius_pix))
-        valid_mask = rsqcoord < valid_rad
+        circle_mask = rsqcoord < valid_rad
+        frame_marker_mask = marker_masks[idx_i]
+        valid_mask = circle_mask & ~frame_marker_mask
+        circle_pixels = int(np.count_nonzero(circle_mask))
+        excluded_marker_pixels = int(np.count_nonzero(circle_mask & frame_marker_mask))
+        valid_pixels = int(np.count_nonzero(valid_mask))
+        if valid_pixels < 6:
+            raise RuntimeError(
+                f"Frame {idx_i} has only {valid_pixels} usable contact pixels after marker masking"
+            )
+        fit_mask_records.append(
+            {
+                "frame_index": idx_i,
+                "circle_pixels": circle_pixels,
+                "excluded_marker_pixels": excluded_marker_pixels,
+                "valid_pixels": valid_pixels,
+                "excluded_fraction": float(excluded_marker_pixels / max(circle_pixels, 1)),
+            }
+        )
         valid_id = np.nonzero(valid_mask)
         xvalid = xq[valid_id]
         yvalid = yq[valid_id]
@@ -313,12 +468,20 @@ def _run_poly_table_calib(
         edge_weight_min=edge_min,
         edge_weight_power=edge_pow,
         grad_table_smooth_sigma=sigma,
+        marker_masked_fit=np.asarray("marker_masks" in data_file.files),
+        marker_mask_version=np.asarray(marker_mask_version),
+        marker_mask_fraction_mean=np.asarray(float(np.mean(marker_masks)), dtype=np.float64),
     )
+    fit_mask_report_path = data_dir / "fit_marker_exclusion.json"
+    fit_mask_report_path.write_text(json.dumps(fit_mask_records, indent=2), encoding="utf-8")
     print(f"[OK] polycalib -> {out}")
+    print(f"[OK] fit marker exclusion -> {fit_mask_report_path}")
     return out
 
 
 def main() -> int:
+    default_bg_raw, default_bg_clean = _default_background_paths()
+    default_marker_rest = _default_marker_rest_path()
     parser = argparse.ArgumentParser(description="Build and install Xense polycalib from ball video.")
     parser.add_argument(
         "--data-dir",
@@ -329,6 +492,24 @@ def main() -> int:
     parser.add_argument("--num-ball", type=int, default=50)
     parser.add_argument("--skip-import", action="store_true")
     parser.add_argument("--taxim-repo", type=str, default="")
+    parser.add_argument(
+        "--bg-raw",
+        type=str,
+        default=str(default_bg_raw),
+        help="True no-contact Xense background with printed markers.",
+    )
+    parser.add_argument(
+        "--bg-clean",
+        type=str,
+        default=str(default_bg_clean),
+        help="Marker-free version of the same true no-contact background.",
+    )
+    parser.add_argument(
+        "--marker-rest",
+        type=str,
+        default=str(default_marker_rest),
+        help="Rest marker coordinates paired with --bg-raw (falls back to image detection if absent).",
+    )
     parser.add_argument(
         "--pixmm",
         type=float,
@@ -364,6 +545,9 @@ def main() -> int:
 
     data_dir = Path(args.data_dir).expanduser().resolve()
     taxim_repo = Path(args.taxim_repo or _default_taxim_repo()).expanduser().resolve()
+    bg_raw_path = Path(args.bg_raw).expanduser().resolve()
+    bg_clean_path = Path(args.bg_clean).expanduser().resolve()
+    marker_rest_path = Path(args.marker_rest).expanduser().resolve()
     out_w = 400
     pixmm = float(args.pixmm) if args.pixmm > 0 else XENSE_SENSING_MM[0] / out_w
 
@@ -377,11 +561,19 @@ def main() -> int:
             str(data_dir),
             "--num-ball",
             str(int(args.num_ball)),
+            "--reference-bg",
+            str(bg_raw_path),
         ]
         print("[RUN]", " ".join(import_cmd))
         subprocess.run(import_cmd, check=True)
 
-    _build_datapack(data_dir, pixmm=pixmm)
+    _build_datapack(
+        data_dir,
+        pixmm=pixmm,
+        bg_raw_path=bg_raw_path,
+        bg_clean_path=bg_clean_path,
+        marker_rest_path=marker_rest_path,
+    )
     polycalib_path = _run_poly_table_calib(
         data_dir,
         taxim_repo,
@@ -401,8 +593,11 @@ def main() -> int:
     ]
     bg_install = args.bg_install.strip()
     if not bg_install:
+        paired_bg = data_dir / "bg_clean.png"
         advisor_bg = repo_root() / "data/calibration/tactile/advisor_processed/bg_clean.jpg"
-        if advisor_bg.is_file():
+        if paired_bg.is_file():
+            bg_install = str(paired_bg)
+        elif advisor_bg.is_file():
             bg_install = str(advisor_bg)
     if bg_install:
         install_cmd.extend(["--bg", bg_install])
