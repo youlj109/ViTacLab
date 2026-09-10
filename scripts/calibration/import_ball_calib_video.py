@@ -197,6 +197,12 @@ def main() -> int:
         default=str(repo_root() / "data/calibration/tactile/ball_calib_raw"),
     )
     parser.add_argument("--bg-warmup-skip", type=int, default=10)
+    parser.add_argument(
+        "--reference-bg",
+        type=str,
+        default=str(repo_root() / "data/calibration/tactile/advisor_processed/bg.jpg"),
+        help="Explicit true no-contact RGB frame; defaults to advisor_processed/bg.jpg.",
+    )
     parser.add_argument("--num-ball", type=int, default=50)
     parser.add_argument("--min-diff", type=float, default=2.0, help="Min mean |rgb-bg| to count as contact.")
     args = parser.parse_args()
@@ -225,8 +231,20 @@ def main() -> int:
             print("[ERR] no frames decoded", file=sys.stderr)
             return 1
 
-        bg_path, bg_meta = _pick_bg_frame(frames, skip=int(args.bg_warmup_skip))
-        bg_rgb = _load_rgb(bg_path)
+        if args.reference_bg:
+            bg_path = Path(args.reference_bg).expanduser().resolve()
+            if not bg_path.is_file():
+                print(f"[ERR] reference background not found: {bg_path}", file=sys.stderr)
+                return 1
+            bg_rgb = _load_rgb(bg_path)
+            bg_meta = {
+                "source": "explicit_reference",
+                "path": str(bg_path),
+                "mean": float(bg_rgb.mean()),
+            }
+        else:
+            bg_path, bg_meta = _pick_bg_frame(frames, skip=int(args.bg_warmup_skip))
+            bg_rgb = _load_rgb(bg_path)
         if bg_rgb.shape[1] != out_w or bg_rgb.shape[0] != out_h:
             print(f"[WARN] frame size {bg_rgb.shape[1]}x{bg_rgb.shape[0]} != expected {out_w}x{out_h}")
 

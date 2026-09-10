@@ -55,6 +55,17 @@ TacSL / Taxim 路径（ViTacLab 沿用）：
 
 Marker 层（TacEx/FOTS）在 Taxim RGB 之上叠加，见 Task 1 文档。
 
+### 3.1 Xense `polycalib.npz` 的背景与 marker 约定
+
+Xense 当前有效的零接触背景是一对配套图像：
+
+- `data/calibration/tactile/advisor_processed/bg.jpg`：真实零接触、带 printed marker；用于 marker 静止位置和原始球压差分。
+- `data/calibration/tactile/advisor_processed/bg_clean.jpg`：同一背景去除 marker；用于 Taxim 光学拟合的 `f0`，并随 `polycalib.npz` 安装。
+
+`data/calibration/tactile/ball_calib_raw/bg/no_contact.png` 含有可见残余接触，构建脚本不会再自动使用它。
+球压采集图可以保留 marker，但 `build_xense_polycalib.py` 会逐帧检测/追踪 marker：先对这些区域做 inpaint，再从多项式拟合样本中排除同一 mask。原图仍用于接触圆检测。诊断输出位于
+`data/calibration/tactile/ball_calib_raw/diagnostics/polycalib_marker_masking/`，mask 统计位于 `marker_mask_report.json` 和 `fit_marker_exclusion.json`。
+
 ---
 
 ## 4. 标定 Case 协议（11 cases）
@@ -218,6 +229,21 @@ python3 scripts/calibration/export_sim_reference.py
 2. 放入 `data/calibration/tactile/real/`（§5.2）。
 3. **可选**：若实验室另有 Taxim 标定包，替换  
    `source/.../gelsight_r15_data/bg.jpg` 与 `polycalib.npz`（**替换前备份**）。
+
+Xense 球压数据就绪后，使用真实零接触背景对并自动排除 marker：
+
+```bash
+bash bash_command/run_xense_polycalib.sh --skip-import
+```
+
+如需更换背景，必须同时提供同一零接触帧的带-marker与无-marker版本：
+
+```bash
+python3 scripts/calibration/build_xense_polycalib.py --skip-import \
+  --bg-raw /path/to/no_contact_with_markers.jpg \
+  --bg-clean /path/to/no_contact_without_markers.jpg \
+  --marker-rest /path/to/marker_rest.npy
+```
 
 ### Phase C — 联合拟合（真机 rgb 就绪后）
 

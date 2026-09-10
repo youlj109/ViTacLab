@@ -132,6 +132,31 @@ def build_ur10e_dual_shadowhand_third_person_camera_cfg() -> TiledCameraCfg:
     )
 
 
+def build_ur10e_dual_shadowhand_twist_camera_cfg(
+    *,
+    robot_prim_name: str = "RightRobot",
+    parent_link_name: str = "wrist_3_link",
+) -> TiledCameraCfg:
+    """Wrist-mounted RGB-D camera used by dual-arm twist/assembly tasks."""
+    return TiledCameraCfg(
+        prim_path=f"/World/envs/env_.*/{robot_prim_name}/{parent_link_name}/twist_camera",
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=(0.0, 0.0, 0.08),
+            rot=(0.5, -0.5, 0.5, -0.5),
+            convention="ros",
+        ),
+        data_types=["rgb", "distance_to_image_plane"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=24.0,
+            focus_distance=400.0,
+            horizontal_aperture=20.955,
+            clipping_range=(0.01, 20.0),
+        ),
+        width=640,
+        height=480,
+    )
+
+
 @configclass
 class UR10eDualShadowHandTacSLSceneCfg(UR10eDualShadowHandDirectSceneCfg):
     """TacSL scene marker (sensor cfgs are built post-clone in the env)."""
