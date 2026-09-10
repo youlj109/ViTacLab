@@ -271,9 +271,11 @@ class VisuoTactileSensorCfg(SensorBaseCfg):
     """
 
     normal_correction_k_ref: float = 1e4
-    """Reference stiffness ``k_ref`` for V2 normal correction.
+    """Reference effective elastic stiffness ``k_ref`` of the physical tactile gel.
 
-    If set to ``<= 0``, V2 falls back to :attr:`normal_contact_stiffness`.
+    It converts force to indentation through ``delta = force / k_ref``, so its units
+    must be consistent with force in newtons and indentation in meters. If set to
+    ``<= 0``, V2 falls back to :attr:`normal_contact_stiffness`.
     """
 
     enable_slip_stick_reconstruction: bool = True

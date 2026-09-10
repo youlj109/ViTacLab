@@ -84,8 +84,8 @@ parser.add_argument(
     "--force-render-k-ref",
     type=float,
     default=0.0,
-    help="k_ref for force-corrected Taxim height (delta=fn/k_ref). "
-    "<=0: auto scale from W100 reference (heavier => brighter RGB).",
+    help="Physical-gel effective elastic stiffness k_ref for force-corrected Taxim height "
+    "(delta=fn/k_ref). <=0 uses the legacy validation fallback.",
 )
 parser.add_argument(
     "--tactile-uv-shift-u",
