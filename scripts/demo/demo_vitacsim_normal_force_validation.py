@@ -84,8 +84,8 @@ parser.add_argument(
     "--force-render-k-ref",
     type=float,
     default=0.0,
-    help="k_ref for force-corrected Taxim height (delta=fn/k_ref). "
-    "<=0: auto scale from W100 reference (heavier => brighter RGB).",
+    help="Physical-gel effective elastic stiffness k_ref for force-corrected Taxim height "
+    "(delta=fn/k_ref). <=0 uses the legacy validation fallback.",
 )
 parser.add_argument(
     "--tactile-uv-shift-u",
@@ -780,6 +780,16 @@ def main() -> int:
         ),
         "sparse_fn_total_n": float(getattr(ts, "_sparse_fn_total", torch.zeros(1))[0].item())
         if hasattr(ts, "_sparse_fn_total")
+        else None,
+        "force_depth_correction_scale": float(
+            getattr(ts, "_force_depth_correction_scale", torch.zeros(1))[0].item()
+        )
+        if hasattr(ts, "_force_depth_correction_scale")
+        else None,
+        "force_depth_correction_sample_count": int(
+            getattr(ts, "_force_depth_correction_sample_count", torch.zeros(1, dtype=torch.long))[0].item()
+        )
+        if hasattr(ts, "_force_depth_correction_sample_count")
         else None,
         "marker_load_scale": float(
             (getattr(ts, "_sparse_fn_total", torch.zeros(1))[0].item() / 0.72) ** 0.5
