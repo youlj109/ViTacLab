@@ -163,7 +163,10 @@ data/calibration/tactile/fitted_params.json   # 真机就绪后生成
 | `polycalib.npz` | **file-000 marker-free 50 帧拟合 + 50 帧留出验证** | ✅ |
 | `marker_displacement_gain` | 默认 0.35 → **拟合 0.15** | ✅ `fitted_params.json` |
 | `normal_correction_k_ref` | **1840 N/m** | ✅ 由 G010 峰值 0.020 mm 重新标定 |
-| `corrected_force_render_depth_gain` | **1.0** | 固定；不再附加幅值修正 |
+| `corrected_force_render_depth_gain` | 默认 **1.0** | 保留全局线性调节；当前默认不附加幅值修正 |
+| M2 名义几何 | 对边 3.8 mm / 螺纹孔 2.0 mm | 固定（机械尺寸） |
+| Advisor 有效接触内孔 | **2.8 mm** | ✅ 贴合真机压痕；表示螺纹/倒角不接触区域 |
+| `depth_footprint_scale` | **1.7** | ✅ 贴合真机外轮廓；大于 1 会缩小深度图投影 |
 | 接触物 | M2 螺母 + G010–G210 | ✅ |
 | `finger_root_z` | 0.441 | 待 Fn 对齐 sweep |
 | TacSL | `enable_corrected_force_render=False` | depth→Taxim |

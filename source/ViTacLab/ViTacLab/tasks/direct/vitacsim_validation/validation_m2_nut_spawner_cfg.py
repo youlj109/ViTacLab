@@ -158,11 +158,25 @@ class ValidationM2NutSpawnerCfg(RigidObjectSpawnerCfg):
     visual_scale: float = 1.0
 
 
-def validation_m2_nut_spawner_cfg(case_id: str, *, visual_scale: float = 1.0) -> ValidationM2NutSpawnerCfg:
+def validation_m2_nut_spawner_cfg(
+    case_id: str,
+    *,
+    visual_scale: float = 1.0,
+    width_across_flats: float = M2_GEOMETRY.width_across_flats,
+    hole_diameter: float = M2_GEOMETRY.hole_diameter,
+) -> ValidationM2NutSpawnerCfg:
     if case_id not in ADVISOR_CASE_MASS_G:
         raise KeyError(f"Unknown case_id={case_id!r}; expected one of {sorted(ADVISOR_CASE_MASS_G)}")
+    width_across_flats = float(width_across_flats)
+    hole_diameter = float(hole_diameter)
+    if width_across_flats <= 0.0:
+        raise ValueError("width_across_flats must be positive")
+    if not 0.0 < hole_diameter < width_across_flats:
+        raise ValueError("hole_diameter must be positive and smaller than width_across_flats")
     mass = float(ADVISOR_CASE_MASS_G[case_id]) / 1000.0
     return ValidationM2NutSpawnerCfg(
         mass_props=sim_utils.MassPropertiesCfg(mass=mass),
+        outer_radius=width_across_flats / (3.0**0.5),
+        hole_radius=0.5 * hole_diameter,
         visual_scale=float(visual_scale),
     )

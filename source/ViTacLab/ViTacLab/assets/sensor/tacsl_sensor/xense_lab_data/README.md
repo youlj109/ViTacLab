@@ -53,6 +53,13 @@ the complete dense height map. The global `depth_gain` remains configurable,
 but its Advisor default is the neutral value `1.0`; there is no load-dependent
 exponent.
 
+The Advisor contact collider keeps the nominal 3.8 mm M2 width but uses a
+2.8 mm effective contact opening: the threaded/chamfered part inside the
+nominal 2.0 mm hole does not leave a full-face gel imprint.  Together with the
+fitted centered depth projection scale of 1.7, this narrows the simulated ring
+wall while matching the real outer footprint.  Both values remain available
+as CLI overrides for geometry sweeps.
+
 To preview the new stiffness from the legacy `k_ref=66 N/m` saved maps without
 rerunning PhysX, use the mathematically equivalent ratio `66/1840=0.03587`:
 

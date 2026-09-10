@@ -114,6 +114,18 @@ parser.add_argument(
     "<=0 uses the profile default.",
 )
 parser.add_argument(
+    "--nut-width-across-flats-mm",
+    type=float,
+    default=0.0,
+    help="Advisor M2 contact width across flats in mm; <=0 uses the profile default.",
+)
+parser.add_argument(
+    "--nut-hole-diameter-mm",
+    type=float,
+    default=0.0,
+    help="Advisor effective contact-hole diameter in mm; <=0 uses the profile default.",
+)
+parser.add_argument(
     "--contact-offset-x",
     type=float,
     default=-1.0,
@@ -185,6 +197,7 @@ from ViTacLab.tasks.direct.vitacsim_validation.validation_m2_nut_spawner_cfg imp
 from ViTacLab.tasks.direct.vitacsim_validation.m2_nut_spec import (
     ADVISOR_CASE_MASS_G,
     ADVISOR_DEPTH_FOOTPRINT_SCALE,
+    ADVISOR_EFFECTIVE_CONTACT_HOLE_DIAMETER,
     ADVISOR_FORCE_RENDER_DEPTH_GAIN,
     ADVISOR_FINGER_ROOT_Z,
     ADVISOR_MARKER_DEPTH_GAMMA,
@@ -324,9 +337,14 @@ def _make_contact_cfg(case_id: str) -> RigidObjectCfg:
     z0 = _weight_clearance_z()
     ox, oy = _contact_offset_xy()
     if _is_advisor():
+        width, hole = _nut_geometry_m()
         return RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/contact_object",
-            spawn=validation_m2_nut_spawner_cfg(case_id),
+            spawn=validation_m2_nut_spawner_cfg(
+                case_id,
+                width_across_flats=width,
+                hole_diameter=hole,
+            ),
             init_state=RigidObjectCfg.InitialStateCfg(pos=(ox, oy, z0)),
         )
     return RigidObjectCfg(
@@ -361,6 +379,18 @@ def _depth_footprint_scale() -> float:
     if value > 0.0:
         return value
     return ADVISOR_DEPTH_FOOTPRINT_SCALE if _is_advisor() else 1.0
+
+
+def _nut_geometry_m() -> tuple[float, float]:
+    width = float(args_cli.nut_width_across_flats_mm) * 1.0e-3
+    hole = float(args_cli.nut_hole_diameter_mm) * 1.0e-3
+    if width <= 0.0:
+        width = M2_GEOMETRY.width_across_flats
+    if hole <= 0.0:
+        hole = ADVISOR_EFFECTIVE_CONTACT_HOLE_DIAMETER
+    if hole >= width:
+        raise ValueError(f"nut hole diameter ({hole:g} m) must be smaller than width across flats ({width:g} m)")
+    return width, hole
 
 
 def _marker_enabled() -> bool:
@@ -800,6 +830,8 @@ def main() -> int:
         "finger_root_z": _finger_root_z(),
         "tactile_uv_shift_px": list(_tactile_uv_shift_px()),
         "depth_footprint_scale": _depth_footprint_scale(),
+        "nut_width_across_flats_m": _nut_geometry_m()[0] if _is_advisor() else None,
+        "nut_hole_diameter_m": _nut_geometry_m()[1] if _is_advisor() else None,
         "contact_offset_x": _contact_offset_xy()[0],
         "contact_offset_y": _contact_offset_xy()[1],
         "weight_clearance_z": clearance_z,
