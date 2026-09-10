@@ -46,7 +46,7 @@ renderer produces gray marker halos before adding the simulated markers.
 ## Force-corrected render amplitude
 
 The advisor M2-nut profile keeps the measured gel reference stiffness at
-`k_ref=66` and uses `corrected_force_render_depth_gain=0.20`. The gain is
+`k_ref=66` and uses `corrected_force_render_depth_gain=0.15`. The gain is
 applied only after the sparse-point robust force/depth ratio (20% low and 20%
 high samples trimmed), uniformly across the complete dense height map. It does
 not blend the load-invariant raw camera depth back in and therefore preserves

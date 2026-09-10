@@ -92,7 +92,7 @@ parser.add_argument(
     type=float,
     default=-1.0,
     help="Uniform post-ratio gain on the complete corrected height map. "
-    "<0 uses the profile default (advisor=0.20, cylinder=1.0).",
+    "<0 uses the profile default (advisor=0.15, cylinder=1.0).",
 )
 parser.add_argument(
     "--tactile-uv-shift-u",
