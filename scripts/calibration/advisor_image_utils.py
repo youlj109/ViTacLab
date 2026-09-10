@@ -149,16 +149,17 @@ def build_marker_inpaint_mask(
 
     gray_for_refine = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
     centers = (
-        _refine_centers_to_darkest(gray_for_refine, centers_xy, search_radius=8)
+        _refine_centers_to_darkest(gray_for_refine, centers_xy, search_radius=5)
         if refine_centers
         else centers_xy
     )
 
     h, w = rgb.shape[:2]
     mask = np.zeros((h, w), dtype=np.uint8)
-    # One notch above prior settings; centers are refined to actual dot cores first.
-    r_disk = int(max(8, round(float(radius_px) * 3.4)))
-    r_prox = r_disk + 7
+    # Cover the printed dot and its antialiased fringe without deleting a large
+    # fraction of the optical contact response. Typical Xense dots have r~=2.5 px.
+    r_disk = int(max(3, round(float(radius_px) * 1.5)))
+    r_prox = r_disk + 4
     for i in range(centers.shape[0]):
         cx = int(round(float(centers[i, 0])))
         cy = int(round(float(centers[i, 1])))
@@ -186,7 +187,7 @@ def build_marker_inpaint_mask(
     green = cv2.inRange(hsv, (35, 40, 40), (95, 255, 255))
     mask = cv2.bitwise_or(mask, cv2.bitwise_and(green, blob))
 
-    dilate_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    dilate_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     mask = cv2.dilate(mask, dilate_k, iterations=1)
     return mask
 

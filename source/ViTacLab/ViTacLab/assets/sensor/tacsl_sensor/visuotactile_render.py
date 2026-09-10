@@ -277,6 +277,11 @@ class GelsightRender:
             alpha = torch.clamp(edge_denoise_blend * band, min=0.0, max=1.0)
             height_map = (1.0 - alpha) * height_map + alpha * h_blur
         height_map = self._height_m_to_taxim_mm(height_map)
+        # Gradient zero is shared by the center of a real indentation and the
+        # entire no-contact background. The fitted zero-gradient bin may contain
+        # a genuine center response, so gate lookup-table RGB by actual contact
+        # support instead of tinting every zero-height pixel in the image.
+        contact_support = torch.abs(height_map) > 1.0e-8
 
         grad_mag, grad_dir = self._generate_normals(height_map)
 
@@ -301,6 +306,7 @@ class GelsightRender:
         sim_img_rgb[..., 0] = torch.sum(self.A_tensor * params_r, dim=-1)  # R
         sim_img_rgb[..., 1] = torch.sum(self.A_tensor * params_g, dim=-1)  # G
         sim_img_rgb[..., 2] = torch.sum(self.A_tensor * params_b, dim=-1)  # B
+        sim_img_rgb *= contact_support.unsqueeze(-1)
         rgb_gain = float(getattr(self.cfg, "taxim_rgb_response_gain", 1.0))
         if abs(rgb_gain - 1.0) > 1e-9:
             sim_img_rgb = sim_img_rgb * rgb_gain

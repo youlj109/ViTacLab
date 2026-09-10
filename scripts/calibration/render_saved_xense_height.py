@@ -28,6 +28,11 @@ def main() -> int:
     parser.add_argument("--taxim-height-scale", type=float, default=None)
     parser.add_argument("--red-tilt-strength", type=float, default=None)
     parser.add_argument("--red-tilt-additive", type=float, default=None)
+    parser.add_argument(
+        "--pure-polycalib",
+        action="store_true",
+        help="Disable profile post-processing and render only the fitted Taxim table.",
+    )
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
     simulation_app = AppLauncher(args).app
@@ -40,6 +45,22 @@ def main() -> int:
         marker_pattern="xense",
     )
     overrides = {}
+    if args.pure_polycalib:
+        overrides.update(
+            taxim_height_scale=1.0,
+            taxim_rgb_response_gain=1.0,
+            taxim_smoothing_kernel_size=5,
+            taxim_contact_edge_denoise_blend=0.0,
+            taxim_gradient_edge_suppress=0.0,
+            taxim_contact_chroma_gain=1.0,
+            taxim_contact_soften_blend=0.0,
+            taxim_edge_soften_strength=0.0,
+            taxim_contact_psf_blend=0.0,
+            taxim_contact_red_tilt_strength=0.0,
+            taxim_contact_red_tilt_additive=0.0,
+            taxim_illumination_blend=0.0,
+            taxim_illumination_bias_blend=0.0,
+        )
     if args.taxim_height_scale is not None:
         overrides["taxim_height_scale"] = float(args.taxim_height_scale)
     if args.red_tilt_strength is not None:

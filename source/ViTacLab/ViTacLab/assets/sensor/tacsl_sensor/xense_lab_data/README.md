@@ -13,16 +13,29 @@ This directory holds **local-only** Taxim / FOTS files for the advisor Xense sen
 
 ## How to populate
 
-From repository root, with lab mp4/correct.zip under `data/calibration/tactile/` (gitignored):
+From repository root, with the full ball video at
+`data/calibration/file-000.mp4` (gitignored):
 
 ```bash
 # Import real frames + install bg_clean + marker_rest (does not copy polycalib from GelSight)
 python3 scripts/calibration/import_advisor_tactile_videos.py --install-bg
 
-# Ball polycalib (6 mm indent video → Taxim fit); see scripts/calibration/install_taxim_polycalib.py
-python3 scripts/calibration/build_xense_polycalib.py   # or manual Taxim workflow
-python3 scripts/calibration/install_taxim_polycalib.py --src data/calibration/tactile/ball_calib_raw/polycalib.npz
+# Select 50 training + 50 temporally separated validation frames, remove the
+# complete marker cores/fringes, fit Taxim in RGB order, and install the result.
+python3 scripts/calibration/build_xense_polycalib.py \
+  --video data/calibration/file-000.mp4 \
+  --num-ball 50 --num-validation 50 \
+  --taxim-repo third_party/Taxim
+python3 scripts/calibration/install_taxim_polycalib.py \
+  --polycalib data/calibration/tactile/ball_calib_raw/polycalib.npz \
+  --bg data/calibration/tactile/advisor_processed/bg_clean.jpg
 ```
+
+The fit input is always marker-free. `advisor_processed/bg.jpg` is the verified
+no-contact image **with** markers and `advisor_processed/bg_clean.jpg` is its
+paired marker-free image. `ball_calib_raw/marker_mask_report.json` records the
+post-inpaint residual-marker check, while
+`ball_calib_raw_validation/` is never used to fit the polynomial table.
 
 Joint fit output (`data/calibration/tactile/fitted_params.json`) is also local-only; scripts load it when present.
 

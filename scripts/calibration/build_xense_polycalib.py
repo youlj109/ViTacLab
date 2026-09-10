@@ -90,6 +90,54 @@ def _mask_rgb(mask: np.ndarray) -> np.ndarray:
     return np.repeat((mask > 0).astype(np.uint8)[:, :, None] * 255, 3, axis=2)
 
 
+def _align_frame_background(
+    frame_rgb: np.ndarray,
+    background_rgb: np.ndarray,
+    *,
+    marker_mask: np.ndarray,
+    center_xy: tuple[float, float],
+    contact_radius_px: float,
+) -> tuple[np.ndarray, dict[str, float]]:
+    """Remove frame-wise low-frequency exposure drift using non-contact pixels."""
+    height, width = frame_rgb.shape[:2]
+    yy, xx = np.mgrid[:height, :width]
+    cx, cy = center_xy
+    contact_exclusion = (xx - cx) ** 2 + (yy - cy) ** 2 <= (1.45 * contact_radius_px) ** 2
+    valid = ~contact_exclusion & ~marker_mask.astype(bool)
+    # A stride keeps the robust fit inexpensive while retaining broad image coverage.
+    sample = valid & ((xx % 3) == 0) & ((yy % 3) == 0)
+    xn = (xx.astype(np.float64) - 0.5 * (width - 1)) / max(0.5 * width, 1.0)
+    yn = (yy.astype(np.float64) - 0.5 * (height - 1)) / max(0.5 * height, 1.0)
+    design = np.stack((xn * xn, yn * yn, xn * yn, xn, yn, np.ones_like(xn)), axis=-1)
+    delta = frame_rgb.astype(np.float64) - background_rgb.astype(np.float64)
+    bias = np.zeros_like(delta)
+    fit_rmse: list[float] = []
+
+    for channel in range(3):
+        a = design[sample]
+        b = delta[:, :, channel][sample]
+        keep = np.ones(b.shape, dtype=bool)
+        coeff = np.zeros(6, dtype=np.float64)
+        for _ in range(3):
+            coeff, *_ = np.linalg.lstsq(a[keep], b[keep], rcond=None)
+            residual = b - a @ coeff
+            median = float(np.median(residual[keep]))
+            mad = float(np.median(np.abs(residual[keep] - median)))
+            robust_sigma = max(1.4826 * mad, 0.5)
+            updated = np.abs(residual - median) <= 3.5 * robust_sigma
+            if int(updated.sum()) < 100 or np.array_equal(updated, keep):
+                break
+            keep = updated
+        bias[:, :, channel] = design @ coeff
+        fit_rmse.append(float(np.sqrt(np.mean((b[keep] - (a[keep] @ coeff)) ** 2))))
+
+    aligned = np.clip(frame_rgb.astype(np.float64) - bias, 0.0, 255.0).astype(np.uint8)
+    return aligned, {
+        "background_bias_abs_mean": float(np.mean(np.abs(bias))),
+        "background_fit_rmse_mean": float(np.mean(fit_rmse)),
+    }
+
+
 def _build_datapack(
     data_dir: Path,
     *,
@@ -135,14 +183,20 @@ def _build_datapack(
         marker_rest,
         radius_px=marker_radius_px,
     )
-    bg_bgr = _rgb_to_bgr(bg_clean_rgb)
+    # The ViTacLab renderer interprets grad_r/g/b and its background as RGB.
+    # Keep the custom data pack explicitly RGB end-to-end; OpenCV's original
+    # Taxim GUI stored BGR while still naming channel 0 "r", which swaps red and
+    # blue when the resulting table is consumed by this renderer.
+    fit_background = bg_clean_rgb.copy()
 
     imgs: list[np.ndarray] = []
+    imgs_unaligned: list[np.ndarray] = []
     marker_masks: list[np.ndarray] = []
     centers: list[list[float]] = []
     radii: list[float] = []
     names: list[str] = []
     records: list[dict] = []
+    annotation_tiles: list[np.ndarray] = []
     diagnostics_dir = data_dir / "diagnostics" / "polycalib_marker_masking"
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
     _save_rgb(bg_rgb, diagnostics_dir / "background_raw.png")
@@ -156,13 +210,8 @@ def _build_datapack(
             raise ValueError(
                 f"Calibration frame {p} has shape {frame_rgb.shape}, expected {bg_rgb.shape}"
             )
-        (cy, cx), radius_px, diff_mean = _contact_blob(bg_rgb, frame_rgb)
-
-        if radius_px < 3.0:
-            h, w = frame_rgb.shape[:2]
-            cy, cx, radius_px = h / 2.0, w / 2.0, max(radius_px, 8.0)
-
-        # Refine from the rest positions on every frame: markers can move under contact.
+        # Remove the printed pattern first. Detecting a circle on the raw frame
+        # lets moving markers bias both the fitted center and radius.
         tracked_marker_mask = build_marker_inpaint_mask(
             frame_rgb,
             marker_rest,
@@ -176,15 +225,39 @@ def _build_datapack(
                 radius_px=direct_marker_radius,
                 refine_centers=False,
             )
-            marker_mask = cv2.bitwise_or(tracked_marker_mask, direct_marker_mask)
+            marker_core_mask = cv2.bitwise_or(tracked_marker_mask, direct_marker_mask)
         else:
-            marker_mask = tracked_marker_mask
+            marker_core_mask = tracked_marker_mask
+        # Marker detection uses a tight core mask. Expand the final repair/fit
+        # exclusion once, after merging tracked and directly detected centers,
+        # so the gray optical fringe is removed without double-padding two masks.
+        repair_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        marker_mask = cv2.dilate(marker_core_mask, repair_kernel, iterations=1)
         frame_clean_rgb = _inpaint_with_mask(frame_rgb, marker_mask)
+        marker_residual = measure_marker_residual(frame_clean_rgb, marker_rest)
 
-        # Official Taxim stores touch_center as OpenCV coordinates [x, y]. Circle
-        # detection stays on the raw frame, while the optical model sees
-        # marker-free intensities.
-        imgs.append(_rgb_to_bgr(frame_clean_rgb))
+        ball_radius_px = XENSE_BALL_RADIUS_MM / float(pixmm)
+        (cy, cx), radius_px, diff_mean = _contact_blob(
+            bg_clean_rgb,
+            frame_clean_rgb,
+            max_radius_px=ball_radius_px,
+        )
+        if radius_px < 3.0:
+            h, w = frame_rgb.shape[:2]
+            cy, cx, radius_px = h / 2.0, w / 2.0, max(radius_px, 8.0)
+
+        frame_aligned_rgb, background_alignment = _align_frame_background(
+            frame_clean_rgb,
+            bg_clean_rgb,
+            marker_mask=marker_mask,
+            center_xy=(float(cx), float(cy)),
+            contact_radius_px=float(radius_px),
+        )
+
+        # Official Taxim stores touch_center as OpenCV coordinates [x, y]. Both
+        # the circle detector and the optical fit now use marker-free images.
+        imgs.append(frame_aligned_rgb)
+        imgs_unaligned.append(frame_clean_rgb)
         marker_masks.append(marker_mask > 0)
         centers.append([float(cx), float(cy)])
         radii.append(float(radius_px))
@@ -199,20 +272,55 @@ def _build_datapack(
                 "pixmm": pixmm,
                 "direct_marker_count": int(direct_markers.shape[0]),
                 "marker_mask_fraction": float(np.mean(marker_mask > 0)),
+                "post_inpaint_residual_markers": int(marker_residual["residual_markers"]),
+                "post_inpaint_residual_ratio": float(marker_residual["residual_ratio"]),
+                **background_alignment,
             }
         )
+
+        # Montage the exact marker-free, background-aligned image entering the
+        # optical fit so annotation review cannot be confused with raw inputs.
+        overlay = frame_aligned_rgb.copy()
+        cv2.circle(
+            overlay,
+            (int(round(cx)), int(round(cy))),
+            int(round(radius_px)),
+            (40, 255, 40),
+            thickness=2,
+        )
+        cv2.drawMarker(
+            overlay,
+            (int(round(cx)), int(round(cy))),
+            (255, 255, 255),
+            markerType=cv2.MARKER_CROSS,
+            markerSize=12,
+            thickness=2,
+        )
+        cv2.putText(
+            overlay,
+            f"{p.name} r={radius_px:.1f}px",
+            (8, 24),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        annotation_tiles.append(cv2.resize(overlay, (140, 245), interpolation=cv2.INTER_AREA))
 
         if frame_index == 0:
             _save_rgb(frame_rgb, diagnostics_dir / "ball_000_raw.png")
             _save_rgb(_mask_rgb(marker_mask), diagnostics_dir / "ball_000_marker_mask.png")
             _save_rgb(frame_clean_rgb, diagnostics_dir / "ball_000_clean.png")
+            _save_rgb(frame_aligned_rgb, diagnostics_dir / "ball_000_background_aligned.png")
 
     out = data_dir / "dataPack.npz"
     np.savez(
         out,
-        f0=bg_bgr,
-        f0_raw=_rgb_to_bgr(bg_rgb),
+        f0=fit_background,
+        f0_raw=bg_rgb,
         imgs=np.stack(imgs, axis=0),
+        imgs_unaligned=np.stack(imgs_unaligned, axis=0),
         marker_masks=np.stack(marker_masks, axis=0),
         marker_rest_xy=marker_rest.astype(np.float32),
         marker_radius_px=np.asarray(marker_radius_px, dtype=np.float32),
@@ -220,12 +328,28 @@ def _build_datapack(
         touch_center=np.asarray(centers, dtype=np.float32),
         touch_radius=np.asarray(radii, dtype=np.float32),
         names=np.asarray(names),
-        img_size=np.asarray(bg_bgr.shape),
+        img_size=np.asarray(fit_background.shape),
+        color_order=np.asarray("RGB"),
     )
+    if annotation_tiles:
+        columns = 10
+        rows = []
+        for start in range(0, len(annotation_tiles), columns):
+            row = annotation_tiles[start : start + columns]
+            if len(row) < columns:
+                row.extend([np.zeros_like(annotation_tiles[0])] * (columns - len(row)))
+            rows.append(np.concatenate(row, axis=1))
+        _save_rgb(
+            np.concatenate(rows, axis=0),
+            diagnostics_dir / "contact_annotation_montage.png",
+        )
 
     ann_path = data_dir / "auto_annotation.json"
     ann_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
     frame_mask_fractions = np.asarray([r["marker_mask_fraction"] for r in records], dtype=np.float64)
+    frame_residual_counts = np.asarray(
+        [r["post_inpaint_residual_markers"] for r in records], dtype=np.int64
+    )
     mask_report = {
         "marker_count": int(marker_rest.shape[0]),
         "marker_radius_px": float(marker_radius_px),
@@ -236,6 +360,9 @@ def _build_datapack(
         "frame_mask_fraction_min": float(np.min(frame_mask_fractions)),
         "frame_mask_fraction_mean": float(np.mean(frame_mask_fractions)),
         "frame_mask_fraction_max": float(np.max(frame_mask_fractions)),
+        "post_inpaint_residual_markers_mean": float(np.mean(frame_residual_counts)),
+        "post_inpaint_residual_markers_max": int(np.max(frame_residual_counts)),
+        "post_inpaint_zero_residual_frame_count": int(np.count_nonzero(frame_residual_counts == 0)),
         "background_residual": measure_marker_residual(bg_clean_rgb, marker_rest),
         "fit_policy": "inpaint marker pixels, then exclude the same per-frame mask from polynomial fitting",
         "diagnostics_dir": str(diagnostics_dir),
@@ -269,7 +396,6 @@ def _run_poly_table_calib(
     from scipy.linalg import lstsq
 
     sys.path.insert(0, str(taxim_repo))
-    import Basics.params as pr  # noqa: WPS433
     import Basics.sensorParams as psp  # noqa: WPS433
     from Basics.Geometry import Circle  # noqa: WPS433
 
@@ -302,18 +428,11 @@ def _run_poly_table_calib(
     if "marker_masks" not in data_file.files:
         print("[WARN] dataPack has no marker_masks; fitting without marker exclusion")
 
-    kscale = pr.kscale
-    img_d = f0.astype("float")
-    bg_proc = f0.copy().astype("float")
-    for ch in range(img_d.shape[2]):
-        bg_proc[:, :, ch] = scipy.ndimage.gaussian_filter(img_d[:, :, ch], kscale)
-    frame_ = img_d
-    diff_threshold = pr.diffThreshold
-    d_i = np.mean(bg_proc - frame_, axis=2)
-    idx = np.nonzero(d_i < diff_threshold)
-    frame_mixing_per = pr.frameMixingPercentage
-    for ch in range(bg_proc.shape[2]):
-        bg_proc[:, :, ch][idx] = frame_mixing_per * bg_proc[:, :, ch][idx] + (1 - frame_mixing_per) * frame_[:, :, ch][idx]
+    # dataPack.f0 is the verified marker-free no-contact image. The original
+    # Taxim preprocessing was intended to suppress markers in its background;
+    # blurring this already-clean reference creates a synthetic full-frame color
+    # residual that the renderer can never reproduce consistently.
+    bg_proc = f0.astype(np.float64)
 
     def _interpolate(img: np.ndarray) -> np.ndarray:
         x = np.arange(0, img.shape[1])
@@ -402,7 +521,11 @@ def _run_poly_table_calib(
         yvalid = yq[valid_id]
         rvalid = np.sqrt(xvalid * xvalid + yvalid * yvalid)
         gradxseq = np.arcsin(np.clip(rvalid / ball_radius_pix, 0.0, 1.0))
-        gradyseq = np.arctan2(-yvalid, -xvalid)
+        # Runtime converts documented positive penetration to a negative Taxim
+        # surface before taking its gradient, so its gradient points outward.
+        # Use the same convention here (the previous inward direction differed
+        # by pi and swapped the opposed cyan/red illumination response).
+        gradyseq = np.arctan2(yvalid, xvalid)
         binm = bins - 1
         x_binr = 0.5 * np.pi / binm
         y_binr = 2 * np.pi / binm
@@ -412,6 +535,7 @@ def _run_poly_table_calib(
         value_map = np.zeros((bins, bins, 3))
         loc_x_map = np.zeros((bins, bins))
         loc_y_map = np.zeros((bins, bins))
+        bin_counts = np.zeros((bins, bins), dtype=np.int32)
         edge_ratio = np.clip(rvalid / max(float(radius), 1.0e-6), 0.0, 1.0)
         edge_weight = edge_min + (1.0 - edge_min) * ((1.0 - edge_ratio) ** edge_pow)
         valid_r = dI[:, :, 0][valid_id] * edge_weight
@@ -419,11 +543,18 @@ def _run_poly_table_calib(
         valid_b = dI[:, :, 2][valid_id] * edge_weight
         valid_x = xqq[valid_id]
         valid_y = yqq[valid_id]
-        value_map[idx_x, idx_y, 0] += valid_r
-        value_map[idx_x, idx_y, 1] += valid_g
-        value_map[idx_x, idx_y, 2] += valid_b
-        loc_x_map[idx_x, idx_y] += valid_x
-        loc_y_map[idx_x, idx_y] += valid_y
+        # Repeated NumPy advanced-index writes do not accumulate. Use add.at and
+        # average each occupied bin so one arbitrary pixel cannot define a bin.
+        np.add.at(value_map[:, :, 0], (idx_x, idx_y), valid_r)
+        np.add.at(value_map[:, :, 1], (idx_x, idx_y), valid_g)
+        np.add.at(value_map[:, :, 2], (idx_x, idx_y), valid_b)
+        np.add.at(loc_x_map, (idx_x, idx_y), valid_x)
+        np.add.at(loc_y_map, (idx_x, idx_y), valid_y)
+        np.add.at(bin_counts, (idx_x, idx_y), 1)
+        occupied = bin_counts > 0
+        value_map[occupied] /= bin_counts[occupied, None]
+        loc_x_map[occupied] /= bin_counts[occupied]
+        loc_y_map[occupied] /= bin_counts[occupied]
         loc_x_map = _interpolate(loc_x_map)
         loc_y_map = _interpolate(loc_y_map)
         value_map[:, :, 0] = _interpolate(value_map[:, :, 0])
@@ -488,8 +619,13 @@ def main() -> int:
         type=str,
         default=str(repo_root() / "data/calibration/tactile/ball_calib_raw"),
     )
-    parser.add_argument("--video", type=str, default=str(repo_root() / "logs/file-000.mp4"))
+    parser.add_argument(
+        "--video",
+        type=str,
+        default=str(repo_root() / "data/calibration/file-000.mp4"),
+    )
     parser.add_argument("--num-ball", type=int, default=50)
+    parser.add_argument("--num-validation", type=int, default=50)
     parser.add_argument("--skip-import", action="store_true")
     parser.add_argument("--taxim-repo", type=str, default="")
     parser.add_argument(
@@ -520,14 +656,14 @@ def main() -> int:
     parser.add_argument(
         "--deep-weight-gamma",
         type=float,
-        default=1.0,
-        help="Weight larger contact-radius samples higher during poly fit (1.0=linear, >1 deep-biased).",
+        default=0.0,
+        help="Weight larger contact-radius samples higher during poly fit (0=uniform, 1=linear).",
     )
     parser.add_argument(
         "--edge-weight-min",
         type=float,
-        default=0.20,
-        help="Minimum per-pixel weight near contact rim in ball calibration fitting (0~1). Lower softens edge response.",
+        default=1.0,
+        help="Minimum fitted response at the contact rim (1 preserves measured calibration amplitude).",
     )
     parser.add_argument(
         "--edge-weight-power",
@@ -561,6 +697,8 @@ def main() -> int:
             str(data_dir),
             "--num-ball",
             str(int(args.num_ball)),
+            "--num-validation",
+            str(int(args.num_validation)),
             "--reference-bg",
             str(bg_raw_path),
         ]
@@ -574,6 +712,15 @@ def main() -> int:
         bg_clean_path=bg_clean_path,
         marker_rest_path=marker_rest_path,
     )
+    validation_dir = data_dir.parent / f"{data_dir.name}_validation"
+    if (validation_dir / "ball").is_dir():
+        _build_datapack(
+            validation_dir,
+            pixmm=pixmm,
+            bg_raw_path=bg_raw_path,
+            bg_clean_path=bg_clean_path,
+            marker_rest_path=marker_rest_path,
+        )
     polycalib_path = _run_poly_table_calib(
         data_dir,
         taxim_repo,
@@ -595,10 +742,12 @@ def main() -> int:
     if not bg_install:
         paired_bg = data_dir / "bg_clean.png"
         advisor_bg = repo_root() / "data/calibration/tactile/advisor_processed/bg_clean.jpg"
-        if paired_bg.is_file():
-            bg_install = str(paired_bg)
-        elif advisor_bg.is_file():
+        # Prefer the user-verified marker-free no-contact reference directly.
+        # The generated PNG is only a paired fallback for custom datasets.
+        if advisor_bg.is_file():
             bg_install = str(advisor_bg)
+        elif paired_bg.is_file():
+            bg_install = str(paired_bg)
     if bg_install:
         install_cmd.extend(["--bg", bg_install])
 

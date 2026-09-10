@@ -8,7 +8,7 @@ Selects:
 Usage::
 
     python3 scripts/calibration/import_ball_calib_video.py
-    python3 scripts/calibration/import_ball_calib_video.py --video logs/file-000.mp4 --num-ball 50
+    python3 scripts/calibration/import_ball_calib_video.py --video data/calibration/file-000.mp4 --num-ball 50
 """
 
 from __future__ import annotations
@@ -41,11 +41,7 @@ class FrameScore:
     diff: float
     center_yx: tuple[float, float]
     radius_px: float
-
-
-def _require_ffmpeg() -> None:
-    if shutil.which("ffmpeg") is None:
-        raise RuntimeError("ffmpeg not found")
+    chroma_peak: float
 
 
 def _load_rgb(path: Path) -> np.ndarray:
@@ -79,11 +75,27 @@ def _save_rgb(arr: np.ndarray, path: Path) -> None:
 
 def _extract_frames(mp4: Path, out_dir: Path) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["ffmpeg", "-y", "-i", str(mp4), "-vsync", "0", str(out_dir / "f%04d.png")],
-        check=True,
-        capture_output=True,
-    )
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is not None:
+        subprocess.run(
+            [ffmpeg, "-y", "-i", str(mp4), "-vsync", "0", str(out_dir / "f%04d.png")],
+            check=True,
+            capture_output=True,
+        )
+    else:
+        import cv2
+
+        capture = cv2.VideoCapture(str(mp4))
+        if not capture.isOpened():
+            raise RuntimeError(f"Could not decode video with OpenCV: {mp4}")
+        index = 0
+        while True:
+            ok, frame_bgr = capture.read()
+            if not ok:
+                break
+            cv2.imwrite(str(out_dir / f"f{index:04d}.png"), frame_bgr)
+            index += 1
+        capture.release()
     return sorted(out_dir.glob("f*.png"))
 
 
@@ -101,33 +113,103 @@ def _mean_abs_diff(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.abs(a.astype(np.float32) - b.astype(np.float32)).mean())
 
 
-def _contact_blob(bg: np.ndarray, frame: np.ndarray) -> tuple[tuple[float, float], float, float]:
-    """Return ((cy, cx), radius_px, diff_mean) from rgb diff blob."""
+def _chromatic_response(bg: np.ndarray, frame: np.ndarray) -> np.ndarray:
+    frame_f = frame.astype(np.float32)
+    bg_f = bg.astype(np.float32)
+    delta_chroma = (frame_f - frame_f.mean(axis=2, keepdims=True)) - (
+        bg_f - bg_f.mean(axis=2, keepdims=True)
+    )
+    response = np.sqrt(np.sum(delta_chroma * delta_chroma, axis=2))
     import cv2
 
-    diff = np.abs(frame.astype(np.float32) - bg.astype(np.float32)).mean(axis=2)
-    diff_blur = cv2.GaussianBlur(diff, (9, 9), 0)
-    peak = float(diff_blur.max())
+    return cv2.GaussianBlur(response, (0, 0), 5.0)
+
+
+def _contact_blob(
+    bg: np.ndarray,
+    frame: np.ndarray,
+    *,
+    max_radius_px: float | None = None,
+) -> tuple[tuple[float, float], float, float]:
+    """Return a physically bounded ball-contact circle from chromatic response.
+
+    Xense contact illumination is bipolar (cyan on one side and red on the
+    other), while exposure drift and moving printed markers dominate a naive
+    absolute RGB difference.  Detect the channel-centered response instead,
+    join the two illumination lobes, and use an area-equivalent circle rather
+    than the enclosing circle of a diffuse halo.
+    """
+    import cv2
+
+    frame_f = frame.astype(np.float32)
+    bg_f = bg.astype(np.float32)
+    response = _chromatic_response(bg, frame)
+    peak = float(response.max())
     if peak < 1.0:
-        h, w = diff.shape
-        return (h / 2.0, w / 2.0), 0.0, float(diff.mean())
+        h, w = response.shape
+        return (h / 2.0, w / 2.0), 0.0, float(np.abs(frame_f - bg_f).mean())
 
-    thr = max(2.0, 0.12 * peak)
-    mask = (diff_blur >= thr).astype(np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
-    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not cnts:
-        h, w = diff.shape
-        return (h / 2.0, w / 2.0), 0.0, float(diff.mean())
+    # A lower chromatic threshold keeps both opposed illumination lobes. Using
+    # only the strongest lobe can move the center by 20--35 px on asymmetric
+    # frames (for example ball frame 037).
+    threshold = max(float(np.percentile(response, 90.0)), 0.30 * peak)
+    mask = (response >= threshold).astype(np.uint8)
+    if max_radius_px is None:
+        max_radius_px = 0.18 * min(response.shape)
+    close_size = max(9, int(round(0.75 * float(max_radius_px))))
+    if close_size % 2 == 0:
+        close_size += 1
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_size, close_size))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
 
-    cnt = max(cnts, key=cv2.contourArea)
-    area = float(cv2.contourArea(cnt))
-    if area < 20.0:
-        h, w = diff.shape
-        return (h / 2.0, w / 2.0), 0.0, float(diff.mean())
+    count, labels, stats, centers = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if count <= 1:
+        h, w = response.shape
+        return (h / 2.0, w / 2.0), 0.0, float(np.abs(frame_f - bg_f).mean())
 
-    (cx, cy), radius = cv2.minEnclosingCircle(cnt)
-    return (float(cy), float(cx)), float(radius), float(diff.mean())
+    scores = [float(response[labels == label].sum()) for label in range(1, count)]
+    label = 1 + int(np.argmax(scores))
+    area = int(stats[label, cv2.CC_STAT_AREA])
+    if area < 20:
+        h, w = response.shape
+        return (h / 2.0, w / 2.0), 0.0, float(np.abs(frame_f - bg_f).mean())
+
+    cx, cy = centers[label]
+    radius = float(np.sqrt(area / np.pi))
+
+    # The binary component centroid is biased toward whichever illumination
+    # lobe is brighter. Estimate the geometric center as the midpoint between
+    # the opposed red and cyan lobes when both are confidently present.
+    delta_rgb = frame_f - bg_f
+    red_axis = delta_rgb[:, :, 0] - 0.5 * (delta_rgb[:, :, 1] + delta_rgb[:, :, 2])
+    red_axis = cv2.GaussianBlur(red_axis, (0, 0), 4.0)
+    region = labels == label
+    region_values = red_axis[region]
+    median = float(np.median(region_values))
+    spread = max(float(np.percentile(np.abs(region_values - median), 75.0)), 1.0)
+    positive = np.where(region, np.maximum(red_axis - (median + 0.15 * spread), 0.0), 0.0)
+    negative = np.where(region, np.maximum((median - 0.15 * spread) - red_axis, 0.0), 0.0)
+
+    def _weighted_center(weights: np.ndarray) -> tuple[float, float] | None:
+        total = float(weights.sum())
+        if total <= 1.0e-6:
+            return None
+        yy, xx = np.mgrid[: weights.shape[0], : weights.shape[1]]
+        return float((weights * xx).sum() / total), float((weights * yy).sum() / total)
+
+    positive_center = _weighted_center(positive)
+    negative_center = _weighted_center(negative)
+    if positive_center is not None and negative_center is not None:
+        separation = float(np.linalg.norm(np.subtract(positive_center, negative_center)))
+        midpoint = 0.5 * (np.asarray(positive_center) + np.asarray(negative_center))
+        midpoint_shift = float(np.linalg.norm(midpoint - np.asarray((cx, cy))))
+        if 0.25 * radius <= separation <= 2.25 * radius and midpoint_shift <= 0.35 * radius:
+            cx, cy = float(midpoint[0]), float(midpoint[1])
+
+    # A projected spherical contact cannot extend past the ball's equator.
+    # Keep a small margin so the singular 90-degree rim never enters a bin.
+    radius = min(radius, 0.97 * float(max_radius_px))
+    return (float(cy), float(cx)), radius, float(np.abs(frame_f - bg_f).mean())
 
 
 def _pick_bg_frame(frames: list[Path], *, skip: int) -> tuple[Path, dict]:
@@ -188,7 +270,7 @@ def main() -> int:
     parser.add_argument(
         "--video",
         type=str,
-        default=str(repo_root() / "logs" / "file-000.mp4"),
+        default=str(repo_root() / "data" / "calibration" / "file-000.mp4"),
         help="Advisor 6mm ball calibration mp4 (400x700).",
     )
     parser.add_argument(
@@ -204,10 +286,27 @@ def main() -> int:
         help="Explicit true no-contact RGB frame; defaults to advisor_processed/bg.jpg.",
     )
     parser.add_argument("--num-ball", type=int, default=50)
+    parser.add_argument(
+        "--num-validation",
+        type=int,
+        default=50,
+        help="Additional temporally separated contact frames reserved from fitting.",
+    )
+    parser.add_argument(
+        "--validation-temporal-gap",
+        type=int,
+        default=3,
+        help="Exclude validation frames within this many video frames of any training frame.",
+    )
     parser.add_argument("--min-diff", type=float, default=2.0, help="Min mean |rgb-bg| to count as contact.")
+    parser.add_argument(
+        "--min-chroma-peak",
+        type=float,
+        default=35.0,
+        help="Minimum blurred chromatic-response peak; rejects no-contact/exposure-only frames.",
+    )
     args = parser.parse_args()
 
-    _require_ffmpeg()
     video = Path(args.video).expanduser().resolve()
     out_dir = Path(args.out_dir).expanduser().resolve()
     out_w, out_h = XENSE_LAB_HW
@@ -218,12 +317,17 @@ def main() -> int:
 
     bg_dir = out_dir / "bg"
     ball_dir = out_dir / "ball"
+    validation_dir = out_dir.parent / f"{out_dir.name}_validation"
+    validation_ball_dir = validation_dir / "ball"
     if bg_dir.exists():
         shutil.rmtree(bg_dir)
     if ball_dir.exists():
         shutil.rmtree(ball_dir)
+    if validation_ball_dir.exists():
+        shutil.rmtree(validation_ball_dir)
     bg_dir.mkdir(parents=True)
     ball_dir.mkdir(parents=True)
+    validation_ball_dir.mkdir(parents=True)
 
     with tempfile.TemporaryDirectory(prefix="vitac_ball_") as tmp:
         frames = _extract_frames(video, Path(tmp) / "frames")
@@ -258,16 +362,54 @@ def main() -> int:
             diff = _mean_abs_diff(rgb, bg_rgb)
             if diff < float(args.min_diff):
                 continue
-            center_yx, radius_px, _ = _contact_blob(bg_rgb, rgb)
+            chroma_peak = float(_chromatic_response(bg_rgb, rgb).max())
+            if chroma_peak < float(args.min_chroma_peak):
+                continue
+            max_radius_px = XENSE_BALL_RADIUS_MM / (XENSE_SENSING_MM[0] / out_w)
+            center_yx, radius_px, _ = _contact_blob(
+                bg_rgb,
+                rgb,
+                max_radius_px=max_radius_px,
+            )
             if radius_px < 3.0:
                 continue
-            scored.append(FrameScore(path=p, diff=diff, center_yx=center_yx, radius_px=radius_px))
+            cy, cx = center_yx
+            if (
+                cx - radius_px < 0
+                or cx + radius_px >= out_w
+                or cy - radius_px < 0
+                or cy + radius_px >= out_h
+            ):
+                continue
+            scored.append(
+                FrameScore(
+                    path=p,
+                    diff=diff,
+                    center_yx=center_yx,
+                    radius_px=radius_px,
+                    chroma_peak=chroma_peak,
+                )
+            )
 
         if len(scored) < 10:
             print(f"[ERR] only {len(scored)} contact frames (need >=10)", file=sys.stderr)
             return 1
 
         selected = _select_diverse(scored, target=int(args.num_ball))
+        selected_indices = {int(item.path.stem.lstrip("f")) for item in selected}
+        temporal_gap = max(int(args.validation_temporal_gap), 0)
+        validation_candidates = [
+            item
+            for item in scored
+            if all(
+                abs(int(item.path.stem.lstrip("f")) - train_index) > temporal_gap
+                for train_index in selected_indices
+            )
+        ]
+        validation_selected = _select_diverse(
+            validation_candidates,
+            target=int(args.num_validation),
+        )
         ball_records: list[dict] = []
         for i, item in enumerate(selected):
             dst = ball_dir / f"{i:03d}.png"
@@ -279,6 +421,21 @@ def main() -> int:
                     "diff": item.diff,
                     "center_yx": [item.center_yx[0], item.center_yx[1]],
                     "radius_px": item.radius_px,
+                    "chroma_peak": item.chroma_peak,
+                }
+            )
+        validation_records: list[dict] = []
+        for i, item in enumerate(validation_selected):
+            dst = validation_ball_dir / f"{i:03d}.png"
+            _save_rgb(_load_rgb(item.path), dst)
+            validation_records.append(
+                {
+                    "file": dst.name,
+                    "source_frame": item.path.name,
+                    "diff": item.diff,
+                    "center_yx": [item.center_yx[0], item.center_yx[1]],
+                    "radius_px": item.radius_px,
+                    "chroma_peak": item.chroma_peak,
                 }
             )
 
@@ -294,12 +451,20 @@ def main() -> int:
         "num_contact_candidates": len(scored),
         "num_ball_selected": len(selected),
         "ball_frames": ball_records,
+        "num_validation_selected": len(validation_selected),
+        "validation_temporal_gap": temporal_gap,
+        "validation_dir": str(validation_dir),
+        "validation_frames": validation_records,
     }
     meta_path = out_dir / "import_metadata.json"
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     print(f"[OK] bg -> {bg_dir / 'no_contact.png'}")
     print(f"[OK] ball frames -> {ball_dir} ({len(selected)} images)")
+    print(
+        f"[OK] held-out ball frames -> {validation_ball_dir} "
+        f"({len(validation_selected)} images, temporal gap>{temporal_gap})"
+    )
     print(f"[OK] metadata -> {meta_path}")
     print("")
     print("[NEXT] python3 scripts/calibration/build_xense_polycalib.py")

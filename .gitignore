@@ -88,6 +88,7 @@ tests/
 **/tactile_record/*
 **/gelsight_r15_data/*
 vendor/
+third_party/Taxim/
 vitac_full_delivery_pack.tar.gz
 logs.zip
 source/ViTacLab/ViTacLab/assets.zip

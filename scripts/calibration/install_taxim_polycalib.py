@@ -105,9 +105,18 @@ def _install_polycalib(polycalib_src: Path, *, bg_src: Path | None) -> Path:
     print(f"[OK] polycalib -> {xense_dir / 'polycalib.npz'}")
 
     if bg_src is not None and bg_src.is_file():
-        _backup_if_exists(xense_dir / "bg_clean.jpg")
-        shutil.copy2(bg_src, xense_dir / "bg_clean.jpg")
-        print(f"[OK] bg_clean -> {xense_dir / 'bg_clean.jpg'}")
+        bg_dst = xense_dir / "bg_clean.jpg"
+        _backup_if_exists(bg_dst)
+        if bg_src.suffix.lower() in {".jpg", ".jpeg"}:
+            shutil.copy2(bg_src, bg_dst)
+        else:
+            # Do not copy PNG bytes under a .jpg suffix: some image loaders use
+            # the extension rather than the file signature. Preserve RGB order
+            # and create an actual JPEG when the generated paired bg is a PNG.
+            from PIL import Image
+
+            Image.open(bg_src).convert("RGB").save(bg_dst, quality=95, subsampling=0)
+        print(f"[OK] bg_clean -> {bg_dst}")
 
     return xense_dir
 

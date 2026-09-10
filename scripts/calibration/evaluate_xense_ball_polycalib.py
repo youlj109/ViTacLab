@@ -98,8 +98,14 @@ def main() -> int:
     out_dir = args.out_dir.expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     pack = np.load(data_dir / "dataPack.npz", allow_pickle=True)
-    real_clean = np.asarray(pack["imgs"], dtype=np.uint8)[..., ::-1].copy()
-    background = np.asarray(pack["f0"], dtype=np.uint8)[..., ::-1].copy()
+    color_order = str(np.asarray(pack["color_order"]).item()) if "color_order" in pack.files else "BGR"
+    real_clean = np.asarray(pack["imgs"], dtype=np.uint8)
+    background = np.asarray(pack["f0"], dtype=np.uint8)
+    if color_order.upper() == "BGR":
+        real_clean = real_clean[..., ::-1].copy()
+        background = background[..., ::-1].copy()
+    elif color_order.upper() != "RGB":
+        raise ValueError(f"Unsupported dataPack color_order: {color_order}")
     centers = np.asarray(pack["touch_center"], dtype=np.float64)
     radii = np.asarray(pack["touch_radius"], dtype=np.float64)
     marker_masks = np.asarray(pack["marker_masks"], dtype=bool)
@@ -133,10 +139,9 @@ def main() -> int:
             .cpu()
             .numpy()
         )
-        # Diagnostic ablation: the calibration builder uses inward-facing sphere
-        # directions, while the runtime renderer produces outward-facing gradients
-        # for its documented positive-penetration input. A negative height map
-        # aligns those conventions without changing gradient magnitude.
+        # Diagnostic ablation: an inverted height preserves gradient magnitude
+        # but rotates its direction by pi. The corrected calibration should make
+        # this variant worse than the documented positive-penetration input.
         sign_matched_prediction = (
             renderer.render(torch.from_numpy(-height_map).unsqueeze(0).to(args.device))[0]
             .detach()
@@ -221,9 +226,9 @@ def main() -> int:
         row = np.concatenate(
             [
                 _label(raw_rgb, f"{names[index]} raw real"),
-                _label(real_rgb, "marker-clean real"),
+                _label(real_rgb, "marker-clean + bg-aligned real"),
                 _label(sim_rgb, "current +depth replay"),
-                _label(sign_matched_rgb, "sign-matched replay (diagnostic)"),
+                _label(sign_matched_rgb, "inverted-depth replay (diagnostic)"),
                 _label(error, "|real-current| x4"),
                 _label(sign_matched_error, "|real-sign-matched| x4"),
                 _label(height_rgb, "sphere height"),
@@ -237,6 +242,7 @@ def main() -> int:
     sign_matched_rmse = np.asarray([float(row["sign_matched_response_rmse"]) for row in rows])
     summary = {
         "frame_count": len(rows),
+        "data_pack_color_order": color_order,
         "ball_radius_mm": ball_radius_mm,
         "mm_per_pixel": mm_per_pixel,
         "physical_ball_radius_px": ball_radius_px,
