@@ -84,6 +84,22 @@ def _label(rgb: np.ndarray, text: str) -> np.ndarray:
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
+def _label_above(rgb: np.ndarray, text: str) -> np.ndarray:
+    """Add a title strip without covering any full-frame sensor pixels."""
+    header = np.full((28, rgb.shape[1], 3), 18, dtype=np.uint8)
+    cv2.putText(
+        header,
+        text,
+        (6, 19),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.43,
+        (245, 245, 245),
+        1,
+        cv2.LINE_AA,
+    )
+    return np.concatenate((header, rgb), axis=0)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -133,6 +149,7 @@ def main() -> int:
     marker_rest = np.load(args.marker_rest.expanduser().resolve()).astype(np.float32)
     x0, y0, x1, y1 = ROI_XYXY
 
+    real_frames: list[np.ndarray] = []
     real_crops: list[np.ndarray] = []
     real_deltas: list[np.ndarray] = []
     height_maps: list[np.ndarray] = []
@@ -147,6 +164,7 @@ def main() -> int:
             center_xy=(200.0, 350.0),
             contact_radius_px=85.0,
         )
+        real_frames.append(real_aligned)
         real_crops.append(real_aligned[y0:y1, x0:x1])
         real_deltas.append(
             real_aligned[y0:y1, x0:x1].astype(np.float32)
@@ -163,11 +181,13 @@ def main() -> int:
     height_batch = torch.from_numpy(np.stack(height_maps, axis=0)).to(args.device)
     gain_rows: list[dict[str, object]] = []
     predictions: dict[float, list[np.ndarray]] = {}
+    full_predictions: dict[float, list[np.ndarray]] = {}
 
     for gain in args.gains:
         rendered = renderer.render(height_batch * float(gain)).detach().cpu().numpy()
         gain_metrics: list[dict[str, float | str]] = []
         gain_predictions: list[np.ndarray] = []
+        gain_full_predictions: list[np.ndarray] = []
         for index, case_id in enumerate(CASES):
             sim_aligned, _ = _align_frame_background(
                 rendered[index],
@@ -180,6 +200,7 @@ def main() -> int:
             sim_delta = sim_crop.astype(np.float32) - background[y0:y1, x0:x1].astype(np.float32)
             real_delta = real_deltas[index]
             gain_predictions.append(sim_crop)
+            gain_full_predictions.append(sim_aligned)
             gain_metrics.append(
                 {
                     "case_id": case_id,
@@ -196,6 +217,7 @@ def main() -> int:
                 }
             )
         predictions[float(gain)] = gain_predictions
+        full_predictions[float(gain)] = gain_full_predictions
         gain_rows.append(
             {
                 "gain": float(gain),
@@ -221,6 +243,21 @@ def main() -> int:
     panel = np.concatenate(panel_rows, axis=0)
     cv2.imwrite(str(out_dir / "depth_gain_contact_crops.png"), cv2.cvtColor(panel, cv2.COLOR_RGB2BGR))
 
+    full_panel_rows: list[np.ndarray] = []
+    for case_index, case_id in enumerate(CASES):
+        cells = [_label_above(real_frames[case_index], f"{case_id} real marker-free")]
+        for gain in args.gains:
+            peak = original_peaks_mm[case_index] * float(gain)
+            cells.append(
+                _label_above(
+                    full_predictions[float(gain)][case_index],
+                    f"gain={gain:.2f}, peak={peak:.2f}mm",
+                )
+            )
+        full_panel_rows.append(np.concatenate(cells, axis=1))
+    full_panel = np.concatenate(full_panel_rows, axis=0)
+    cv2.imwrite(str(out_dir / "depth_gain_full_frames.png"), cv2.cvtColor(full_panel, cv2.COLOR_RGB2BGR))
+
     payload = {
         "cases": list(CASES),
         "roi_xyxy": list(ROI_XYXY),
@@ -230,6 +267,7 @@ def main() -> int:
     (out_dir / "metrics.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(json.dumps({"gains": [{k: v for k, v in row.items() if k != "per_case"} for row in gain_rows]}, indent=2))
     print(f"[OK] {out_dir / 'depth_gain_contact_crops.png'}")
+    print(f"[OK] {out_dir / 'depth_gain_full_frames.png'}")
     simulation_app.close()
     return 0
 
