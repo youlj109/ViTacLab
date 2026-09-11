@@ -92,6 +92,12 @@ def label(image: np.ndarray, text: str) -> np.ndarray:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-root", type=Path, default=Path("logs/xense_marker_crisper"))
+    parser.add_argument(
+        "--baseline-root",
+        type=Path,
+        default=None,
+        help="Optional previous ViTacSim run to include as a fourth-column comparison.",
+    )
     parser.add_argument("--output", type=Path, default=Path("logs/xensim_official_comparison"))
     parser.add_argument("--nstep", type=int, default=3)
     parser.add_argument("--smooth-norm", type=int, default=5)
@@ -104,6 +110,11 @@ def main() -> None:
     vitac_bg = read_rgb(
         args.input_root / "normal_force/no_contact/vitacsim/tactile_rgb.png"
     )
+    baseline_bg = None
+    if args.baseline_root is not None:
+        baseline_bg = read_rgb(
+            args.baseline_root / "normal_force/no_contact/vitacsim/tactile_rgb.png"
+        )
 
     sensor = FemSensor(
         calibrate_file=PROJ_DIR / "assets/fem/g1-ws_table.npz",
@@ -144,20 +155,39 @@ def main() -> None:
         started = time.perf_counter()
         sensor.step(depth_mm, nstep=args.nstep)
         official = fit_size(sensor.get_image(), real_bg.shape[:2])
+        official_depth_mm = sensor.get_depth().copy()
         official_marker = sensor.get_marker().copy()
         elapsed = time.perf_counter() - started
 
         real = read_rgb(real_root / case / "rgb.png")
         vitac = fit_size(read_rgb(case_dir / "tactile_rgb_corrected.png"), real.shape[:2])
+        baseline = None
+        baseline_delta = None
+        if args.baseline_root is not None:
+            baseline = fit_size(
+                read_rgb(
+                    args.baseline_root
+                    / "normal_force"
+                    / case
+                    / "vitacsim"
+                    / "tactile_rgb_corrected.png"
+                ),
+                real.shape[:2],
+            )
         official = fit_size(official, real.shape[:2])
         real_bg_fit = fit_size(real_bg, real.shape[:2])
         vitac_bg_fit = fit_size(vitac_bg, real.shape[:2])
+        baseline_bg_fit = (
+            fit_size(baseline_bg, real.shape[:2]) if baseline_bg is not None else None
+        )
         official_bg_fit = fit_size(official_bg, real.shape[:2])
 
         # Background-subtracted signed RGB preserves the contact colour lobes
         # while removing each renderer's unrelated resting illumination.
         real_delta = real.astype(np.float32) - real_bg_fit.astype(np.float32)
         vitac_delta = vitac.astype(np.float32) - vitac_bg_fit.astype(np.float32)
+        if baseline is not None and baseline_bg_fit is not None:
+            baseline_delta = baseline.astype(np.float32) - baseline_bg_fit.astype(np.float32)
         official_delta = official.astype(np.float32) - official_bg_fit.astype(np.float32)
 
         ys, xs = np.nonzero(contact)
@@ -209,27 +239,39 @@ def main() -> None:
                 "official_xensim": marker_stats(official_marker_delta_px),
             },
         }
+        if baseline is not None and baseline_delta is not None:
+            case_metrics["full_rgb"]["baseline_vitacsim"] = metrics(real, baseline)
+            case_metrics["background_subtracted_rgb"]["baseline_vitacsim"] = metrics(
+                real_delta, baseline_delta
+            )
+            case_metrics["contact_roi_background_subtracted_rgb"]["baseline_vitacsim"] = metrics(
+                real_delta[roi], baseline_delta[roi]
+            )
+            case_metrics["contact_roi_signal_energy"]["baseline_vitacsim"] = signal_energy(
+                baseline_delta[roi]
+            )
         results["cases"][case] = case_metrics
         write_rgb(args.output / case / "official_xensim.png", official)
         write_rgb(args.output / case / "real.png", real)
         write_rgb(args.output / case / "vitacsim.png", vitac)
         np.save(args.output / case / "official_marker_displacement_px.npy", official_marker_delta_px)
-        row = np.hstack(
-            [
-                label(real, f"{case} real"),
-                label(vitac, "ViTacSim (ours)"),
-                label(official, "official XenseSim FEM"),
-            ]
+        np.save(args.output / case / "official_deformed_depth_mm.npy", official_depth_mm)
+        row_images = [label(real, f"{case} real")]
+        if baseline is not None:
+            row_images.append(label(baseline, "previous ViTacSim"))
+        row_images.extend(
+            [label(vitac, "hybrid ViTacSim"), label(official, "official XenseSim FEM")]
         )
+        row = np.hstack(row_images)
         write_rgb(args.output / case / "comparison.png", row)
         rows.append(row)
-        crop_row = np.hstack(
-            [
-                label(real[roi], f"{case} real crop"),
-                label(vitac[roi], "ViTacSim crop"),
-                label(official[roi], "official FEM crop"),
-            ]
+        crop_images = [label(real[roi], f"{case} real crop")]
+        if baseline is not None:
+            crop_images.append(label(baseline[roi], "previous ViTacSim crop"))
+        crop_images.extend(
+            [label(vitac[roi], "hybrid ViTacSim crop"), label(official[roi], "official FEM crop")]
         )
+        crop_row = np.hstack(crop_images)
         write_rgb(args.output / case / "contact_crop_comparison.png", crop_row)
         crop_rows.append(crop_row)
         print(
@@ -239,7 +281,12 @@ def main() -> None:
             f"official={case_metrics['background_subtracted_rgb']['official_xensim']['mae']:.3f}"
         )
 
-    write_rgb(args.output / "all_masses_real_ours_official.png", np.vstack(rows))
+    montage_name = (
+        "all_masses_real_previous_hybrid_official.png"
+        if args.baseline_root is not None
+        else "all_masses_real_ours_official.png"
+    )
+    write_rgb(args.output / montage_name, np.vstack(rows))
     write_rgb(args.output / "all_masses_contact_crops.png", np.vstack(crop_rows))
     with (args.output / "metrics.json").open("w", encoding="utf-8") as stream:
         json.dump(results, stream, indent=2)

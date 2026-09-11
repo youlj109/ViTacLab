@@ -103,6 +103,12 @@ class GelSightRenderCfg:
     """Gain on Taxim RGB polynomial response before adding background."""
     taxim_smoothing_kernel_size: int = 5
     """Gaussian smoothing kernel size for height map before Taxim gradient lookup."""
+    taxim_normal_smoothing_kernel_size: int = 1
+    """Gaussian smoothing kernel for gradient vectors before Taxim normal lookup.
+
+    Unlike height smoothing, this changes only optical surface normals. A value
+    of 1 disables the operation and preserves the corrected height map exactly.
+    """
     taxim_contact_edge_denoise_blend: float = 0.0
     """Blend ratio for depth-domain denoising on the contact boundary band before Taxim lookup."""
     taxim_contact_edge_denoise_kernel_size: int = 9
@@ -135,6 +141,12 @@ class GelSightRenderCfg:
     """Global contact-region Gaussian PSF blend ratio to reduce overly crisp synthetic contours."""
     taxim_contact_psf_kernel_size: int = 5
     """Gaussian kernel size used by contact PSF blend (odd integer; even values are auto-adjusted)."""
+    taxim_response_mesh_scale: int = 1
+    """Downsample factor for mesh-like interpolation of contact RGB response only."""
+    taxim_response_mesh_smooth_iterations: int = 0
+    """Number of 3x3 smoothing passes at the reduced response resolution."""
+    taxim_response_mesh_blend: float = 1.0
+    """Blend weight of mesh-interpolated contact response; background and markers are unaffected."""
     taxim_illumination_reference_path: str = ""
     """Optional real no-contact image path used to build low-frequency illumination alignment maps."""
     taxim_illumination_blend: float = 0.0

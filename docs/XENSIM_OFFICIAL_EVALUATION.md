@@ -73,6 +73,48 @@ logs/xensim_official_comparison_best/metrics.json
 logs/xensim_official_comparison_best/summary.json
 ```
 
+## Hybrid optical-response improvement
+
+The official `get_depth()` result does not justify replacing the calibrated
+force-to-depth reconstruction. After matching its 175×100 output resolution,
+the official indentation and ViTacSim input have full-frame correlations of
+0.991–0.995, and their peak-depth ratios are 1.000 for all six loads. Rendering
+the official depth through the existing Taxim path also leaves the contact ROI
+MAE essentially unchanged. The useful difference is therefore the official
+renderer's coarse mesh/normal interpolation and optical spreading, not a new
+load-to-depth curve.
+
+ViTacSim now optionally downsamples only the Taxim RGB contact response,
+performs repeated 3×3 averaging on that coarse response, and bilinearly returns
+it to camera resolution. The corrected height map and the height field used by
+the marker model are untouched. The Advisor defaults selected from the
+marker-free sweep are:
+
+```text
+taxim_response_mesh_scale = 4
+taxim_response_mesh_smooth_iterations = 6
+taxim_response_mesh_blend = 1.0
+```
+
+The blend sweep (`0.50 / 0.75 / 1.00`) selected `1.00`: its marker-free mean
+contact-response MAE is 4.365 and SSIM is 0.770, versus MAE 4.831 and SSIM
+0.708 before mesh interpolation. In the independent complete-image comparison,
+the hybrid reduces full RGB MAE from 3.890 to 3.820, background-subtracted MAE
+from 2.574 to 2.497, and 200×200 contact-ROI MAE from 6.382 to 5.844. Marker
+errors are exactly unchanged because marker deformation bypasses this filter.
+
+Use `--baseline-root` to generate the four-column real / previous / hybrid /
+official comparison:
+
+```bash
+conda run --no-capture-output -n xensim-official-1.0 \
+  python scripts/calibration/compare_official_xensim.py \
+  --input-root logs/xense_hybrid_mesh_default \
+  --baseline-root logs/xense_marker_crisper \
+  --smooth-norm 8 --rgb-gain 1.3 \
+  --output logs/xense_hybrid_fourway_comparison
+```
+
 ## Runtime observations
 
 On the RTX 5090 workstation, official `FemSensor.step(..., nstep=3)` plus
@@ -104,7 +146,9 @@ environments, uses the measured lab background and marker map, exposes the
 force-correction model, and is modifiable. The official binary is non-commercial,
 opaque, sensor-model specific, and currently exposes no batched `FemSensor` API.
 
-The most useful next step is to use official FEM as an offline teacher: fit a
-depth-domain gel-spreading operator from paired corrected-depth / official-depth
-outputs, apply it before Taxim, and retain ViTacSim's real background, calibrated
-marker model, force reconstruction, and batched Isaac integration.
+The official implementation is most useful as an offline optical reference.
+The hybrid response filter captures part of its soft contact appearance while
+retaining ViTacSim's real background, calibrated markers, force reconstruction,
+and batched Isaac integration. Further fitting should target spatial optical
+response and illumination; it should not change `k_ref` or introduce a
+load-dependent depth law merely to imitate official RGB output.

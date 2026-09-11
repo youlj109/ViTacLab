@@ -125,6 +125,11 @@ def advisor_xense_render_cfg(
     # Additional contact PSF to suppress overly crisp synthetic contour boundaries.
     extra.setdefault("taxim_contact_psf_blend", 0.90)
     extra.setdefault("taxim_contact_psf_kernel_size", 11)
+    # Match the official Xense FEM renderer's coarse-mesh normal interpolation
+    # without modifying force-corrected depth or marker-driving height.
+    extra.setdefault("taxim_response_mesh_scale", 4)
+    extra.setdefault("taxim_response_mesh_smooth_iterations", 6)
+    extra.setdefault("taxim_response_mesh_blend", 1.0)
     # Approximate real right-side reddish illumination asymmetry.
     extra.setdefault("taxim_contact_red_tilt_strength", 1.45)
     extra.setdefault("taxim_contact_red_tilt_power", 0.55)

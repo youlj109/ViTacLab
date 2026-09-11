@@ -166,6 +166,15 @@ class GelsightRender:
             kernel_size += 1
         kernel = self._get_filtering_kernel(kernel_size=kernel_size)
         self.kernel = torch.tensor(kernel, dtype=torch.float, device=self.device)
+        normal_kernel_size = self._normalize_kernel_size(
+            int(getattr(self.cfg, "taxim_normal_smoothing_kernel_size", 1))
+        )
+        self._normal_smoothing_kernel = None
+        if normal_kernel_size > 1:
+            normal_kernel = self._get_filtering_kernel(kernel_size=normal_kernel_size)
+            self._normal_smoothing_kernel = torch.tensor(
+                normal_kernel, dtype=torch.float, device=self.device
+            )
         edge_kernel_size = self._normalize_kernel_size(int(getattr(self.cfg, "taxim_contact_edge_denoise_kernel_size", 9)))
         edge_kernel = self._get_filtering_kernel(kernel_size=edge_kernel_size)
         self._edge_denoise_kernel = torch.tensor(edge_kernel, dtype=torch.float, device=self.device)
@@ -314,6 +323,37 @@ class GelsightRender:
         rgb_gain = float(getattr(self.cfg, "taxim_rgb_response_gain", 1.0))
         if abs(rgb_gain - 1.0) > 1e-9:
             sim_img_rgb = sim_img_rgb * rgb_gain
+
+        mesh_scale = max(int(getattr(self.cfg, "taxim_response_mesh_scale", 1)), 1)
+        mesh_iterations = max(
+            int(getattr(self.cfg, "taxim_response_mesh_smooth_iterations", 0)), 0
+        )
+        mesh_blend = float(getattr(self.cfg, "taxim_response_mesh_blend", 1.0))
+        if mesh_scale > 1 and mesh_iterations > 0 and mesh_blend > 1.0e-6:
+            # The official FEM renderer shades a coarse gel mesh and then
+            # interpolates it to camera resolution. Reproduce that optical
+            # low-pass on RGB response only: corrected height and the FOTS
+            # marker-driving height remain untouched.
+            response_chw = sim_img_rgb.permute(0, 3, 1, 2)
+            low_h = max(response_chw.shape[-2] // mesh_scale, 1)
+            low_w = max(response_chw.shape[-1] // mesh_scale, 1)
+            response_low = torch.nn.functional.interpolate(
+                response_chw,
+                size=(low_h, low_w),
+                mode="area",
+            )
+            for _ in range(mesh_iterations):
+                response_low = torch.nn.functional.avg_pool2d(
+                    response_low, kernel_size=3, stride=1, padding=1
+                )
+            response_mesh = torch.nn.functional.interpolate(
+                response_low,
+                size=response_chw.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            ).permute(0, 2, 3, 1)
+            alpha_mesh = min(max(mesh_blend, 0.0), 1.0)
+            sim_img_rgb = (1.0 - alpha_mesh) * sim_img_rgb + alpha_mesh * response_mesh
 
         # write tactile image
         sim_img = sim_img_rgb + self.background_tensor  # /255.0
@@ -488,6 +528,15 @@ class GelsightRender:
         """
         img_grad = torch.gradient(img, dim=(1, 2))
         dzdx, dzdy = img_grad
+        if self._normal_smoothing_kernel is not None:
+            # Match mesh-renderer normal interpolation without changing the
+            # force-corrected height map or the height map used by FOTS.
+            dzdx = self._gaussian_filtering(
+                dzdx.unsqueeze(-1), self._normal_smoothing_kernel
+            ).squeeze(-1)
+            dzdy = self._gaussian_filtering(
+                dzdy.unsqueeze(-1), self._normal_smoothing_kernel
+            ).squeeze(-1)
 
         grad_mag_orig = torch.sqrt(dzdx**2 + dzdy**2)
         grad_suppress = float(getattr(self.cfg, "taxim_gradient_edge_suppress", 0.0))

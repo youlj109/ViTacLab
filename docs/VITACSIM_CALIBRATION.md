@@ -169,6 +169,7 @@ data/calibration/tactile/fitted_params.json   # 真机就绪后生成
 | M2 名义几何 | 对边 3.8 mm / 螺纹孔 2.0 mm | 固定（机械尺寸） |
 | Advisor 有效接触内孔 | **2.8 mm** | ✅ 贴合真机压痕；表示螺纹/倒角不接触区域 |
 | `depth_footprint_scale` | **1.7** | ✅ 贴合真机外轮廓；大于 1 会缩小深度图投影 |
+| RGB response mesh | scale **4** / 3×3 smooth **6** 次 / blend **1.0** | ✅ 无 marker 真机图像 sweep；只柔化光学响应，不修改深度或 marker 位移 |
 | 接触物 | M2 螺母 + G010–G210 | ✅ |
 | `finger_root_z` | 0.441 | 待 Fn 对齐 sweep |
 | TacSL | `enable_corrected_force_render=False` | depth→Taxim |
@@ -191,6 +192,9 @@ sweep 加载拟合：`FITTED_PARAMS=data/calibration/tactile/fitted_params.json 
 | `marker_shear_gain` | 8.0 | 待扩展 | shear proxy |
 | `marker_deadband_mm` | 0.02 | 待扩展 | |
 | `marker_blend_alpha` | 0.92 | 待扩展 | |
+| `taxim_response_mesh_scale` | 通用 1；Advisor **4** | Advisor 已拟合 | 仅对 Taxim RGB 接触响应降采样/插值 |
+| `taxim_response_mesh_smooth_iterations` | 通用 0；Advisor **6** | Advisor 已拟合 | 粗分辨率下的 3×3 平滑次数 |
+| `taxim_response_mesh_blend` | Advisor **1.0** | ✅ 0.5/0.75/1.0 sweep | 不改变 force-corrected height 和 marker-driving height |
 
 ### 6.2 ViTacSim 力场（VisuoTactileSensorV2）
 
