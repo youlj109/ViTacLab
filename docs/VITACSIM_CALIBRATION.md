@@ -66,6 +66,8 @@ Xense 当前有效的零接触背景是一对配套图像：
 球压采集图可以保留 marker，但 `build_xense_polycalib.py` 会逐帧检测/追踪 marker：先对这些区域做 inpaint，再从多项式拟合样本中排除同一 mask。原图仍用于接触圆检测。诊断输出位于
 `data/calibration/tactile/ball_calib_raw/diagnostics/polycalib_marker_masking/`，mask 统计位于 `marker_mask_report.json` 和 `fit_marker_exclusion.json`。
 
+`--fit-mode pooled_pixels` 只用各帧真正观测到的 `(梯度幅值, 梯度方向)` 像素拟合空间多项式，拟合完成后才补齐未观测 bin。旧的 `frame_interpolated` 模式保留用于复现 Taxim 原流程，但它会先逐帧补齐 bin，再把插值值当成观测参与拟合。必须用 `evaluate_xense_ball_polycalib.py` 的纯表模式同时检查训练集和留出集；该评估会关闭 response mesh、载荷增益和最终 PSF，避免后处理掩盖标定误差。
+
 ---
 
 ## 4. 标定 Case 协议（11 cases）
@@ -162,14 +164,16 @@ data/calibration/tactile/fitted_params.json   # 真机就绪后生成
 | `marker_blend_alpha` | **0.60** | ✅ 保持中心强度并提高可辨识度 |
 | `mm_per_pixel` | **≈0.052** | 固定（GelSight 外推，待实验室确认） |
 | `bg_clean.jpg` | 实验室 file-000 | ✅ |
-| `polycalib.npz` | **file-000 marker-free 50 帧拟合 + 50 帧留出验证** | ✅ |
+| `polycalib.npz` | **file-000 marker-free 50 帧 pooled-pixel 拟合 + 50 帧留出验证** | ✅ 小球留出 RMSE 8.966 / corr 0.931；螺母跨形状 MAE 优于旧表 |
 | `marker_displacement_gain` | 默认 0.35 → **拟合 0.15** | ✅ `fitted_params.json` |
 | `normal_correction_k_ref` | **1840 N/m** | ✅ 由 G010 峰值 0.020 mm 重新标定 |
 | `corrected_force_render_depth_gain` | 默认 **1.0** | 保留全局线性调节；当前默认不附加幅值修正 |
 | M2 名义几何 | 对边 3.8 mm / 螺纹孔 2.0 mm | 固定（机械尺寸） |
 | Advisor 有效接触内孔 | **2.8 mm** | ✅ 贴合真机压痕；表示螺纹/倒角不接触区域 |
 | `depth_footprint_scale` | **1.7** | ✅ 贴合真机外轮廓；大于 1 会缩小深度图投影 |
-| RGB response mesh | scale **4** / 3×3 smooth **6** 次 / blend **1.0** | ✅ 无 marker 真机图像 sweep；只柔化光学响应，不修改深度或 marker 位移 |
+| RGB response mesh | scale **3** / 3×3 smooth **6** 次 / blend **1.0** | ✅ 保留螺母中心孔与六角环；只柔化光学响应，不修改深度或 marker 位移 |
+| RGB load response | gain **0.78→1.62** @ 0→0.42 mm，指数 **1.05** | ✅ 修复旧渲染随载荷几乎不变、重载偏暗的问题；不修改纠正深度 |
+| Final response PSF | kernel **31** / blend **0.20** | ✅ 仅扩散 RGB-bg 响应，背景与后叠加 marker 不受影响 |
 | 接触物 | M2 螺母 + G010–G210 | ✅ |
 | `finger_root_z` | 0.441 | 待 Fn 对齐 sweep |
 | TacSL | `enable_corrected_force_render=False` | depth→Taxim |

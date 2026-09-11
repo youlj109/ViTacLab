@@ -274,6 +274,9 @@ class GelsightRender:
         Returns:
             Rendered image tensor. Shape is (N, H, W, 3).
         """
+        physical_peak_depth_mm = torch.amax(
+            torch.abs(height_map), dim=(1, 2), keepdim=True
+        ) * 1000.0
         taxim_scale = float(getattr(self.cfg, "taxim_height_scale", 1.0))
         if abs(taxim_scale - 1.0) > 1e-9:
             height_map = height_map * taxim_scale
@@ -323,6 +326,22 @@ class GelsightRender:
         rgb_gain = float(getattr(self.cfg, "taxim_rgb_response_gain", 1.0))
         if abs(rgb_gain - 1.0) > 1e-9:
             sim_img_rgb = sim_img_rgb * rgb_gain
+        load_gain_min = float(getattr(self.cfg, "taxim_response_load_gain_min", 1.0))
+        load_gain_max = float(getattr(self.cfg, "taxim_response_load_gain_max", 1.0))
+        if abs(load_gain_max - load_gain_min) > 1.0e-9 or abs(load_gain_min - 1.0) > 1.0e-9:
+            reference_depth_mm = max(
+                float(getattr(self.cfg, "taxim_response_load_reference_depth_mm", 0.42)),
+                1.0e-9,
+            )
+            load_exponent = max(
+                float(getattr(self.cfg, "taxim_response_load_exponent", 1.0)),
+                1.0e-6,
+            )
+            load_weight = torch.clamp(
+                physical_peak_depth_mm / reference_depth_mm, min=0.0, max=1.0
+            ) ** load_exponent
+            response_gain = load_gain_min + (load_gain_max - load_gain_min) * load_weight
+            sim_img_rgb = sim_img_rgb * response_gain.unsqueeze(-1)
 
         mesh_scale = max(int(getattr(self.cfg, "taxim_response_mesh_scale", 1)), 1)
         mesh_iterations = max(
@@ -464,6 +483,27 @@ class GelsightRender:
                 sim_img[..., 0:1] = sim_img[..., 0:1] + red_add * (tint - 0.25 * tint_left)
                 sim_img[..., 1:2] = sim_img[..., 1:2] + 0.25 * red_add * tint_left
                 sim_img[..., 2:3] = sim_img[..., 2:3] + 0.55 * red_add * tint_left
+        final_psf_blend = float(getattr(self.cfg, "taxim_final_response_psf_blend", 0.0))
+        if final_psf_blend > 1.0e-6:
+            # Apply the final optical spread after chroma and directional
+            # lighting. Unlike the earlier contact-masked PSF, this operates on
+            # RGB response relative to the clean background, allowing light to
+            # diffuse beyond the exact geometric contact boundary without
+            # blurring the background or the later marker overlay.
+            final_kernel_size = self._normalize_kernel_size(
+                int(getattr(self.cfg, "taxim_final_response_psf_kernel_size", 15))
+            )
+            final_kernel = torch.tensor(
+                self._get_filtering_kernel(final_kernel_size),
+                dtype=torch.float,
+                device=self.device,
+            )
+            contact_response = sim_img - self.background_tensor
+            response_blurred = self._gaussian_filtering_rgb(contact_response, final_kernel)
+            alpha_final = min(max(final_psf_blend, 0.0), 1.0)
+            sim_img = self.background_tensor + (
+                (1.0 - alpha_final) * contact_response + alpha_final * response_blurred
+            )
         sim_img = torch.clip(sim_img, 0, 255, out=sim_img).to(torch.uint8)
 
         if self._marker_sim is not None and self._marker_sim.enabled:
@@ -601,8 +641,21 @@ class GelsightRender:
         return img_output
 
     def _gaussian_filtering_rgb(self, img: torch.Tensor, kernel: torch.Tensor) -> torch.Tensor:
-        channels = []
-        for c in range(3):
-            ch = self._gaussian_filtering(img[..., c : c + 1], kernel)
-            channels.append(ch)
-        return torch.cat(channels, dim=-1)
+        """Apply the separable binomial/Gaussian kernel to three RGB channels."""
+        # Every kernel produced by _get_filtering_kernel is v @ v.T. Recovering
+        # v from its diagonal makes large final PSFs far cheaper than three
+        # dense KxK convolutions while remaining numerically equivalent.
+        kernel_1d = torch.sqrt(torch.clamp(torch.diagonal(kernel), min=0.0))
+        kernel_1d = kernel_1d / kernel_1d.sum().clamp(min=1.0e-12)
+        size = int(kernel_1d.numel())
+        pad = size // 2
+        image_chw = img.permute(0, 3, 1, 2)
+        horizontal = kernel_1d.view(1, 1, 1, size).repeat(3, 1, 1, 1)
+        vertical = kernel_1d.view(1, 1, size, 1).repeat(3, 1, 1, 1)
+        filtered = torch.nn.functional.conv2d(
+            image_chw, horizontal, padding=(0, pad), groups=3
+        )
+        filtered = torch.nn.functional.conv2d(
+            filtered, vertical, padding=(pad, 0), groups=3
+        )
+        return filtered.permute(0, 2, 3, 1)

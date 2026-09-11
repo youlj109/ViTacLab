@@ -25,6 +25,7 @@ python3 scripts/calibration/import_advisor_tactile_videos.py --install-bg
 python3 scripts/calibration/build_xense_polycalib.py \
   --video data/calibration/file-000.mp4 \
   --num-ball 50 --num-validation 50 \
+  --fit-mode pooled_pixels \
   --taxim-repo third_party/Taxim
 python3 scripts/calibration/install_taxim_polycalib.py \
   --polycalib data/calibration/tactile/ball_calib_raw/polycalib.npz \
@@ -36,6 +37,14 @@ no-contact image **with** markers and `advisor_processed/bg_clean.jpg` is its
 paired marker-free image. `ball_calib_raw/marker_mask_report.json` records the
 post-inpaint residual-marker check, while
 `ball_calib_raw_validation/` is never used to fit the polynomial table.
+
+The pooled-pixel fit uses only gradient bins actually observed in the 50
+training frames and fills missing bins after fitting. For an uncontaminated
+table comparison, `evaluate_xense_ball_polycalib.py` disables all production
+response-mesh, load-gain, and final-PSF effects. The selected pooled table gives
+holdout ball RMSE 8.966 / correlation 0.931; the legacy frame-interpolated table
+scores 8.641 / 0.945 on the same holdout but transfers less accurately to the
+flat M2 nut (matched render settings: response MAE 4.571 vs 4.198).
 
 Joint fit output (`data/calibration/tactile/fitted_params.json`) is also local-only; scripts load it when present.
 

@@ -101,6 +101,14 @@ class GelSightRenderCfg:
     """Scale penetration depth (m) before Taxim RGB synthesis (Task2 ``rgb_diff_scale``)."""
     taxim_rgb_response_gain: float = 1.0
     """Gain on Taxim RGB polynomial response before adding background."""
+    taxim_response_load_gain_min: float = 1.0
+    """Uniform RGB response gain at zero indentation; does not modify the height map."""
+    taxim_response_load_gain_max: float = 1.0
+    """Uniform RGB response gain at the configured reference indentation."""
+    taxim_response_load_reference_depth_mm: float = 0.42
+    """Physical pre-Taxim-scale peak indentation corresponding to the maximum response gain."""
+    taxim_response_load_exponent: float = 1.0
+    """Exponent of the peak-indentation optical response curve."""
     taxim_smoothing_kernel_size: int = 5
     """Gaussian smoothing kernel size for height map before Taxim gradient lookup."""
     taxim_normal_smoothing_kernel_size: int = 1
@@ -147,6 +155,10 @@ class GelSightRenderCfg:
     """Number of 3x3 smoothing passes at the reduced response resolution."""
     taxim_response_mesh_blend: float = 1.0
     """Blend weight of mesh-interpolated contact response; background and markers are unaffected."""
+    taxim_final_response_psf_blend: float = 0.0
+    """Final global PSF blend on RGB-minus-background after chroma and directional lighting."""
+    taxim_final_response_psf_kernel_size: int = 15
+    """Gaussian kernel size for final contact-response spreading; background and markers are excluded."""
     taxim_illumination_reference_path: str = ""
     """Optional real no-contact image path used to build low-frequency illumination alignment maps."""
     taxim_illumination_blend: float = 0.0

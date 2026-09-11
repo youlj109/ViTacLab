@@ -43,12 +43,30 @@ def main() -> int:
         type=Path,
         default=Path("data/calibration/tactile/advisor_processed/marker_rest.npy"),
     )
+    parser.add_argument(
+        "--polycalib",
+        type=Path,
+        default=None,
+        help="Optional Taxim calibration table to evaluate instead of the installed table.",
+    )
     parser.add_argument("--smoothing-kernels", type=int, nargs="+", default=(7, 15, 23, 31))
     parser.add_argument("--psf-kernels", type=int, nargs="+", default=(11, 21, 31))
     parser.add_argument("--normal-kernels", type=int, nargs="+", default=(1, 31, 61))
     parser.add_argument("--response-mesh-scale", type=int, default=1)
     parser.add_argument("--response-smooth-iterations", type=int, default=0)
     parser.add_argument("--response-mesh-blends", type=float, nargs="+", default=(1.0,))
+    parser.add_argument("--rgb-response-gains", type=float, nargs="+", default=(1.0,))
+    parser.add_argument("--load-gain-min", type=float, default=1.0)
+    parser.add_argument("--load-gain-max", type=float, default=1.0)
+    parser.add_argument("--load-reference-depth-mm", type=float, default=0.42)
+    parser.add_argument("--load-gain-exponent", type=float, default=1.0)
+    parser.add_argument("--final-psf-blend", type=float, default=0.0)
+    parser.add_argument("--final-psf-kernel", type=int, default=15)
+    parser.add_argument(
+        "--invert-height",
+        action="store_true",
+        help="Diagnostic only: reverse the saved indentation sign before rendering.",
+    )
     parser.add_argument(
         "--chroma-gain",
         type=float,
@@ -92,85 +110,124 @@ def main() -> int:
         real_deltas.append(crop.astype(np.float32) - background[y0:y1, x0:x1].astype(np.float32))
 
     height_batch = torch.from_numpy(np.stack(heights)).to(args.device)
+    if args.invert_height:
+        height_batch = -height_batch
     base_cfg = advisor_xense_render_cfg(enable_marker_simulation=False, marker_pattern="none")
+    if args.polycalib is not None:
+        polycalib = args.polycalib.expanduser().resolve()
+        if not polycalib.is_file():
+            raise FileNotFoundError(polycalib)
+        base_cfg = base_cfg.replace(
+            base_data_path="/",
+            sensor_data_dir_name="",
+            calib_path=str(polycalib),
+            background_path=str(args.background.expanduser().resolve()),
+        )
     rows = []
-    predictions: dict[tuple[int, int, int, float], np.ndarray] = {}
+    predictions: dict[tuple[int, int, int, float, float], np.ndarray] = {}
     for smoothing in args.smoothing_kernels:
         for psf in args.psf_kernels:
             for normal in args.normal_kernels:
                 for mesh_blend in args.response_mesh_blends:
-                    cfg = base_cfg.replace(
-                        taxim_smoothing_kernel_size=int(smoothing),
-                        taxim_contact_psf_kernel_size=int(psf),
-                        taxim_normal_smoothing_kernel_size=int(normal),
-                        taxim_response_mesh_scale=int(args.response_mesh_scale),
-                        taxim_response_mesh_smooth_iterations=int(args.response_smooth_iterations),
-                        taxim_response_mesh_blend=float(mesh_blend),
-                        taxim_contact_chroma_gain=(
-                            float(args.chroma_gain)
-                            if args.chroma_gain >= 0.0
-                            else float(base_cfg.taxim_contact_chroma_gain)
-                        ),
-                    )
-                    renderer = GelsightRender(cfg, args.device)
-                    rendered = renderer.render(height_batch).detach().cpu().numpy()
-                    per_case = []
-                    aligned_predictions = []
-                    for index, case in enumerate(CASES):
-                        aligned, _ = _align_frame_background(
-                            rendered[index],
-                            background,
-                            marker_mask=np.zeros(background.shape[:2], np.uint8),
-                            center_xy=(200.0, 350.0),
-                            contact_radius_px=85.0,
-                        )
-                        crop = aligned[y0:y1, x0:x1]
-                        delta = (
-                            crop.astype(np.float32)
-                            - background[y0:y1, x0:x1].astype(np.float32)
-                        )
-                        real_delta = real_deltas[index]
-                        per_case.append(
-                            {
-                                "case": case,
-                                "rgb_mad": float(
-                                    np.abs(real_crops[index].astype(np.float32) - crop).mean()
-                                ),
-                                "response_mae": float(np.abs(real_delta - delta).mean()),
-                                "response_rmse": float(np.sqrt(np.mean((real_delta - delta) ** 2))),
-                                "rgb_ssim": _ssim_gray(real_crops[index], crop),
-                            }
-                        )
-                        aligned_predictions.append(crop)
-                    key = (int(smoothing), int(psf), int(normal), float(mesh_blend))
-                    predictions[key] = np.stack(aligned_predictions)
-                    rows.append(
-                        {
-                            "smoothing_kernel": int(smoothing),
-                            "psf_kernel": int(psf),
-                            "normal_kernel": int(normal),
-                            "response_mesh_scale": int(args.response_mesh_scale),
-                            "response_smooth_iterations": int(args.response_smooth_iterations),
-                            "response_mesh_blend": float(mesh_blend),
-                            "chroma_gain": (
+                    for rgb_response_gain in args.rgb_response_gains:
+                        cfg = base_cfg.replace(
+                            taxim_smoothing_kernel_size=int(smoothing),
+                            taxim_contact_psf_kernel_size=int(psf),
+                            taxim_normal_smoothing_kernel_size=int(normal),
+                            taxim_response_mesh_scale=int(args.response_mesh_scale),
+                            taxim_response_mesh_smooth_iterations=int(args.response_smooth_iterations),
+                            taxim_response_mesh_blend=float(mesh_blend),
+                            taxim_rgb_response_gain=float(rgb_response_gain),
+                            taxim_response_load_gain_min=float(args.load_gain_min),
+                            taxim_response_load_gain_max=float(args.load_gain_max),
+                            taxim_response_load_reference_depth_mm=float(
+                                args.load_reference_depth_mm
+                            ),
+                            taxim_response_load_exponent=float(args.load_gain_exponent),
+                            taxim_final_response_psf_blend=float(args.final_psf_blend),
+                            taxim_final_response_psf_kernel_size=int(args.final_psf_kernel),
+                            taxim_contact_chroma_gain=(
                                 float(args.chroma_gain)
                                 if args.chroma_gain >= 0.0
                                 else float(base_cfg.taxim_contact_chroma_gain)
                             ),
-                            "mean_rgb_mad": float(np.mean([x["rgb_mad"] for x in per_case])),
-                            "mean_response_mae": float(
-                                np.mean([x["response_mae"] for x in per_case])
-                            ),
-                            "mean_response_rmse": float(
-                                np.mean([x["response_rmse"] for x in per_case])
-                            ),
-                            "mean_rgb_ssim": float(np.mean([x["rgb_ssim"] for x in per_case])),
-                            "per_case": per_case,
-                        }
-                    )
-                    del renderer
-                    gc.collect()
-                    torch.cuda.empty_cache()
+                        )
+                        renderer = GelsightRender(cfg, args.device)
+                        rendered = renderer.render(height_batch).detach().cpu().numpy()
+                        per_case = []
+                        aligned_predictions = []
+                        for index, case in enumerate(CASES):
+                            aligned, _ = _align_frame_background(
+                                rendered[index],
+                                background,
+                                marker_mask=np.zeros(background.shape[:2], np.uint8),
+                                center_xy=(200.0, 350.0),
+                                contact_radius_px=85.0,
+                            )
+                            crop = aligned[y0:y1, x0:x1]
+                            delta = (
+                                crop.astype(np.float32)
+                                - background[y0:y1, x0:x1].astype(np.float32)
+                            )
+                            real_delta = real_deltas[index]
+                            per_case.append(
+                                {
+                                    "case": case,
+                                    "rgb_mad": float(
+                                        np.abs(real_crops[index].astype(np.float32) - crop).mean()
+                                    ),
+                                    "response_mae": float(np.abs(real_delta - delta).mean()),
+                                    "response_rmse": float(
+                                        np.sqrt(np.mean((real_delta - delta) ** 2))
+                                    ),
+                                    "real_response_energy": float(np.mean(np.abs(real_delta))),
+                                    "sim_response_energy": float(np.mean(np.abs(delta))),
+                                    "rgb_ssim": _ssim_gray(real_crops[index], crop),
+                                }
+                            )
+                            aligned_predictions.append(crop)
+                        key = (
+                            int(smoothing),
+                            int(psf),
+                            int(normal),
+                            float(mesh_blend),
+                            float(rgb_response_gain),
+                        )
+                        predictions[key] = np.stack(aligned_predictions)
+                        rows.append(
+                            {
+                                "smoothing_kernel": int(smoothing),
+                                "psf_kernel": int(psf),
+                                "normal_kernel": int(normal),
+                                "response_mesh_scale": int(args.response_mesh_scale),
+                                "response_smooth_iterations": int(args.response_smooth_iterations),
+                                "response_mesh_blend": float(mesh_blend),
+                                "rgb_response_gain": float(rgb_response_gain),
+                                "load_gain_min": float(args.load_gain_min),
+                                "load_gain_max": float(args.load_gain_max),
+                                "load_reference_depth_mm": float(args.load_reference_depth_mm),
+                                "load_gain_exponent": float(args.load_gain_exponent),
+                                "final_response_psf_blend": float(args.final_psf_blend),
+                                "final_response_psf_kernel": int(args.final_psf_kernel),
+                                "chroma_gain": (
+                                    float(args.chroma_gain)
+                                    if args.chroma_gain >= 0.0
+                                    else float(base_cfg.taxim_contact_chroma_gain)
+                                ),
+                                "mean_rgb_mad": float(np.mean([x["rgb_mad"] for x in per_case])),
+                                "mean_response_mae": float(
+                                    np.mean([x["response_mae"] for x in per_case])
+                                ),
+                                "mean_response_rmse": float(
+                                    np.mean([x["response_rmse"] for x in per_case])
+                                ),
+                                "mean_rgb_ssim": float(np.mean([x["rgb_ssim"] for x in per_case])),
+                                "per_case": per_case,
+                            }
+                        )
+                        del renderer
+                        gc.collect()
+                        torch.cuda.empty_cache()
 
     rows.sort(key=lambda item: (item["mean_response_mae"], item["mean_rgb_mad"]))
     best = rows[0]
@@ -181,6 +238,7 @@ def main() -> int:
         and row["psf_kernel"] == 11
         and row["normal_kernel"] == 1
         and row["response_mesh_blend"] == float(args.response_mesh_blends[0])
+        and row["rgb_response_gain"] == float(args.rgb_response_gains[0])
     )
     panel_candidates = rows[: min(4, len(rows))]
     panels = []
@@ -192,16 +250,33 @@ def main() -> int:
                 candidate["psf_kernel"],
                 candidate["normal_kernel"],
                 candidate["response_mesh_blend"],
+                candidate["rgb_response_gain"],
             )
             columns.append(
                 _label(
                     predictions[key][index],
-                    f"b{key[3]:.2f} MAE={candidate['mean_response_mae']:.3f}",
+                    f"rgb-gain={key[4]:.2f} MAE={candidate['mean_response_mae']:.3f}",
                 )
             )
         panels.append(np.concatenate(columns, axis=1))
     panel = np.concatenate(panels, axis=0)
     cv2.imwrite(str(out_dir / "best_contact_crops.png"), cv2.cvtColor(panel, cv2.COLOR_RGB2BGR))
+    best_key = (
+        best["smoothing_kernel"],
+        best["psf_kernel"],
+        best["normal_kernel"],
+        best["response_mesh_blend"],
+        best["rgb_response_gain"],
+    )
+    for index, case in enumerate(CASES):
+        cv2.imwrite(
+            str(out_dir / f"{case}_real_marker_free.png"),
+            cv2.cvtColor(real_crops[index], cv2.COLOR_RGB2BGR),
+        )
+        cv2.imwrite(
+            str(out_dir / f"{case}_best_sim.png"),
+            cv2.cvtColor(predictions[best_key][index], cv2.COLOR_RGB2BGR),
+        )
     payload = {"best": best, "baseline": baseline, "all": rows}
     (out_dir / "metrics.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(json.dumps({"best": best, "baseline": baseline}, indent=2))

@@ -78,6 +78,12 @@ def _pure_polycalib_cfg(cfg):
         taxim_contact_psf_blend=0.0,
         taxim_contact_red_tilt_strength=0.0,
         taxim_contact_red_tilt_additive=0.0,
+        taxim_response_mesh_scale=1,
+        taxim_response_mesh_smooth_iterations=0,
+        taxim_response_mesh_blend=0.0,
+        taxim_response_load_gain_min=1.0,
+        taxim_response_load_gain_max=1.0,
+        taxim_final_response_psf_blend=0.0,
         taxim_illumination_blend=0.0,
         taxim_illumination_bias_blend=0.0,
     )
@@ -87,6 +93,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=Path("data/calibration/tactile/ball_calib_raw"))
     parser.add_argument("--out-dir", type=Path, default=Path("logs/xense_ball_polycalib_evaluation"))
+    parser.add_argument(
+        "--polycalib",
+        type=Path,
+        default=None,
+        help="Optional calibration table to evaluate instead of the installed Xense table.",
+    )
+    parser.add_argument(
+        "--response-gains",
+        type=float,
+        nargs="+",
+        default=(1.0,),
+        help="Evaluate scalar gains on the marker-free Taxim response inside annotated contact disks.",
+    )
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
     simulation_app = AppLauncher(args).app
@@ -117,10 +136,21 @@ def main() -> int:
     cfg = _pure_polycalib_cfg(
         advisor_xense_render_cfg(enable_marker_simulation=False, marker_pattern="none")
     )
+    if args.polycalib is not None:
+        polycalib = args.polycalib.expanduser().resolve()
+        if not polycalib.is_file():
+            raise FileNotFoundError(polycalib)
+        cfg = cfg.replace(
+            base_data_path="/",
+            sensor_data_dir_name="",
+            calib_path=str(polycalib),
+            background_path=str((data_dir / "bg_clean.png").resolve()),
+        )
     renderer = GelsightRender(cfg, args.device)
 
     predictions: list[np.ndarray] = []
-    sign_matched_predictions: list[np.ndarray] = []
+    inverted_depth_predictions: list[np.ndarray] = []
+    response_samples: list[tuple[np.ndarray, np.ndarray]] = []
     heights: list[np.ndarray] = []
     rows: list[dict[str, float | int | str | bool]] = []
     height, width = background.shape[:2]
@@ -142,14 +172,14 @@ def main() -> int:
         # Diagnostic ablation: an inverted height preserves gradient magnitude
         # but rotates its direction by pi. The corrected calibration should make
         # this variant worse than the documented positive-penetration input.
-        sign_matched_prediction = (
+        inverted_depth_prediction = (
             renderer.render(torch.from_numpy(-height_map).unsqueeze(0).to(args.device))[0]
             .detach()
             .cpu()
             .numpy()
         )
         predictions.append(prediction)
-        sign_matched_predictions.append(sign_matched_prediction)
+        inverted_depth_predictions.append(inverted_depth_prediction)
         heights.append(height_map)
 
         cx, cy = float(center[0]), float(center[1])
@@ -157,28 +187,29 @@ def main() -> int:
         disk = ((xx - cx) ** 2 + (yy - cy) ** 2 <= valid_radius * valid_radius) & ~marker_masks[index]
         real_delta = real_clean[index].astype(np.float64) - background.astype(np.float64)
         sim_delta = prediction.astype(np.float64) - background.astype(np.float64)
-        sign_matched_delta = sign_matched_prediction.astype(np.float64) - background.astype(np.float64)
+        response_samples.append((real_delta[disk], sim_delta[disk]))
+        inverted_depth_delta = inverted_depth_prediction.astype(np.float64) - background.astype(np.float64)
         response_rmse = float(np.sqrt(np.mean((real_delta[disk] - sim_delta[disk]) ** 2)))
         response_mae = float(np.mean(np.abs(real_delta[disk] - sim_delta[disk])))
-        sign_matched_rmse = float(
-            np.sqrt(np.mean((real_delta[disk] - sign_matched_delta[disk]) ** 2))
+        inverted_depth_rmse = float(
+            np.sqrt(np.mean((real_delta[disk] - inverted_depth_delta[disk]) ** 2))
         )
-        sign_matched_mae = float(np.mean(np.abs(real_delta[disk] - sign_matched_delta[disk])))
+        inverted_depth_mae = float(np.mean(np.abs(real_delta[disk] - inverted_depth_delta[disk])))
         if int(disk.sum()) >= 2:
             corr = float(np.corrcoef(real_delta[disk].reshape(-1), sim_delta[disk].reshape(-1))[0, 1])
-            sign_matched_corr = float(
+            inverted_depth_corr = float(
                 np.corrcoef(
                     real_delta[disk].reshape(-1),
-                    sign_matched_delta[disk].reshape(-1),
+                    inverted_depth_delta[disk].reshape(-1),
                 )[0, 1]
             )
         else:
             corr = float("nan")
-            sign_matched_corr = float("nan")
+            inverted_depth_corr = float("nan")
         real_crop = _crop_about_center(real_clean[index], (cx, cy), ball_radius_px)
         sim_crop = _crop_about_center(prediction, (cx, cy), ball_radius_px)
-        sign_matched_crop = _crop_about_center(
-            sign_matched_prediction, (cx, cy), ball_radius_px
+        inverted_depth_crop = _crop_about_center(
+            inverted_depth_prediction, (cx, cy), ball_radius_px
         )
         rows.append(
             {
@@ -194,12 +225,33 @@ def main() -> int:
                 "response_mae": response_mae,
                 "response_correlation": corr,
                 "crop_ssim": _ssim_gray(real_crop, sim_crop),
-                "sign_matched_response_rmse": sign_matched_rmse,
-                "sign_matched_response_mae": sign_matched_mae,
-                "sign_matched_response_correlation": sign_matched_corr,
-                "sign_matched_crop_ssim": _ssim_gray(real_crop, sign_matched_crop),
+                "inverted_depth_response_rmse": inverted_depth_rmse,
+                "inverted_depth_response_mae": inverted_depth_mae,
+                "inverted_depth_response_correlation": inverted_depth_corr,
+                "inverted_depth_crop_ssim": _ssim_gray(real_crop, inverted_depth_crop),
             }
         )
+
+    gain_sweep = []
+    for gain in args.response_gains:
+        real_values = np.concatenate([sample[0].reshape(-1, 3) for sample in response_samples])
+        sim_values = np.concatenate([sample[1].reshape(-1, 3) for sample in response_samples])
+        prediction_values = sim_values * float(gain)
+        error = prediction_values - real_values
+        gain_sweep.append(
+            {
+                "response_gain": float(gain),
+                "response_mae": float(np.mean(np.abs(error))),
+                "response_rmse": float(np.sqrt(np.mean(error * error))),
+                "response_correlation": float(
+                    np.corrcoef(real_values.reshape(-1), prediction_values.reshape(-1))[0, 1]
+                ),
+                "real_signal_energy": float(np.mean(np.abs(real_values))),
+                "sim_signal_energy": float(np.mean(np.abs(prediction_values))),
+            }
+        )
+    gain_sweep.sort(key=lambda item: (item["response_rmse"], item["response_mae"]))
+    best_response_gain = float(gain_sweep[0]["response_gain"])
 
     rmse = np.asarray([float(row["response_rmse"]) for row in rows])
     order = np.argsort(rmse)
@@ -212,11 +264,17 @@ def main() -> int:
         raw_bgr = cv2.imread(str(data_dir / "ball" / names[index]), cv2.IMREAD_COLOR)
         raw_rgb = cv2.cvtColor(raw_bgr, cv2.COLOR_BGR2RGB)
         real_rgb = real_clean[index]
-        sim_rgb = predictions[index]
-        sign_matched_rgb = sign_matched_predictions[index]
+        sim_rgb = np.clip(
+            background.astype(np.float32)
+            + (predictions[index].astype(np.float32) - background.astype(np.float32))
+            * best_response_gain,
+            0,
+            255,
+        ).astype(np.uint8)
+        inverted_depth_rgb = inverted_depth_predictions[index]
         error = np.clip(np.abs(real_rgb.astype(np.int16) - sim_rgb.astype(np.int16)) * 4, 0, 255).astype(np.uint8)
-        sign_matched_error = np.clip(
-            np.abs(real_rgb.astype(np.int16) - sign_matched_rgb.astype(np.int16)) * 4,
+        inverted_depth_error = np.clip(
+            np.abs(real_rgb.astype(np.int16) - inverted_depth_rgb.astype(np.int16)) * 4,
             0,
             255,
         ).astype(np.uint8)
@@ -227,10 +285,10 @@ def main() -> int:
             [
                 _label(raw_rgb, f"{names[index]} raw real"),
                 _label(real_rgb, "marker-clean + bg-aligned real"),
-                _label(sim_rgb, "current +depth replay"),
-                _label(sign_matched_rgb, "inverted-depth replay (diagnostic)"),
+                _label(sim_rgb, f"+depth replay x{best_response_gain:.2f}"),
+                _label(inverted_depth_rgb, "inverted-depth replay (diagnostic)"),
                 _label(error, "|real-current| x4"),
-                _label(sign_matched_error, "|real-sign-matched| x4"),
+                _label(inverted_depth_error, "|real-inverted-depth| x4"),
                 _label(height_rgb, "sphere height"),
             ],
             axis=1,
@@ -239,7 +297,7 @@ def main() -> int:
     panel = np.concatenate(panel_rows, axis=0)
     cv2.imwrite(str(out_dir / "ball_real_vs_polycalib.png"), cv2.cvtColor(panel, cv2.COLOR_RGB2BGR))
 
-    sign_matched_rmse = np.asarray([float(row["sign_matched_response_rmse"]) for row in rows])
+    inverted_depth_rmse = np.asarray([float(row["inverted_depth_response_rmse"]) for row in rows])
     summary = {
         "frame_count": len(rows),
         "data_pack_color_order": color_order,
@@ -265,14 +323,16 @@ def main() -> int:
             np.nanmean([float(row["response_correlation"]) for row in rows])
         ),
         "crop_ssim_mean": float(np.mean([float(row["crop_ssim"]) for row in rows])),
-        "sign_matched_response_rmse_mean": float(sign_matched_rmse.mean()),
-        "sign_matched_response_rmse_median": float(np.median(sign_matched_rmse)),
-        "sign_matched_response_rmse_max": float(sign_matched_rmse.max()),
-        "sign_matched_response_correlation_mean": float(
-            np.nanmean([float(row["sign_matched_response_correlation"]) for row in rows])
+        "best_response_gain": best_response_gain,
+        "response_gain_sweep": gain_sweep,
+        "inverted_depth_response_rmse_mean": float(inverted_depth_rmse.mean()),
+        "inverted_depth_response_rmse_median": float(np.median(inverted_depth_rmse)),
+        "inverted_depth_response_rmse_max": float(inverted_depth_rmse.max()),
+        "inverted_depth_response_correlation_mean": float(
+            np.nanmean([float(row["inverted_depth_response_correlation"]) for row in rows])
         ),
-        "sign_matched_crop_ssim_mean": float(
-            np.mean([float(row["sign_matched_crop_ssim"]) for row in rows])
+        "inverted_depth_crop_ssim_mean": float(
+            np.mean([float(row["inverted_depth_crop_ssim"]) for row in rows])
         ),
         "representative_frame_indices": representative,
         "per_frame": rows,

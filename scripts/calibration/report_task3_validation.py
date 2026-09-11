@@ -341,8 +341,10 @@ def _build_metrics_chart(rows: list[dict[str, Any]], out_path: Path) -> None:
     w, h = 980, 440
     img = Image.new("RGB", (w, h), (248, 248, 248))
     draw = ImageDraw.Draw(img)
-    draw.text((16, 10), "Task 3 Normal — Real | TacSL | ViTacSim (M2 nut, 400x700)", fill=(20, 20, 20))
-    draw.text((16, 34), "Rebuttal Table 2: MSE/SSIM/PSNR (bg-diff) + |Fn−mg|", fill=(90, 90, 90))
+    # Keep diagnostic text ASCII-safe: Pillow's built-in fallback bitmap font
+    # cannot encode the Unicode dash/minus on minimal headless installations.
+    draw.text((16, 10), "Task 3 Normal - Real | TacSL | ViTacSim (M2 nut, 400x700)", fill=(20, 20, 20))
+    draw.text((16, 34), "Rebuttal Table 2: MSE/SSIM/PSNR (bg-diff) + |Fn-mg|", fill=(90, 90, 90))
 
     headers = ["Case", "g", "MSE", "SSIM", "PSNR", "|Fn err|", "Fn ViT"]
     xs = [16, 72, 110, 170, 230, 300, 390]

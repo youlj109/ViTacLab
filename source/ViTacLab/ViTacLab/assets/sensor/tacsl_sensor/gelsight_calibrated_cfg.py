@@ -127,9 +127,20 @@ def advisor_xense_render_cfg(
     extra.setdefault("taxim_contact_psf_kernel_size", 11)
     # Match the official Xense FEM renderer's coarse-mesh normal interpolation
     # without modifying force-corrected depth or marker-driving height.
-    extra.setdefault("taxim_response_mesh_scale", 4)
+    extra.setdefault("taxim_response_mesh_scale", 3)
     extra.setdefault("taxim_response_mesh_smooth_iterations", 6)
     extra.setdefault("taxim_response_mesh_blend", 1.0)
+    # Real nut contrast grows with indentation while the Taxim gradient table
+    # alone stays nearly load-invariant. Scale only the full-frame RGB response;
+    # corrected depth and marker-driving height remain unchanged.
+    extra.setdefault("taxim_response_load_gain_min", 0.78)
+    extra.setdefault("taxim_response_load_gain_max", 1.62)
+    extra.setdefault("taxim_response_load_reference_depth_mm", 0.42)
+    extra.setdefault("taxim_response_load_exponent", 1.05)
+    # Spread the completed chroma/directional-light response beyond the exact
+    # geometric contact mask, matching the real gel's soft optical halo.
+    extra.setdefault("taxim_final_response_psf_blend", 0.20)
+    extra.setdefault("taxim_final_response_psf_kernel_size", 31)
     # Approximate real right-side reddish illumination asymmetry.
     extra.setdefault("taxim_contact_red_tilt_strength", 1.45)
     extra.setdefault("taxim_contact_red_tilt_power", 0.55)

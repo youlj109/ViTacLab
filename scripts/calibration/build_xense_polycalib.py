@@ -389,6 +389,7 @@ def _run_poly_table_calib(
     edge_weight_min: float = 0.20,
     edge_weight_power: float = 2.0,
     grad_table_smooth_sigma: float = 0.0,
+    fit_mode: str = "frame_interpolated",
 ) -> Path:
     """Run Taxim polyTableCalib with Xense params and NaN-safe polynomial fit."""
     import scipy.ndimage
@@ -447,6 +448,26 @@ def _run_poly_table_calib(
         gd1 = interpolate.griddata((x1, y1), newarr.ravel(), (xx, yy), method="nearest", fill_value=0)
         return np.nan_to_num(gd1, nan=0.0, posinf=0.0, neginf=0.0)
 
+    def _interpolate_known(img: np.ndarray, known: np.ndarray) -> np.ndarray:
+        """Fill only genuinely unobserved bins, wrapping the direction axis."""
+        yy, xx = np.nonzero(known)
+        if xx.size == 0:
+            return np.zeros_like(img, dtype=np.float64)
+        query_y, query_x = np.mgrid[: img.shape[0], : img.shape[1]]
+        points = np.concatenate(
+            (
+                np.stack((xx, yy), axis=1),
+                np.stack((xx - img.shape[1], yy), axis=1),
+                np.stack((xx + img.shape[1], yy), axis=1),
+            ),
+            axis=0,
+        )
+        values = np.tile(img[yy, xx], 3)
+        filled = interpolate.griddata(
+            points, values, (query_x, query_y), method="nearest", fill_value=0
+        )
+        return np.nan_to_num(filled, nan=0.0, posinf=0.0, neginf=0.0)
+
     def _fit_poly_params(xf: np.ndarray, yf: np.ndarray, b: np.ndarray, w: np.ndarray | None = None) -> np.ndarray:
         xf = np.asarray(xf, dtype=np.float64).ravel()
         yf = np.asarray(yf, dtype=np.float64).ravel()
@@ -474,6 +495,11 @@ def _run_poly_table_calib(
 
     radius_max = float(np.max(radius_record)) if np.size(radius_record) > 0 else 1.0
     frame_weights: list[float] = []
+    pooled_bin_ids: list[np.ndarray] = []
+    pooled_x: list[np.ndarray] = []
+    pooled_y: list[np.ndarray] = []
+    pooled_rgb: list[np.ndarray] = []
+    pooled_weights: list[np.ndarray] = []
     gamma = max(float(deep_weight_gamma), 0.0)
     edge_min = float(np.clip(edge_weight_min, 0.0, 1.0))
     edge_pow = max(float(edge_weight_power), 0.0)
@@ -566,19 +592,76 @@ def _run_poly_table_calib(
         r_norm = float(radius_record[idx_i]) / max(radius_max, 1.0e-6)
         w_i = float(np.clip(r_norm, 1.0e-6, 1.0) ** gamma)
         frame_weights.append(max(w_i, 1.0e-6))
+        pooled_bin_ids.append((idx_x * bins + idx_y).astype(np.int32))
+        pooled_x.append(valid_x.astype(np.float64))
+        pooled_y.append(valid_y.astype(np.float64))
+        pooled_rgb.append(np.stack((valid_r, valid_g, valid_b), axis=1))
+        pooled_weights.append(np.full(valid_x.shape, max(w_i, 1.0e-6), dtype=np.float64))
 
-    table_v = np.array(value_list)
-    table_x = np.array(locx_list)
-    table_y = np.array(locy_list)
-    table_w = np.asarray(frame_weights, dtype=np.float64)
     grad_r = np.zeros((bins, bins, 6))
     grad_g = np.zeros((bins, bins, 6))
     grad_b = np.zeros((bins, bins, 6))
-    for i in range(table_v.shape[1]):
-        for j in range(table_v.shape[2]):
-            grad_r[i, j, :] = _fit_poly_params(table_x[:, i, j], table_y[:, i, j], table_v[:, i, j, 0], table_w)
-            grad_g[i, j, :] = _fit_poly_params(table_x[:, i, j], table_y[:, i, j], table_v[:, i, j, 1], table_w)
-            grad_b[i, j, :] = _fit_poly_params(table_x[:, i, j], table_y[:, i, j], table_v[:, i, j, 2], table_w)
+    observed_bins = np.zeros((bins, bins), dtype=bool)
+    if fit_mode == "pooled_pixels":
+        sample_bin = np.concatenate(pooled_bin_ids)
+        sample_x = np.concatenate(pooled_x)
+        sample_y = np.concatenate(pooled_y)
+        sample_rgb = np.concatenate(pooled_rgb, axis=0)
+        sample_weight = np.concatenate(pooled_weights)
+        order = np.argsort(sample_bin, kind="stable")
+        sample_bin = sample_bin[order]
+        sample_x = sample_x[order]
+        sample_y = sample_y[order]
+        sample_rgb = sample_rgb[order]
+        sample_weight = sample_weight[order]
+        unique_bins, starts, counts = np.unique(
+            sample_bin, return_index=True, return_counts=True
+        )
+        for flat_bin, start, count in zip(unique_bins, starts, counts):
+            if int(count) < 6:
+                continue
+            i, j = divmod(int(flat_bin), bins)
+            stop = int(start + count)
+            sl = slice(int(start), stop)
+            grad_r[i, j, :] = _fit_poly_params(
+                sample_x[sl], sample_y[sl], sample_rgb[sl, 0], sample_weight[sl]
+            )
+            grad_g[i, j, :] = _fit_poly_params(
+                sample_x[sl], sample_y[sl], sample_rgb[sl, 1], sample_weight[sl]
+            )
+            grad_b[i, j, :] = _fit_poly_params(
+                sample_x[sl], sample_y[sl], sample_rgb[sl, 2], sample_weight[sl]
+            )
+            observed_bins[i, j] = True
+        for coefficient in range(6):
+            grad_r[:, :, coefficient] = _interpolate_known(
+                grad_r[:, :, coefficient], observed_bins
+            )
+            grad_g[:, :, coefficient] = _interpolate_known(
+                grad_g[:, :, coefficient], observed_bins
+            )
+            grad_b[:, :, coefficient] = _interpolate_known(
+                grad_b[:, :, coefficient], observed_bins
+            )
+    elif fit_mode == "frame_interpolated":
+        table_v = np.array(value_list)
+        table_x = np.array(locx_list)
+        table_y = np.array(locy_list)
+        table_w = np.asarray(frame_weights, dtype=np.float64)
+        for i in range(table_v.shape[1]):
+            for j in range(table_v.shape[2]):
+                grad_r[i, j, :] = _fit_poly_params(
+                    table_x[:, i, j], table_y[:, i, j], table_v[:, i, j, 0], table_w
+                )
+                grad_g[i, j, :] = _fit_poly_params(
+                    table_x[:, i, j], table_y[:, i, j], table_v[:, i, j, 1], table_w
+                )
+                grad_b[i, j, :] = _fit_poly_params(
+                    table_x[:, i, j], table_y[:, i, j], table_v[:, i, j, 2], table_w
+                )
+        observed_bins[:] = True
+    else:
+        raise ValueError(f"Unknown fit_mode={fit_mode!r}")
 
     sigma = max(float(grad_table_smooth_sigma), 0.0)
     if sigma > 1.0e-6:
@@ -599,6 +682,8 @@ def _run_poly_table_calib(
         edge_weight_min=edge_min,
         edge_weight_power=edge_pow,
         grad_table_smooth_sigma=sigma,
+        fit_mode=np.asarray(fit_mode),
+        observed_bin_count=np.asarray(int(observed_bins.sum()), dtype=np.int64),
         marker_masked_fit=np.asarray("marker_masks" in data_file.files),
         marker_mask_version=np.asarray(marker_mask_version),
         marker_mask_fraction_mean=np.asarray(float(np.mean(marker_masks)), dtype=np.float64),
@@ -677,6 +762,12 @@ def main() -> int:
         default=0.0,
         help="Gaussian smoothing sigma on fitted grad tables across bins (0 disables).",
     )
+    parser.add_argument(
+        "--fit-mode",
+        choices=("frame_interpolated", "pooled_pixels"),
+        default="frame_interpolated",
+        help="Fit spatial polynomials from per-frame interpolated bins or only observed pooled pixels.",
+    )
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir).expanduser().resolve()
@@ -730,6 +821,7 @@ def main() -> int:
         edge_weight_min=float(args.edge_weight_min),
         edge_weight_power=float(args.edge_weight_power),
         grad_table_smooth_sigma=float(args.grad_table_smooth_sigma),
+        fit_mode=str(args.fit_mode),
     )
 
     install_cmd = [
