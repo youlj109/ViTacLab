@@ -32,6 +32,19 @@ ADVISOR_WEIGHT_CLEARANCE_Z = 0.518
 ADVISOR_WEIGHT_DROP_OFFSET = 0.010
 # Contact alignment is via nut pose (contact-offset-x/y), not whole-image UV shift.
 ADVISOR_TACTILE_UV_SHIFT_PX = (0.0, 0.0)
+# Camera-depth projection scale fitted to the outer footprint of the real
+# Advisor G210 imprint.  Values above one shrink the centered depth map.
+ADVISOR_DEPTH_FOOTPRINT_SCALE = 1.7
+# The nominal threaded M2 hole is 2.0 mm below.  Its contact imprint is wider
+# because the thread/chamfer does not press the gel; use this effective opening
+# only for the Advisor contact collider, not as a replacement mechanical size.
+ADVISOR_EFFECTIVE_CONTACT_HOLE_DIAMETER = 0.0028
+# Effective point stiffness fitted from the G010 peak target:
+# k_ref = 66 * (0.55736 mm / 0.020 mm) = 1839.3 N/m, rounded to 1840 N/m.
+# Stage C then follows force/k_ref -> robust ratio -> complete-height-map
+# scaling without an additional amplitude correction.
+ADVISOR_FORCE_RENDER_K_REF = 1840.0
+ADVISOR_FORCE_RENDER_DEPTH_GAIN = 1.0
 ADVISOR_MARKER_LOAD_REF_FN_N = 0.72
 ADVISOR_MARKER_LOAD_SCALE_EXPONENT = 0.48
 ADVISOR_MARKER_DEPTH_GAMMA = 1.2

@@ -85,6 +85,7 @@ def advisor_xense_render_cfg(
 ):
     """Lab Xense advisor cfg: native 400x700, clean bg, lab marker rest coordinates."""
 
+    local_dir = local_xense_lab_data_dir()
     extra: dict = {}
     if fitted_params_path is not None:
         path = Path(fitted_params_path).expanduser()
@@ -97,8 +98,6 @@ def advisor_xense_render_cfg(
             if gain is not None:
                 extra["marker_displacement_gain"] = float(gain)
             ths = rec.get("taxim_height_scale")
-            if ths is None:
-                ths = data.get("recommended_force_render_k_ref_scale")
             if ths is not None:
                 extra["taxim_height_scale"] = float(ths)
             pattern = rec.get("marker_pattern")
@@ -126,21 +125,49 @@ def advisor_xense_render_cfg(
     # Additional contact PSF to suppress overly crisp synthetic contour boundaries.
     extra.setdefault("taxim_contact_psf_blend", 0.90)
     extra.setdefault("taxim_contact_psf_kernel_size", 11)
+    # Match the official Xense FEM renderer's coarse-mesh normal interpolation
+    # without modifying force-corrected depth or marker-driving height.
+    extra.setdefault("taxim_response_mesh_scale", 3)
+    extra.setdefault("taxim_response_mesh_smooth_iterations", 6)
+    extra.setdefault("taxim_response_mesh_blend", 1.0)
+    # Real nut contrast grows with indentation while the Taxim gradient table
+    # alone stays nearly load-invariant. Scale only the full-frame RGB response;
+    # corrected depth and marker-driving height remain unchanged.
+    extra.setdefault("taxim_response_load_gain_min", 0.78)
+    extra.setdefault("taxim_response_load_gain_max", 1.62)
+    extra.setdefault("taxim_response_load_reference_depth_mm", 0.42)
+    extra.setdefault("taxim_response_load_exponent", 1.05)
+    # Spread the completed chroma/directional-light response beyond the exact
+    # geometric contact mask, matching the real gel's soft optical halo.
+    extra.setdefault("taxim_final_response_psf_blend", 0.20)
+    extra.setdefault("taxim_final_response_psf_kernel_size", 31)
     # Approximate real right-side reddish illumination asymmetry.
     extra.setdefault("taxim_contact_red_tilt_strength", 1.45)
     extra.setdefault("taxim_contact_red_tilt_power", 0.55)
-    extra.setdefault("taxim_contact_red_tilt_additive", 24.0)
-    # Align low-frequency no-contact illumination field with lab capture.
-    extra.setdefault("taxim_illumination_reference_path", "data/calibration/tactile/real/normal_force/no_contact/rgb.png")
+    extra.setdefault("taxim_contact_red_tilt_additive", 12.0)
+    extra.setdefault("taxim_contact_tint_gradient_weight", True)
+    # The clean background already preserves the lab's low-frequency illumination.
+    # Never derive the illumination map from a raw no-contact frame: its printed
+    # markers survive Gaussian filtering as gray halos and are then duplicated by
+    # the explicit FOTS marker overlay.
+    extra.setdefault("taxim_illumination_reference_path", str(local_dir / "bg_clean.jpg"))
     extra.setdefault("taxim_illumination_blend", 0.55)
     extra.setdefault("taxim_illumination_bias_blend", 0.35)
     extra.setdefault("taxim_illumination_kernel_size", 101)
     # Advisor release snapshots should resemble lab marker appearance first.
     # Keep marker motion in a realistic range for Xense (avoid hard-cap saturation).
     extra.setdefault("marker_displacement_gain", 0.15)
-    extra.setdefault("marker_blend_alpha", 1.0)
+    if str(marker_pattern).lower() == "xense":
+        # Fit against bg.jpg - bg_clean.jpg over all 220 measured rest positions:
+        # real Xense dots are soft, slightly vertically elongated, and dark blue.
+        extra.setdefault("marker_shape", "gaussian")
+        extra.setdefault("marker_gaussian_sigma_x_px", 2.6)
+        extra.setdefault("marker_gaussian_sigma_y_px", 2.9)
+        extra.setdefault("marker_gaussian_truncate", 3.0)
+        extra.setdefault("marker_blend_alpha", 0.60)
+    else:
+        extra.setdefault("marker_blend_alpha", 1.0)
 
-    local_dir = local_xense_lab_data_dir()
     base = GELSIGHT_R15_CFG
     bg_name = "bg_clean.jpg" if (local_dir / "bg_clean.jpg").is_file() else "bg.jpg"
     marker_rest = "marker_rest.npy" if (local_dir / "marker_rest.npy").is_file() else ""

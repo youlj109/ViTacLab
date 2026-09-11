@@ -8,7 +8,7 @@ ViTacSim applies marker overlay **after** Taxim rendering using height-map-drive
 
 Supported patterns:
 - ``gelsight``: sparse black dots (GelSight / GelSight Mini style).
-- ``xense``: denser staggered black dots (lab Xense-style layout, black small circles).
+- ``xense``: measured lab layout with dark-blue Gaussian optical marker blobs.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ PATTERN_SPECS: dict[str, MarkerPatternSpec] = {
         grid_rows=14,
         grid_cols=14,
         radius_px=2.0,
-        color_rgb=(0, 0, 0),
+        color_rgb=(0, 0, 68),
         margin_frac=0.10,
         stagger_odd_rows=True,
     ),
@@ -201,6 +201,10 @@ class MarkerSimulator:
         deadband_mm: float = 0.02,
         max_contacts: int = 256,
         blend_alpha: float = 0.92,
+        marker_shape: str = "disk",
+        gaussian_sigma_x_px: float = 2.0,
+        gaussian_sigma_y_px: float = 2.0,
+        gaussian_truncate: float = 3.0,
         max_displacement_px: float = 25.0,
         rest_xy_override: np.ndarray | torch.Tensor | None = None,
     ):
@@ -213,6 +217,16 @@ class MarkerSimulator:
         self.deadband_mm = float(deadband_mm)
         self.max_contacts = int(max_contacts)
         self.blend_alpha = float(blend_alpha)
+        self.marker_shape = str(marker_shape).lower()
+        if self.marker_shape not in {"disk", "gaussian"}:
+            raise ValueError(f"marker_shape must be 'disk' or 'gaussian', got {marker_shape!r}")
+        self.gaussian_sigma_x_px = float(gaussian_sigma_x_px)
+        self.gaussian_sigma_y_px = float(gaussian_sigma_y_px)
+        self.gaussian_truncate = float(gaussian_truncate)
+        if self.gaussian_sigma_x_px <= 0.0 or self.gaussian_sigma_y_px <= 0.0:
+            raise ValueError("Gaussian marker sigma values must be positive")
+        if self.gaussian_truncate <= 0.0:
+            raise ValueError("gaussian_truncate must be positive")
         self.max_displacement_px = float(max_displacement_px)
 
         if pattern == "none":
@@ -270,6 +284,30 @@ class MarkerSimulator:
             return rgb
         out = rgb.clone()
         color = torch.tensor(self.spec.color_rgb, device=out.device, dtype=out.dtype)
+        if self.marker_shape == "gaussian":
+            color_float = color.to(torch.float32)
+            sx = self.gaussian_sigma_x_px
+            sy = self.gaussian_sigma_y_px
+            extent_x = int(np.ceil(self.gaussian_truncate * sx))
+            extent_y = int(np.ceil(self.gaussian_truncate * sy))
+            h, w = out.shape[0], out.shape[1]
+            for i in range(displaced_xy.shape[0]):
+                cx = float(displaced_xy[i, 0].item())
+                cy = float(displaced_xy[i, 1].item())
+                x0 = max(0, int(np.floor(cx - extent_x)))
+                x1 = min(w, int(np.ceil(cx + extent_x)) + 1)
+                y0 = max(0, int(np.floor(cy - extent_y)))
+                y1 = min(h, int(np.ceil(cy + extent_y)) + 1)
+                if x0 >= x1 or y0 >= y1:
+                    continue
+                yy = torch.arange(y0, y1, device=out.device, dtype=torch.float32).view(-1, 1)
+                xx = torch.arange(x0, x1, device=out.device, dtype=torch.float32).view(1, -1)
+                opacity = torch.exp(-0.5 * (((xx - cx) / sx) ** 2 + ((yy - cy) / sy) ** 2))
+                alpha = (self.blend_alpha * opacity).unsqueeze(-1)
+                patch = out[y0:y1, x0:x1].to(torch.float32)
+                out[y0:y1, x0:x1] = (alpha * color_float + (1.0 - alpha) * patch).to(out.dtype)
+            return out
+
         r = int(max(1, round(self.spec.radius_px)))
         h, w = out.shape[0], out.shape[1]
         for i in range(displaced_xy.shape[0]):

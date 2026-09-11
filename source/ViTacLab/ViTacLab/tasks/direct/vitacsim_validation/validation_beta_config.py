@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .m2_nut_spec import ADVISOR_CASE_MASS_G
+from .m2_nut_spec import ADVISOR_CASE_MASS_G, ADVISOR_FORCE_RENDER_K_REF
 
 WEIGHT_ORDER = ("W200", "W100", "W050", "W020", "W010")
 WEIGHT_MASS_G = {"W200": 200, "W100": 100, "W050": 50, "W020": 20, "W010": 10}
@@ -33,7 +33,9 @@ SF_PANEL_WEIGHTS = ("W200", "W100", "W050")
 SF_PANEL_FX = 0.15
 SF_BAR_FX = 0.15
 
-FORCE_RENDER_K_REF_W100 = 66.0
+FORCE_RENDER_K_REF = 66.0
+# Compatibility alias retained for older validation/report scripts.
+FORCE_RENDER_K_REF_W100 = FORCE_RENDER_K_REF
 
 
 def nominal_fn_n(case_id: str) -> float:
@@ -43,10 +45,10 @@ def nominal_fn_n(case_id: str) -> float:
 
 
 def adaptive_force_render_k_ref(case_id: str, *, base_k: float = FORCE_RENDER_K_REF_W100) -> float:
-    """Scale k_ref inversely with mass so heavier weights get stronger corrected RGB at similar fn_peak."""
-    ref_nom = nominal_fn_n("W100" if case_id not in ADVISOR_MASS_KG else "G110")
-    nom = nominal_fn_n(case_id)
-    return base_k * ref_nom / max(nom, 1e-9)
+    """Return the configured effective stiffness, invariant within each profile."""
+    if case_id in ADVISOR_MASS_KG:
+        return float(ADVISOR_FORCE_RENDER_K_REF)
+    return float(base_k)
 
 
 def resolve_force_render_k_ref(case_id: str, cli_value: float) -> float:

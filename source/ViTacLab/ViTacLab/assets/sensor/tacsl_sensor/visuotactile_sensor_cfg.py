@@ -101,8 +101,22 @@ class GelSightRenderCfg:
     """Scale penetration depth (m) before Taxim RGB synthesis (Task2 ``rgb_diff_scale``)."""
     taxim_rgb_response_gain: float = 1.0
     """Gain on Taxim RGB polynomial response before adding background."""
+    taxim_response_load_gain_min: float = 1.0
+    """Uniform RGB response gain at zero indentation; does not modify the height map."""
+    taxim_response_load_gain_max: float = 1.0
+    """Uniform RGB response gain at the configured reference indentation."""
+    taxim_response_load_reference_depth_mm: float = 0.42
+    """Physical pre-Taxim-scale peak indentation corresponding to the maximum response gain."""
+    taxim_response_load_exponent: float = 1.0
+    """Exponent of the peak-indentation optical response curve."""
     taxim_smoothing_kernel_size: int = 5
     """Gaussian smoothing kernel size for height map before Taxim gradient lookup."""
+    taxim_normal_smoothing_kernel_size: int = 1
+    """Gaussian smoothing kernel for gradient vectors before Taxim normal lookup.
+
+    Unlike height smoothing, this changes only optical surface normals. A value
+    of 1 disables the operation and preserves the corrected height map exactly.
+    """
     taxim_contact_edge_denoise_blend: float = 0.0
     """Blend ratio for depth-domain denoising on the contact boundary band before Taxim lookup."""
     taxim_contact_edge_denoise_kernel_size: int = 9
@@ -125,10 +139,26 @@ class GelSightRenderCfg:
     """Exponent on contact weighting for red-tilt modulation (higher focuses tilt on deeper contact)."""
     taxim_contact_red_tilt_additive: float = 0.0
     """Additive red offset inside contact (in 0-255 RGB units) to avoid underpowered multiplicative tint."""
+    taxim_contact_tint_gradient_weight: bool = False
+    """Weight asymmetric contact tint by height gradient instead of filled contact depth.
+
+    This is appropriate for a flat annular indenter: its optical response is concentrated
+    around the inner/outer boundaries rather than filling the complete nut face.
+    """
     taxim_contact_psf_blend: float = 0.0
     """Global contact-region Gaussian PSF blend ratio to reduce overly crisp synthetic contours."""
     taxim_contact_psf_kernel_size: int = 5
     """Gaussian kernel size used by contact PSF blend (odd integer; even values are auto-adjusted)."""
+    taxim_response_mesh_scale: int = 1
+    """Downsample factor for mesh-like interpolation of contact RGB response only."""
+    taxim_response_mesh_smooth_iterations: int = 0
+    """Number of 3x3 smoothing passes at the reduced response resolution."""
+    taxim_response_mesh_blend: float = 1.0
+    """Blend weight of mesh-interpolated contact response; background and markers are unaffected."""
+    taxim_final_response_psf_blend: float = 0.0
+    """Final global PSF blend on RGB-minus-background after chroma and directional lighting."""
+    taxim_final_response_psf_kernel_size: int = 15
+    """Gaussian kernel size for final contact-response spreading; background and markers are excluded."""
     taxim_illumination_reference_path: str = ""
     """Optional real no-contact image path used to build low-frequency illumination alignment maps."""
     taxim_illumination_blend: float = 0.0
@@ -158,6 +188,18 @@ class GelSightRenderCfg:
 
     marker_blend_alpha: float = 0.92
     """Marker color blend weight when compositing onto Taxim RGB."""
+
+    marker_shape: str = "disk"
+    """Marker footprint: ``disk`` for a hard circular dot or ``gaussian`` for a soft optical blob."""
+
+    marker_gaussian_sigma_x_px: float = 2.0
+    """Horizontal standard deviation of a Gaussian marker in pixels."""
+
+    marker_gaussian_sigma_y_px: float = 2.0
+    """Vertical standard deviation of a Gaussian marker in pixels."""
+
+    marker_gaussian_truncate: float = 3.0
+    """Gaussian marker support radius in standard deviations."""
 
     marker_max_displacement_px: float = 25.0
     """Clamp FOTS marker displacement magnitude (px) to avoid gradient blow-up at high resolution."""
@@ -264,12 +306,18 @@ class VisuoTactileSensorCfg(SensorBaseCfg):
     """Small epsilon used in normal-correction ratios/divisions to avoid zero-division."""
 
     normal_correction_trim_ratio: float = 0.2
-    """Trim ratio for robust local mean in V2 normal correction (0 disables trimming)."""
+    """Trim ratio for robust means in V2 normal and render correction (0 disables trimming).
+
+    The default ``0.2`` discards the lowest 20% and highest 20% of force/depth render
+    correction ratios, then averages the middle 60%.
+    """
 
     normal_correction_k_ref: float = 1e4
-    """Reference stiffness ``k_ref`` for V2 normal correction.
+    """Reference effective elastic stiffness ``k_ref`` of the physical tactile gel.
 
-    If set to ``<= 0``, V2 falls back to :attr:`normal_contact_stiffness`.
+    It converts force to indentation through ``delta = force / k_ref``, so its units
+    must be consistent with force in newtons and indentation in meters. If set to
+    ``<= 0``, V2 falls back to :attr:`normal_contact_stiffness`.
     """
 
     enable_slip_stick_reconstruction: bool = True
@@ -320,8 +368,9 @@ class VisuoTactileSensorCfg(SensorBaseCfg):
     enable_corrected_force_render: bool = False
     """Enable Stage-C render correction in :class:`VisuoTactileSensorV2`.
 
-    When enabled, V2 blends the camera depth-difference height map with a force-derived
-    corrected penetration map reconstructed from corrected normal force.
+    When enabled, V2 estimates a robust scalar from sparse force/depth pairs and applies
+    that scalar to the complete camera depth-difference height map. This preserves the
+    dense contact shape and all relative depth relationships before Taxim rendering.
     """
 
     corrected_force_render_blend: float = 1.0
@@ -331,8 +380,20 @@ class VisuoTactileSensorCfg(SensorBaseCfg):
     Recommended range is ``[0, 1]``.
     """
 
+    corrected_force_render_depth_gain: float = 1.0
+    """Optional global linear gain after the robust force/depth ratio.
+
+    The effective dense-map scale is ``robust_ratio * depth_gain``. The gain
+    is a single load-independent scalar and preserves all relative depth
+    relationships. ``1.0`` leaves the ``force/k_ref`` result unchanged.
+    """
+
     force_height_max_m: float = 0.006
-    """Upper bound (m) on force-derived penetration used for Taxim RGB and marker height maps."""
+    """Legacy force-map limit retained for configuration compatibility.
+
+    V2's dense, scale-based correction does not clip individual pixels because doing so
+    would destroy relative depth relationships in the simulated indentation.
+    """
 
     marker_load_ref_fn_n: float = 0.72
     """Reference PhysX normal force (N) for ViTacSim marker load scaling (advisor G110 ~0.72 N)."""
