@@ -141,7 +141,16 @@ def advisor_xense_render_cfg(
     # Advisor release snapshots should resemble lab marker appearance first.
     # Keep marker motion in a realistic range for Xense (avoid hard-cap saturation).
     extra.setdefault("marker_displacement_gain", 0.15)
-    extra.setdefault("marker_blend_alpha", 1.0)
+    if str(marker_pattern).lower() == "xense":
+        # Fit against bg.jpg - bg_clean.jpg over all 220 measured rest positions:
+        # real Xense dots are soft, slightly vertically elongated, and dark blue.
+        extra.setdefault("marker_shape", "gaussian")
+        extra.setdefault("marker_gaussian_sigma_x_px", 2.8)
+        extra.setdefault("marker_gaussian_sigma_y_px", 3.1)
+        extra.setdefault("marker_gaussian_truncate", 3.0)
+        extra.setdefault("marker_blend_alpha", 0.57)
+    else:
+        extra.setdefault("marker_blend_alpha", 1.0)
 
     base = GELSIGHT_R15_CFG
     bg_name = "bg_clean.jpg" if (local_dir / "bg_clean.jpg").is_file() else "bg.jpg"

@@ -225,6 +225,10 @@ class GelsightRender:
                 shear_gain=float(getattr(self.cfg, "marker_shear_gain", 8.0)),
                 deadband_mm=float(getattr(self.cfg, "marker_deadband_mm", 0.02)),
                 blend_alpha=float(getattr(self.cfg, "marker_blend_alpha", 0.85)),
+                marker_shape=str(getattr(self.cfg, "marker_shape", "disk")),
+                gaussian_sigma_x_px=float(getattr(self.cfg, "marker_gaussian_sigma_x_px", 2.0)),
+                gaussian_sigma_y_px=float(getattr(self.cfg, "marker_gaussian_sigma_y_px", 2.0)),
+                gaussian_truncate=float(getattr(self.cfg, "marker_gaussian_truncate", 3.0)),
                 max_displacement_px=float(getattr(self.cfg, "marker_max_displacement_px", 25.0)),
                 rest_xy_override=rest_override,
             )

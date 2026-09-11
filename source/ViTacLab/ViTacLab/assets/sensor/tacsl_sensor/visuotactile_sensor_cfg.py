@@ -165,6 +165,18 @@ class GelSightRenderCfg:
     marker_blend_alpha: float = 0.92
     """Marker color blend weight when compositing onto Taxim RGB."""
 
+    marker_shape: str = "disk"
+    """Marker footprint: ``disk`` for a hard circular dot or ``gaussian`` for a soft optical blob."""
+
+    marker_gaussian_sigma_x_px: float = 2.0
+    """Horizontal standard deviation of a Gaussian marker in pixels."""
+
+    marker_gaussian_sigma_y_px: float = 2.0
+    """Vertical standard deviation of a Gaussian marker in pixels."""
+
+    marker_gaussian_truncate: float = 3.0
+    """Gaussian marker support radius in standard deviations."""
+
     marker_max_displacement_px: float = 25.0
     """Clamp FOTS marker displacement magnitude (px) to avoid gradient blow-up at high resolution."""
 
