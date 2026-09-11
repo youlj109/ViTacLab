@@ -65,10 +65,11 @@ as CLI overrides for geometry sweeps.
 Marker geometry is fitted from the verified no-contact pair: `bg.jpg` with
 markers minus `bg_clean.jpg` without markers, sampled at all 220 measured
 `marker_rest.npy` positions. The Xense renderer uses a dark-blue anisotropic
-Gaussian (`sigma_x=2.8 px`, `sigma_y=3.1 px`, alpha `0.57`) instead of the old
-hard radius-2 disk. Its measured half-height diameter is 6.86 px versus 6.28 px
-in the real frame; marker-neighborhood RMSE drops from 36.65 to 17.70. This
-overlay is still applied only after marker-free Taxim optical rendering.
+Gaussian (`sigma_x=2.6 px`, `sigma_y=2.9 px`, alpha `0.60`) instead of the old
+hard radius-2 disk. This is a lightly sharpened version of the direct template
+fit: it keeps the real marker scale while making the center and boundary more
+legible. The overlay is still applied only after marker-free Taxim optical
+rendering.
 
 To preview the new stiffness from the legacy `k_ref=66 N/m` saved maps without
 rerunning PhysX, use the mathematically equivalent ratio `66/1840=0.03587`:

@@ -158,8 +158,8 @@ data/calibration/tactile/fitted_params.json   # 真机就绪后生成
 |------|--------|-------------|
 | 分辨率 | **400×700** | 固定（mp4 原生） |
 | `marker_pattern` | **xense** | 固定 |
-| marker 外观 | 深蓝各向异性 Gaussian，`sigma=(2.8, 3.1) px` | ✅ 由带/不带 marker 背景差分拟合 |
-| `marker_blend_alpha` | **0.57** | ✅ 真机中心强度拟合 |
+| marker 外观 | 深蓝各向异性 Gaussian，`sigma=(2.6, 2.9) px` | ✅ 实测模板拟合后轻微锐化 |
+| `marker_blend_alpha` | **0.60** | ✅ 保持中心强度并提高可辨识度 |
 | `mm_per_pixel` | **≈0.052** | 固定（GelSight 外推，待实验室确认） |
 | `bg_clean.jpg` | 实验室 file-000 | ✅ |
 | `polycalib.npz` | **file-000 marker-free 50 帧拟合 + 50 帧留出验证** | ✅ |

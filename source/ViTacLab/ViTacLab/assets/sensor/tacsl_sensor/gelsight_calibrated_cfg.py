@@ -145,10 +145,10 @@ def advisor_xense_render_cfg(
         # Fit against bg.jpg - bg_clean.jpg over all 220 measured rest positions:
         # real Xense dots are soft, slightly vertically elongated, and dark blue.
         extra.setdefault("marker_shape", "gaussian")
-        extra.setdefault("marker_gaussian_sigma_x_px", 2.8)
-        extra.setdefault("marker_gaussian_sigma_y_px", 3.1)
+        extra.setdefault("marker_gaussian_sigma_x_px", 2.6)
+        extra.setdefault("marker_gaussian_sigma_y_px", 2.9)
         extra.setdefault("marker_gaussian_truncate", 3.0)
-        extra.setdefault("marker_blend_alpha", 0.57)
+        extra.setdefault("marker_blend_alpha", 0.60)
     else:
         extra.setdefault("marker_blend_alpha", 1.0)
 
