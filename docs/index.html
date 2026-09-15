@@ -235,6 +235,41 @@
       </div>
     </section>
 
+    <section class="section" id="xense-results" aria-labelledby="xense-results-title">
+      <div class="shell">
+        <p class="section-kicker">Real-sensor image comparison · September 2026</p>
+        <h2 id="xense-results-title">Six loads, three tactile renderers</h2>
+        <p>Real / ViTacSim / TacSL depth-only replay / official Xensim. Current ViTacSim settings: k_ref=1350 N/m, depth_gain=3.2. All images retain markers.</p>
+        <figure class="paper-figure">
+          <a href="media/xense-six-load/all-loads-full.png">
+            <img src="media/xense-six-load/all-loads-crops.png" width="880" height="1572" alt="Six nut loads from 10 to 210 grams, with Real, ViTacSim, repository TacSL depth-only replay, and official Xensim in four columns; markers included" loading="lazy" decoding="async">
+          </a>
+          <figcaption>Contact crops. Select the image to view all six complete 400×700 tactile frames per method.</figcaption>
+        </figure>
+        <div class="table-card">
+          <div class="table-heading"><h3>Contact-region background-subtracted RGB RMSE ↓</h3></div>
+          <div class="table-scroll" tabindex="0" aria-label="Six-load image error comparison">
+            <table>
+              <thead><tr><th scope="col">Load</th><th scope="col">ViTacSim</th><th scope="col">TacSL depth-only replay</th><th scope="col">Official Xensim</th></tr></thead>
+              <tbody>
+                <tr><th scope="row">G010</th><td>7.902</td><td>11.498</td><td>4.609</td></tr>
+                <tr><th scope="row">G030</th><td>8.970</td><td>11.868</td><td>8.297</td></tr>
+                <tr><th scope="row">G060</th><td>8.993</td><td>10.316</td><td>10.770</td></tr>
+                <tr><th scope="row">G110</th><td>9.608</td><td>10.158</td><td>15.040</td></tr>
+                <tr><th scope="row">G160</th><td>10.029</td><td>10.279</td><td>17.893</td></tr>
+                <tr><th scope="row">G210</th><td>11.331</td><td>11.369</td><td>18.555</td></tr>
+                <tr><th scope="row">Mean</th><td>9.472</td><td>10.915</td><td>12.528</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="table-note">RGB intensity units (0–255), not force RMSE. Fixed 220×220 ROI: x=[90,310), y=[240,460). Subtract each method's own resting RGB; markers remain included. Mean is the mean of per-load RMSE.</p>
+        </div>
+        <p>Official Xensim has lower error on G010/G030; ViTacSim has lower error on the other four loads. TacSL is this repository's depth-only implementation replayed with current shared optics, not an upstream benchmark. Official Xensim receives ViTacSim-corrected depths (nstep=3, smooth_norm=8, rgb_gain=1.3). These are in-sample, saved-depth comparisons, not independent validation or a new six-load PhysX experiment.</p>
+        <p><a href="media/xense-six-load/all-loads-full.png">Complete tactile images</a> · <a href="media/xense-six-load/metrics.json">Download MAE/RMSE data</a> · <a href="https://github.com/youlj109/ViTacLab/blob/main/docs/XENSE_SIX_LOAD_RESULTS.md">Full RGB errors, protocol and reproduction</a></p>
+      </div>
+    </section>
+
+
     <section class="section section-dark" id="benchmark" aria-labelledby="benchmark-title">
       <div class="shell">
         <div class="split-heading split-heading-light" data-reveal>
