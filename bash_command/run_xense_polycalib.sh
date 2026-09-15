@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Build Xense polycalib from logs/file-000.mp4 and install into xense_lab_data/.
+# Build Xense polycalib from ball-indent frames and install into xense_lab_data/.
+# The true no-contact pair defaults to advisor_processed/bg.jpg + bg_clean.jpg;
+# ball_calib_raw/bg/no_contact.png is intentionally not used as the fit baseline.
 #
 # Usage (ViTacLab repo root):
 #   bash bash_command/run_xense_polycalib.sh

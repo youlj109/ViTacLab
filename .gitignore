@@ -88,6 +88,9 @@ tests/
 **/tactile_record/*
 **/gelsight_r15_data/*
 vendor/
+third_party/Taxim/
+third_party/xense_sim_official_v1.1.0/
+third_party/xensim_official_v1.0.0/
 vitac_full_delivery_pack.tar.gz
 logs.zip
 source/ViTacLab/ViTacLab/assets.zip

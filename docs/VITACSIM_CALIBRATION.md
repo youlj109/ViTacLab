@@ -55,6 +55,19 @@ TacSL / Taxim 路径（ViTacLab 沿用）：
 
 Marker 层（TacEx/FOTS）在 Taxim RGB 之上叠加，见 Task 1 文档。
 
+### 3.1 Xense `polycalib.npz` 的背景与 marker 约定
+
+Xense 当前有效的零接触背景是一对配套图像：
+
+- `data/calibration/tactile/advisor_processed/bg.jpg`：真实零接触、带 printed marker；用于 marker 静止位置和原始球压差分。
+- `data/calibration/tactile/advisor_processed/bg_clean.jpg`：同一背景去除 marker；用于 Taxim 光学拟合的 `f0`，并随 `polycalib.npz` 安装。
+
+`data/calibration/tactile/ball_calib_raw/bg/no_contact.png` 含有可见残余接触，构建脚本不会再自动使用它。
+球压采集图可以保留 marker，但 `build_xense_polycalib.py` 会逐帧检测/追踪 marker：先对这些区域做 inpaint，再从多项式拟合样本中排除同一 mask。原图仍用于接触圆检测。诊断输出位于
+`data/calibration/tactile/ball_calib_raw/diagnostics/polycalib_marker_masking/`，mask 统计位于 `marker_mask_report.json` 和 `fit_marker_exclusion.json`。
+
+`--fit-mode pooled_pixels` 只用各帧真正观测到的 `(梯度幅值, 梯度方向)` 像素拟合空间多项式，拟合完成后才补齐未观测 bin。旧的 `frame_interpolated` 模式保留用于复现 Taxim 原流程，但它会先逐帧补齐 bin，再把插值值当成观测参与拟合。必须用 `evaluate_xense_ball_polycalib.py` 的纯表模式同时检查训练集和留出集；该评估会关闭 response mesh、载荷增益和最终 PSF，避免后处理掩盖标定误差。
+
 ---
 
 ## 4. 标定 Case 协议（11 cases）
@@ -147,11 +160,20 @@ data/calibration/tactile/fitted_params.json   # 真机就绪后生成
 |------|--------|-------------|
 | 分辨率 | **400×700** | 固定（mp4 原生） |
 | `marker_pattern` | **xense** | 固定 |
+| marker 外观 | 深蓝各向异性 Gaussian，`sigma=(2.6, 2.9) px` | ✅ 实测模板拟合后轻微锐化 |
+| `marker_blend_alpha` | **0.60** | ✅ 保持中心强度并提高可辨识度 |
 | `mm_per_pixel` | **≈0.052** | 固定（GelSight 外推，待实验室确认） |
 | `bg_clean.jpg` | 实验室 file-000 | ✅ |
-| `polycalib.npz` | **GelSight R15 拷贝** | ❌ 等导师 50 次球压 |
+| `polycalib.npz` | **file-000 marker-free 50 帧 pooled-pixel 拟合 + 50 帧留出验证** | ✅ 小球留出 RMSE 8.966 / corr 0.931；螺母跨形状 MAE 优于旧表 |
 | `marker_displacement_gain` | 默认 0.35 → **拟合 0.15** | ✅ `fitted_params.json` |
-| `rgb_diff_scale` → `k_ref` | **0.5**（sweep 用 `k_ref /= scale`） | ✅ |
+| `normal_correction_k_ref` | **1840 N/m** | ✅ 由 G010 峰值 0.020 mm 重新标定 |
+| `corrected_force_render_depth_gain` | 默认 **1.0** | 保留全局线性调节；当前默认不附加幅值修正 |
+| M2 名义几何 | 对边 3.8 mm / 螺纹孔 2.0 mm | 固定（机械尺寸） |
+| Advisor 有效接触内孔 | **2.8 mm** | ✅ 贴合真机压痕；表示螺纹/倒角不接触区域 |
+| `depth_footprint_scale` | **1.7** | ✅ 贴合真机外轮廓；大于 1 会缩小深度图投影 |
+| RGB response mesh | scale **3** / 3×3 smooth **6** 次 / blend **1.0** | ✅ 保留螺母中心孔与六角环；只柔化光学响应，不修改深度或 marker 位移 |
+| RGB load response | gain **0.78→1.62** @ 0→0.42 mm，指数 **1.05** | ✅ 修复旧渲染随载荷几乎不变、重载偏暗的问题；不修改纠正深度 |
+| Final response PSF | kernel **31** / blend **0.20** | ✅ 仅扩散 RGB-bg 响应，背景与后叠加 marker 不受影响 |
 | 接触物 | M2 螺母 + G010–G210 | ✅ |
 | `finger_root_z` | 0.441 | 待 Fn 对齐 sweep |
 | TacSL | `enable_corrected_force_render=False` | depth→Taxim |
@@ -174,12 +196,15 @@ sweep 加载拟合：`FITTED_PARAMS=data/calibration/tactile/fitted_params.json 
 | `marker_shear_gain` | 8.0 | 待扩展 | shear proxy |
 | `marker_deadband_mm` | 0.02 | 待扩展 | |
 | `marker_blend_alpha` | 0.92 | 待扩展 | |
+| `taxim_response_mesh_scale` | 通用 1；Advisor **4** | Advisor 已拟合 | 仅对 Taxim RGB 接触响应降采样/插值 |
+| `taxim_response_mesh_smooth_iterations` | 通用 0；Advisor **6** | Advisor 已拟合 | 粗分辨率下的 3×3 平滑次数 |
+| `taxim_response_mesh_blend` | Advisor **1.0** | ✅ 0.5/0.75/1.0 sweep | 不改变 force-corrected height 和 marker-driving height |
 
 ### 6.2 ViTacSim 力场（VisuoTactileSensorV2）
 
 | 参数 | 默认值 | 拟合变量 | 说明 |
 |------|--------|----------|------|
-| `normal_correction_k_ref` | 1e4 | 待扩展 | 法向校正参考刚度 |
+| `normal_correction_k_ref` | 通用 1e4；Advisor **1840 N/m** | 固定 | 等效点刚度；Advisor 各载荷使用同一个值 |
 | `normal_correction_knn` | 8 | 固定 | |
 | `normal_correction_trim_ratio` | 0.2 | 固定 | RobustMean |
 | `sticking_interp_sigma` | 0.02 | **`[TBD-ACO]`** | 共谋大业要求纳入联合优化 |
@@ -188,13 +213,21 @@ sweep 加载拟合：`FITTED_PARAMS=data/calibration/tactile/fitted_params.json 
 | `normal_contact_stiffness` | 1e4 | 待扩展 | baseline TacSL 路径 |
 | `depth_penetration_deadband` | 0.002 m | 固定 | |
 | `enable_corrected_force_render` | False（validation） | 固定 | 标定 sweep 用 depth→Taxim |
+| `corrected_force_render_depth_gain` | **1.0** | 固定 | 不附加缩放，严格保留由 `k_ref` 得到的鲁棒纠正比例 |
+
+`k_ref=1840 N/m` 由 G010 在旧 `k_ref=66 N/m` 下的实测峰值
+`0.55736 mm` 和目标 `0.020 mm` 得到：`66 × 0.55736 / 0.020 ≈ 1839.3`，
+取整为 1840。G010–G210 的纠正峰值约为
+`0.020 / 0.060 / 0.120 / 0.220 / 0.320 / 0.420 mm`。每点
+`force/k_ref`、上下各裁剪 20% 后取中间 60% 均值、再统一缩放完整深度图
+的算法保持不变；没有载荷相关指数或额外渲染增益。
 
 ### 6.3 当前联合拟合脚本实际优化的变量
 
 | 变量 | 搜索范围（grid） | 输出字段 |
 |------|------------------|----------|
 | `marker_displacement_gain` | 0.15 … 0.75 | `fitted_params.json` |
-| `rgb_diff_scale` | 0.6 … 1.6 | `recommended_force_render_k_ref_scale` |
+| `rgb_diff_scale` | 0.6 … 1.6 | `recommended_rgb_diff_post_scale`（仅图像评估，不修改 `k_ref`） |
 
 **`[TBD-ACO]`**：《共谋大业》要求网格搜索后再蚁群/模拟退火——**尚未实现**；实现时不得改变 `real/` 目录约定与 `rgb.png` 文件名。
 
@@ -218,6 +251,21 @@ python3 scripts/calibration/export_sim_reference.py
 2. 放入 `data/calibration/tactile/real/`（§5.2）。
 3. **可选**：若实验室另有 Taxim 标定包，替换  
    `source/.../gelsight_r15_data/bg.jpg` 与 `polycalib.npz`（**替换前备份**）。
+
+Xense 球压数据就绪后，使用真实零接触背景对并自动排除 marker：
+
+```bash
+bash bash_command/run_xense_polycalib.sh --skip-import
+```
+
+如需更换背景，必须同时提供同一零接触帧的带-marker与无-marker版本：
+
+```bash
+python3 scripts/calibration/build_xense_polycalib.py --skip-import \
+  --bg-raw /path/to/no_contact_with_markers.jpg \
+  --bg-clean /path/to/no_contact_without_markers.jpg \
+  --marker-rest /path/to/marker_rest.npy
+```
 
 ### Phase C — 联合拟合（真机 rgb 就绪后）
 

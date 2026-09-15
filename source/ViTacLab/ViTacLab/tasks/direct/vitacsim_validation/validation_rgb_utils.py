@@ -24,7 +24,8 @@ DEFAULT_BG_DIFF = BgDiffCfg()
 
 
 def load_bg_rgb(render_cfg) -> np.ndarray | None:
-    bg_path = Path(render_cfg.base_data_path) / render_cfg.sensor_data_dir_name / "bg.jpg"
+    bg_name = str(getattr(render_cfg, "background_path", "bg.jpg") or "bg.jpg")
+    bg_path = Path(render_cfg.base_data_path) / render_cfg.sensor_data_dir_name / bg_name
     if not bg_path.is_file():
         return None
     try:

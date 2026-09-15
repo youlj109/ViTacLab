@@ -236,6 +236,7 @@ def _pick_contact_frame(frames: list[Path], bg_rgb: np.ndarray) -> tuple[Path, d
 
 def _install_xense_lab_assets(
     *,
+    bg_rgb: np.ndarray,
     bg_clean: np.ndarray,
     marker_rest: np.ndarray,
 ) -> Path:
@@ -256,6 +257,7 @@ def _install_xense_lab_assets(
     )
     xense_dir.mkdir(parents=True, exist_ok=True)
     _save_rgb(bg_clean, xense_dir / "bg_clean.jpg")
+    _save_rgb(bg_rgb, xense_dir / "bg.jpg")
     np.save(xense_dir / "marker_rest.npy", marker_rest.astype(np.float32))
     return xense_dir
 
@@ -373,6 +375,7 @@ def main() -> int:
 
     if args.install_bg:
         xense_dir = _install_xense_lab_assets(
+            bg_rgb=bg_rgb,
             bg_clean=bg_clean,
             marker_rest=marker_rest,
         )
