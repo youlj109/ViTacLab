@@ -224,6 +224,14 @@ class GelsightRender:
                 rest_path = self._get_render_data(self.cfg.sensor_data_dir_name, rest_file)
                 if rest_path and os.path.isfile(rest_path):
                     rest_override = np.load(rest_path).astype(np.float32)
+            marker_reference = None
+            if str(getattr(self.cfg, "marker_shape", "disk")) == "measured":
+                reference_path = self._get_render_data(
+                    self.cfg.sensor_data_dir_name, self.cfg.marker_reference_path)
+                reference_bgr = cv2.imread(reference_path) if reference_path else None
+                if reference_bgr is None:
+                    raise FileNotFoundError(f"Cannot read measured marker reference: {reference_path}")
+                marker_reference = cv2.cvtColor(reference_bgr, cv2.COLOR_BGR2RGB)
             self._marker_sim = MarkerSimulator(
                 pattern=pattern,  # type: ignore[arg-type]
                 image_height=image_height,
@@ -238,6 +246,8 @@ class GelsightRender:
                 gaussian_sigma_x_px=float(getattr(self.cfg, "marker_gaussian_sigma_x_px", 2.0)),
                 gaussian_sigma_y_px=float(getattr(self.cfg, "marker_gaussian_sigma_y_px", 2.0)),
                 gaussian_truncate=float(getattr(self.cfg, "marker_gaussian_truncate", 3.0)),
+                reference_rgb=marker_reference,
+                clean_background_rgb=self.background,
                 max_displacement_px=float(getattr(self.cfg, "marker_max_displacement_px", 25.0)),
                 rest_xy_override=rest_override,
             )
@@ -322,6 +332,16 @@ class GelsightRender:
         sim_img_rgb[..., 0] = torch.sum(self.A_tensor * params_r, dim=-1)  # R
         sim_img_rgb[..., 1] = torch.sum(self.A_tensor * params_g, dim=-1)  # G
         sim_img_rgb[..., 2] = torch.sum(self.A_tensor * params_b, dim=-1)  # B
+        if bool(getattr(self.cfg, "taxim_zero_normal_reference", False)):
+            # The sphere-calibrated zero-slope bin contains a center darkening
+            # offset. Applying it to a flat nut face paints the entire contact
+            # dark even at vanishing indentation. Use the local flat-normal
+            # table value as reference, retaining directional RGB differences.
+            zero_direction = min(int(np.pi / self.y_binr), max_idx)
+            for channel, table in enumerate((self.calib_data_grad_r, self.calib_data_grad_g,
+                                            self.calib_data_grad_b)):
+                sim_img_rgb[..., channel] -= torch.sum(
+                    self.A_tensor * table[0, zero_direction, :], dim=-1)
         sim_img_rgb *= contact_support.unsqueeze(-1)
         rgb_gain = float(getattr(self.cfg, "taxim_rgb_response_gain", 1.0))
         if abs(rgb_gain - 1.0) > 1e-9:

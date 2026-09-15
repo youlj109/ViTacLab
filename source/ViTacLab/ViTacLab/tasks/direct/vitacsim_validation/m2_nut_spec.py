@@ -39,12 +39,14 @@ ADVISOR_DEPTH_FOOTPRINT_SCALE = 1.7
 # because the thread/chamfer does not press the gel; use this effective opening
 # only for the Advisor contact collider, not as a replacement mechanical size.
 ADVISOR_EFFECTIVE_CONTACT_HOLE_DIAMETER = 0.0028
-# Effective point stiffness fitted from the G010 peak target:
-# k_ref = 66 * (0.55736 mm / 0.020 mm) = 1839.3 N/m, rounded to 1840 N/m.
+# Effective point stiffness fitted against the six real nut images (2026-09-15).
+# Fit depth_gain=1 to avoid the k_ref/depth_gain scale ambiguity. This is an
+# effective point stiffness in N/m, not an independently measured Young modulus.
 # Stage C then follows force/k_ref -> robust ratio -> complete-height-map
-# scaling without an additional amplitude correction.
-ADVISOR_FORCE_RENDER_K_REF = 1840.0
-ADVISOR_FORCE_RENDER_DEPTH_GAIN = 1.0
+# scaling, followed by the configurable global depth_gain below.
+ADVISOR_FORCE_RENDER_K_REF = 1350.0
+# User-requested deeper visual trial with k_ref held fixed; not the RMSE optimum.
+ADVISOR_FORCE_RENDER_DEPTH_GAIN = 3.2
 ADVISOR_MARKER_LOAD_REF_FN_N = 0.72
 ADVISOR_MARKER_LOAD_SCALE_EXPONENT = 0.48
 ADVISOR_MARKER_DEPTH_GAMMA = 1.2

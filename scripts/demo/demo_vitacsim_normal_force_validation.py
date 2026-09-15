@@ -403,6 +403,7 @@ def _render_cfg():
         enable_marker=_marker_enabled(),
         marker_pattern=args_cli.marker_pattern,
         profile=str(args_cli.profile),
+        flat_contact=_is_advisor(),
         fitted_params_path=str(fp) if fp is not None else None,
     )
 

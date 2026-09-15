@@ -73,19 +73,14 @@ def marker_stats(displacement_px: np.ndarray) -> dict[str, float]:
 
 
 def label(image: np.ndarray, text: str) -> np.ndarray:
-    bar_height = 34
+    lines = text.split('\n')
+    bar_height = 34 * len(lines)
     canvas = np.zeros((image.shape[0] + bar_height, image.shape[1], 3), np.uint8)
     canvas[bar_height:] = image
-    cv2.putText(
-        canvas,
-        text,
-        (8, 23),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.56,
-        (255, 255, 255),
-        1,
-        cv2.LINE_AA,
-    )
+    for i,line in enumerate(lines):
+        width=cv2.getTextSize(line,cv2.FONT_HERSHEY_SIMPLEX,0.56,1)[0][0]
+        scale=0.56*min(1.,(image.shape[1]-16)/max(width,1))
+        cv2.putText(canvas,line,(8,23+i*34),cv2.FONT_HERSHEY_SIMPLEX,scale,(255,255,255),1,cv2.LINE_AA)
     return canvas
 
 
@@ -102,7 +97,11 @@ def main() -> None:
     parser.add_argument("--nstep", type=int, default=3)
     parser.add_argument("--smooth-norm", type=int, default=5)
     parser.add_argument("--rgb-gain", type=float, default=1.0)
+    parser.add_argument('--vitacsim-fps',type=Path,default=None)
+    parser.add_argument('--benchmark-iterations',type=int,default=0)
+    parser.add_argument('--benchmark-warmup',type=int,default=10)
     args = parser.parse_args()
+    vitac_fps=json.loads(args.vitacsim_fps.read_text()) if args.vitacsim_fps else None
 
     args.output.mkdir(parents=True, exist_ok=True)
     real_root = Path("data/calibration/tactile/real/normal_force")
@@ -131,6 +130,10 @@ def main() -> None:
 
     no_contact = np.full((700, 400), 0.2, np.float32)
     sensor.step(no_contact, nstep=args.nstep)
+    if args.benchmark_iterations:
+        for _ in range(args.benchmark_warmup):
+            sensor.step(no_contact,nstep=args.nstep)
+            sensor.get_image()
     official_bg = fit_size(sensor.get_image(), real_bg.shape[:2])
     official_marker_rest = sensor.get_marker().copy()
     write_rgb(args.output / "official_no_contact.png", official_bg)
@@ -142,6 +145,8 @@ def main() -> None:
         "rgb_gain": args.rgb_gain,
         "depth_input": "ViTacSim force-corrected height, converted m -> negative mm",
         "cases": {},
+        "vitacsim_benchmark":vitac_fps,
+        "official_benchmark_scope":"Batch=1, step(nstep=3)+get_image, no Isaac/PhysX/camera/disk. Host depth input, SDK RGB output; CPU wall time, no explicit vendor GPU synchronization API. Per-load warmup followed by repeated stationary input.",
     }
     rows = []
     crop_rows = []
@@ -151,6 +156,9 @@ def main() -> None:
         depth_mm = np.full(height_m.shape, 0.2, np.float32)
         contact = height_m > 0
         depth_mm[contact] = -height_m[contact] * 1000.0
+        if args.benchmark_iterations:
+            for _ in range(args.benchmark_warmup):
+                sensor.step(no_contact,nstep=args.nstep)
 
         started = time.perf_counter()
         sensor.step(depth_mm, nstep=args.nstep)
@@ -158,6 +166,23 @@ def main() -> None:
         official_depth_mm = sensor.get_depth().copy()
         official_marker = sensor.get_marker().copy()
         elapsed = time.perf_counter() - started
+        benchmark=None
+        if args.benchmark_iterations:
+            for _ in range(args.benchmark_warmup):
+                sensor.step(depth_mm,nstep=args.nstep)
+                sensor.get_image()
+            samples=[]
+            for _ in range(args.benchmark_iterations):
+                start=time.perf_counter()
+                sensor.step(depth_mm,nstep=args.nstep)
+                sensor.get_image()
+                samples.append(time.perf_counter()-start)
+            benchmark=dict(fps=1/float(np.mean(samples)),mean_ms=float(np.mean(samples))*1000,
+                           median_ms=float(np.median(samples))*1000,p95_ms=float(np.percentile(samples,95))*1000,
+                           iterations=args.benchmark_iterations,warmup=args.benchmark_warmup)
+            official=fit_size(sensor.get_image(),real_bg.shape[:2])
+            official_depth_mm=sensor.get_depth().copy()
+            official_marker=sensor.get_marker().copy()
 
         real = read_rgb(real_root / case / "rgb.png")
         vitac = fit_size(read_rgb(case_dir / "tactile_rgb_corrected.png"), real.shape[:2])
@@ -216,6 +241,7 @@ def main() -> None:
         case_metrics = {
             "peak_depth_mm": float(height_m.max() * 1000.0),
             "official_seconds": elapsed,
+            "official_benchmark":benchmark,
             "full_rgb": {
                 "vitacsim": metrics(real, vitac),
                 "official_xensim": metrics(real, official),
@@ -256,20 +282,27 @@ def main() -> None:
         write_rgb(args.output / case / "vitacsim.png", vitac)
         np.save(args.output / case / "official_marker_displacement_px.npy", official_marker_delta_px)
         np.save(args.output / case / "official_deformed_depth_mm.npy", official_depth_mm)
-        row_images = [label(real, f"{case} real")]
+        real_label=f'{case} Real'
+        vitac_label='ViTacSim'
+        official_label='Official XenseSim'
+        if vitac_fps is not None and benchmark is not None:
+            real_label+='\nFPS: N/A (still image)'
+            vitac_label+=f" | {vitac_fps['cases'][case]['fps']:.1f} FPS\nTaxim+FOTS; batch=1"
+            official_label+=f" | {benchmark['fps']:.1f} FPS\nFEM+RGB; nstep={args.nstep}"
+        row_images = [label(real, real_label)]
         if baseline is not None:
             row_images.append(label(baseline, "previous ViTacSim"))
         row_images.extend(
-            [label(vitac, "hybrid ViTacSim"), label(official, "official XenseSim FEM")]
+            [label(vitac, vitac_label), label(official, official_label)]
         )
         row = np.hstack(row_images)
         write_rgb(args.output / case / "comparison.png", row)
         rows.append(row)
-        crop_images = [label(real[roi], f"{case} real crop")]
+        crop_images = [label(real[roi], real_label)]
         if baseline is not None:
             crop_images.append(label(baseline[roi], "previous ViTacSim crop"))
         crop_images.extend(
-            [label(vitac[roi], "hybrid ViTacSim crop"), label(official[roi], "official FEM crop")]
+            [label(vitac[roi], vitac_label), label(official[roi], official_label)]
         )
         crop_row = np.hstack(crop_images)
         write_rgb(args.output / case / "contact_crop_comparison.png", crop_row)

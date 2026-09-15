@@ -8,6 +8,7 @@ This directory holds **local-only** Taxim / FOTS files for the advisor Xense sen
 | File | Purpose |
 |------|---------|
 | `bg_clean.jpg` | Gel-only background (markers inpainted out); also used as the low-frequency illumination reference |
+| `bg.jpg` | Verified marker-bearing resting image; used only to extract measured marker transmission patches |
 | `polycalib.npz` | Taxim height → RGB calibration |
 | `marker_rest.npy` | Rest marker centers `(M, 2)` in pixels (220 for 11×20 grid) |
 
@@ -55,12 +56,14 @@ renderer produces gray marker halos before adding the simulated markers.
 ## Force-corrected render amplitude
 
 The advisor M2-nut profile uses the recalibrated effective point stiffness
-`k_ref=1840 N/m` and `corrected_force_render_depth_gain=1.0`. Each sparse-point
+`k_ref=1350 N/m` and `corrected_force_render_depth_gain=3.2`. Each sparse-point
 indentation is `force/k_ref`; the lowest and highest 20% of force/depth ratios
 are discarded, the middle 60% are averaged, and that single robust ratio scales
 the complete dense height map. The global `depth_gain` remains configurable,
-but its Advisor default is the neutral value `1.0`; there is no load-dependent
-exponent.
+and its Advisor default is `3.2`, selected by the user from the visual trial. Effective
+stiffness was fitted with gain fixed at one; this visual override is not the RGB
+error minimum. There is no load-dependent exponent. All pixels retain the same
+relative-depth relationships.
 
 The Advisor contact collider keeps the nominal 3.8 mm M2 width but uses a
 2.8 mm effective contact opening: the threaded/chamfered part inside the
@@ -70,6 +73,31 @@ wall while matching the real outer footprint.  Both values remain available
 as CLI overrides for geometry sweeps.
 
 ## Marker appearance
+
+The Advisor normal-force nut demo now selects measured per-marker transmission
+patches from the verified `bg.jpg` / `bg_clean.jpg` pair. Each patch follows the
+existing FOTS displacement and modulates the rendered contact illumination.
+It preserves the printed shape without adding a Gaussian halo. Other profiles
+retain the Gaussian defaults described below.
+
+Measured footprints now use one batched sampling operation for disjoint marker
+patches. If footprints overlap, the renderer retains ordered serial compositing
+to preserve uint8 rounding. CPU/CUDA regression checks found identical pixels
+on all six saved loads; same-process single-sensor renderer speed increased from
+39.6 to 356.5 FPS on the RTX 5090. These are renderer-only figures, not complete
+Isaac sensor-update rates; see `docs/XENSE_BATCHED_MARKER_RENDERING.md`.
+
+For existing local installations:
+
+```bash
+cp data/calibration/tactile/advisor_processed/bg.jpg source/ViTacLab/ViTacLab/assets/sensor/tacsl_sensor/xense_lab_data/bg.jpg
+```
+
+The nut demo also enables `taxim_zero_normal_reference`: subtract the local
+zero-slope table response before optical gain, preventing the sphere-center
+dark offset from tinting a flat nut face. This is a flat-contact optical transfer
+correction, not a change to `polycalib.npz`, force reconstruction, or indentation
+sign. Ball-table replay keeps it disabled. See `docs/XENSE_FLAT_CONTACT_OPTICS.md`.
 
 Marker geometry is fitted from the verified no-contact pair: `bg.jpg` with
 markers minus `bg_clean.jpg` without markers, sampled at all 220 measured

@@ -25,6 +25,7 @@ def main() -> int:
     parser.add_argument("--marker-height", type=Path, default=None, help="Optional marker-driving height-map .npy.")
     parser.add_argument("--out", type=Path, required=True, help="Output RGB PNG.")
     parser.add_argument("--no-marker", action="store_true")
+    parser.add_argument("--flat-contact", action="store_true", help="Use the validated Advisor nut optical profile.")
     parser.add_argument("--taxim-height-scale", type=float, default=None)
     parser.add_argument("--red-tilt-strength", type=float, default=None)
     parser.add_argument("--red-tilt-additive", type=float, default=None)
@@ -38,15 +39,20 @@ def main() -> int:
     simulation_app = AppLauncher(args).app
 
     from ViTacLab.assets.sensor.tacsl_sensor.gelsight_calibrated_cfg import advisor_xense_render_cfg
+    from ViTacLab.assets.sensor.tacsl_sensor.gelsight_calibrated_cfg import validation_gelsight_render_cfg
     from ViTacLab.assets.sensor.tacsl_sensor.visuotactile_render import GelsightRender
 
     cfg = advisor_xense_render_cfg(
         enable_marker_simulation=not args.no_marker,
         marker_pattern="xense",
     )
+    if args.flat_contact:
+        cfg = validation_gelsight_render_cfg(profile="advisor", flat_contact=True,
+                                            enable_marker=not args.no_marker, marker_pattern="xense")
     overrides = {}
     if args.pure_polycalib:
         overrides.update(
+            taxim_zero_normal_reference=False,
             taxim_height_scale=1.0,
             taxim_rgb_response_gain=1.0,
             taxim_smoothing_kernel_size=5,

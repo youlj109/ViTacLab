@@ -205,6 +205,8 @@ class MarkerSimulator:
         gaussian_sigma_x_px: float = 2.0,
         gaussian_sigma_y_px: float = 2.0,
         gaussian_truncate: float = 3.0,
+        reference_rgb: np.ndarray | None = None,
+        clean_background_rgb: np.ndarray | None = None,
         max_displacement_px: float = 25.0,
         rest_xy_override: np.ndarray | torch.Tensor | None = None,
     ):
@@ -218,8 +220,8 @@ class MarkerSimulator:
         self.max_contacts = int(max_contacts)
         self.blend_alpha = float(blend_alpha)
         self.marker_shape = str(marker_shape).lower()
-        if self.marker_shape not in {"disk", "gaussian"}:
-            raise ValueError(f"marker_shape must be 'disk' or 'gaussian', got {marker_shape!r}")
+        if self.marker_shape not in {"disk", "gaussian", "measured"}:
+            raise ValueError(f"Unknown marker_shape: {marker_shape!r}")
         self.gaussian_sigma_x_px = float(gaussian_sigma_x_px)
         self.gaussian_sigma_y_px = float(gaussian_sigma_y_px)
         self.gaussian_truncate = float(gaussian_truncate)
@@ -243,6 +245,32 @@ class MarkerSimulator:
                 self.rest_xy = rest
             else:
                 self.rest_xy = _rest_marker_positions(self.spec, image_height, image_width, self.device)
+
+        if self.enabled and self.marker_shape == "measured":
+            expected = (self.image_height, self.image_width, 3)
+            if reference_rgb is None or clean_background_rgb is None:
+                raise ValueError("Measured markers require resting RGB and clean background")
+            if reference_rgb.shape != expected or clean_background_rgb.shape != expected:
+                raise ValueError(f"Measured marker reference images must have shape {expected}")
+            # Store attenuation rather than resting RGB, so contact lighting still
+            # passes through each displaced printed dot. The outer taper prevents
+            # background/inpainting noise becoming a moving square patch.
+            attenuation = np.clip(1.0 - reference_rgb.astype(np.float32) /
+                                  np.maximum(clean_background_rgb.astype(np.float32), 1.0), 0.0, 1.0)
+            radius = 9
+            self._template_radius = radius
+            padded = np.pad(attenuation, ((radius, radius), (radius, radius), (0, 0)))
+            yy, xx = np.mgrid[-radius:radius+1, -radius:radius+1]
+            taper = np.clip((radius - np.sqrt(xx*xx+yy*yy))/2.0, 0.0, 1.0)[..., None]
+            centers = np.rint(self.rest_xy.cpu().numpy()).astype(int)
+            patches = [padded[y:y+2*radius+1, x:x+2*radius+1]*taper for x,y in centers]
+            self._marker_templates = torch.as_tensor(np.stack(patches), dtype=torch.float32,
+                                                      device=self.device).permute(0,3,1,2)
+            self._template_centers = torch.as_tensor(centers, device=self.device)
+            # One extra border pixel accommodates fractional marker translations.
+            oy, ox = torch.meshgrid(torch.arange(2*radius+2, device=self.device),
+                                    torch.arange(2*radius+2, device=self.device), indexing="ij")
+            self._template_offsets = torch.stack((ox, oy), dim=-1)
 
     @property
     def num_markers(self) -> int:
@@ -282,6 +310,8 @@ class MarkerSimulator:
         """Composite markers onto RGB image (H, W, 3) uint8."""
         if not self.enabled or self.spec is None or displaced_xy.shape[0] == 0:
             return rgb
+        if self.marker_shape == "measured":
+            return self._draw_measured_markers_batched(rgb, displaced_xy)
         out = rgb.clone()
         color = torch.tensor(self.spec.color_rgb, device=out.device, dtype=out.dtype)
         if self.marker_shape == "gaussian":
@@ -323,6 +353,61 @@ class MarkerSimulator:
             patch = out[y0:y1, x0:x1]
             patch[mask] = (self.blend_alpha * color + (1.0 - self.blend_alpha) * patch[mask]).to(out.dtype)
             out[y0:y1, x0:x1] = patch
+        return out
+
+    def _draw_measured_markers_batched(self, rgb: torch.Tensor, displaced_xy: torch.Tensor) -> torch.Tensor:
+        """Sample disjoint marker patches in one call, preserving legacy overlap semantics."""
+        r = self._template_radius
+        centers = self._template_centers + (displaced_xy - self.rest_xy)
+        starts = torch.floor(centers).long() - r
+        # Sequential uint8 rounding is order-dependent when footprints overlap.
+        # Detect that uncommon case once, rather than racing overlapping writes
+        # or silently changing the old compositing equation.
+        lower = torch.maximum(starts, torch.zeros_like(starts))
+        upper = torch.minimum(starts + 2*r + 2,
+                              starts.new_tensor([rgb.shape[1], rgb.shape[0]]))
+        active = (upper > lower).all(dim=-1)
+        overlap = ((lower[:, None, :] < upper[None, :, :]) &
+                   (lower[None, :, :] < upper[:, None, :])).all(dim=-1)
+        overlap &= active[:, None] & active[None, :]
+        overlap.fill_diagonal_(False)
+        if bool(overlap.any()):
+            return self._draw_measured_markers_serial(rgb, displaced_xy)
+
+        xy = starts[:, None, None, :] + self._template_offsets[None]
+        grid = (xy.to(torch.float32) - centers[:, None, None, :]) / r
+        attenuation = torch.nn.functional.grid_sample(
+            self._marker_templates, grid, align_corners=True, padding_mode="zeros"
+        ).permute(0, 2, 3, 1)
+        valid = ((xy[..., 0] >= 0) & (xy[..., 0] < rgb.shape[1]) &
+                 (xy[..., 1] >= 0) & (xy[..., 1] < rgb.shape[0]))
+        index = (xy[..., 1]*rgb.shape[1] + xy[..., 0])[valid]
+        out = rgb.contiguous().clone()
+        flat = out.view(-1, 3)
+        patch = flat[index].float() * (1.0 - self.blend_alpha*attenuation[valid])
+        flat[index] = patch.round().clamp(0, 255).to(out.dtype)
+        return out
+
+    def _draw_measured_markers_serial(self, rgb: torch.Tensor, displaced_xy: torch.Tensor) -> torch.Tensor:
+        """Ordered reference path for overlapping footprints and regression benchmarks."""
+        out = rgb.clone()
+        r = self._template_radius
+        displacement = displaced_xy - self.rest_xy
+        for i in range(displaced_xy.shape[0]):
+            center = self._template_centers[i] + displacement[i]
+            cx, cy = float(center[0].item()), float(center[1].item())
+            x0, x1 = max(0, int(np.floor(cx))-r), min(out.shape[1], int(np.ceil(cx))+r+1)
+            y0, y1 = max(0, int(np.floor(cy))-r), min(out.shape[0], int(np.ceil(cy))+r+1)
+            if x0 >= x1 or y0 >= y1:
+                continue
+            yy, xx = torch.meshgrid(torch.arange(y0,y1,device=out.device),
+                                    torch.arange(x0,x1,device=out.device), indexing="ij")
+            grid = torch.stack(((xx-cx)/r, (yy-cy)/r), -1).unsqueeze(0)
+            attenuation = torch.nn.functional.grid_sample(
+                self._marker_templates[i:i+1], grid, align_corners=True,
+                padding_mode="zeros")[0].permute(1,2,0)
+            patch = out[y0:y1,x0:x1].float() * (1.0-self.blend_alpha*attenuation)
+            out[y0:y1,x0:x1] = patch.round().clamp(0,255).to(out.dtype)
         return out
 
     def composite_batch(

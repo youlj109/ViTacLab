@@ -67,6 +67,7 @@ def _label(image_rgb: np.ndarray, text: str) -> np.ndarray:
 def _pure_polycalib_cfg(cfg):
     """Disable production-only effects so this isolates the fitted polynomial table."""
     return cfg.replace(
+        taxim_zero_normal_reference=False,
         taxim_height_scale=1.0,
         taxim_rgb_response_gain=1.0,
         taxim_smoothing_kernel_size=5,

@@ -211,15 +211,28 @@ def validation_gelsight_render_cfg(
     marker_pattern: str = "gelsight",
     fitted_params_path: str | Path | None = None,
     profile: str = "cylinder",
+    flat_contact: bool = False,
 ):
     """Render cfg for ViTacSim NF/Shear validation demos (Taxim + optional FOTS markers)."""
 
     if profile == "advisor":
-        return advisor_xense_render_cfg(
+        cfg = advisor_xense_render_cfg(
             enable_marker_simulation=enable_marker,
             marker_pattern=marker_pattern,
             fitted_params_path=fitted_params_path,
         )
+        if flat_contact:
+            # Validated on the six Advisor nut loads. Sphere replay must retain
+            # its observed center response; this is not a global table rewrite.
+            cfg = cfg.replace(
+                taxim_zero_normal_reference=True,
+                taxim_response_mesh_smooth_iterations=14,
+                taxim_contact_red_tilt_additive=18.0,
+            )
+            if str(cfg.marker_pattern).lower() == "xense":
+                cfg = cfg.replace(marker_shape="measured", marker_reference_path="bg.jpg",
+                                  marker_blend_alpha=1.0)
+        return cfg
 
     extra: dict = {}
     if fitted_params_path is not None:

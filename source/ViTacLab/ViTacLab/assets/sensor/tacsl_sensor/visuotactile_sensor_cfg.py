@@ -190,7 +190,17 @@ class GelSightRenderCfg:
     """Marker color blend weight when compositing onto Taxim RGB."""
 
     marker_shape: str = "disk"
-    """Marker footprint: ``disk`` for a hard circular dot or ``gaussian`` for a soft optical blob."""
+    """Marker footprint: ``disk``, ``gaussian``, or sensor-specific ``measured`` transmission patches."""
+
+    marker_reference_path: str = ""
+    """Marker-bearing resting RGB image, required for measured footprints; background_path must be clean."""
+
+    taxim_zero_normal_reference: bool = False
+    """Subtract the table's local zero-slope RGB before shading flat-contact validation objects.
+
+    Sphere-center brightness can encode geometry-dependent effects beyond surface
+    normals. Enable only for a validated sensor/object profile, not ball-table replay.
+    """
 
     marker_gaussian_sigma_x_px: float = 2.0
     """Horizontal standard deviation of a Gaussian marker in pixels."""
