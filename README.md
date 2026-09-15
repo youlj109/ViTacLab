@@ -109,6 +109,41 @@ ViTacSim uses PhysX solver contacts as physical anchors while retaining dense, G
 
 The throughput experiment used an Intel Core Ultra 9 285K, an NVIDIA RTX 4090D, `20 × 25 × 3` force arrays, and `320 × 240 × 3` tactile images. At 256 environments, the reported throughput gap to TacSL narrows to 6.4%, with 20,184 MiB memory usage (376 MiB, or 1.9%, above TacSL).
 
+### Six-load Xense image comparison (2026-09-15)
+
+Current visual setting: `k_ref=1350 N/m`, `depth_gain=3.2`. Each result is compared
+against the corresponding **Real** image, with markers included. These are
+image-intensity errors, **not force RMSE in N**.
+
+[![Six loads: Real, ViTacSim, TacSL depth-only replay, official Xensim](docs/media/xense-six-load/all-loads-crops.png)](docs/media/xense-six-load/all-loads-full.png)
+
+**Contact-region background-subtracted RGB RMSE ↓ (0–255 intensity units)**
+
+| Load | ViTacSim | TacSL depth-only replay | Official Xensim |
+|---|---:|---:|---:|
+| G010 | 7.902 | 11.498 | 4.609 |
+| G030 | 8.970 | 11.868 | 8.297 |
+| G060 | 8.993 | 10.316 | 10.770 |
+| G110 | 9.608 | 10.158 | 15.040 |
+| G160 | 10.029 | 10.279 | 17.893 |
+| G210 | 11.331 | 11.369 | 18.555 |
+| Mean | 9.472 | 10.915 | 12.528 |
+
+The fixed 220×220 ROI is x=[90,310), y=[240,460) in every 400×700 image.
+Each contact image has its own method's no-contact RGB subtracted before comparison.
+Official Xensim is better on G010/G030; ViTacSim is better on the other four loads.
+TacSL denotes this repository's depth-only implementation, replayed from saved
+uncorrected depths with the current shared optics—not an upstream TacSL benchmark.
+Official Xensim 1.0.0 receives ViTacSim-corrected depths (`nstep=3`,
+`smooth_norm=8`, `rgb_gain=1.3`). These six loads were used during tuning;
+this is an in-sample saved-depth comparison, not independent validation or a fresh
+six-load PhysX run.
+
+[Full-frame images](docs/media/xense-six-load/all-loads-full.png) ·
+[Full RGB errors, protocol and reproduction](docs/XENSE_SIX_LOAD_RESULTS.md) ·
+[MAE/RMSE data](docs/media/xense-six-load/metrics.json)
+
+
 <a id="vitacbench"></a>
 
 ## 🤖 ViTacBench
