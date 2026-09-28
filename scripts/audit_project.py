@@ -503,6 +503,50 @@ def audit_tactile_contract(audit: Audit, registrations: list[dict[str, str]]) ->
             "UR10eDualShadowHandBiPegSceneCfg",
             "scene: UR10eDualShadowHandBiPegSceneCfg",
         ),
+        "source/ViTacLab/ViTacLab/tasks/direct/difficult_dexhand/blind_grasp/blind_grasp_env_cfg.py": (
+            "include_object_state_in_policy_obs = False",
+            "use_full_tactile_obs = True",
+            'policy_record_profile: str = "tactile_only"',
+            "tactile_contact_threshold",
+            "benchmark_lift_height",
+        ),
+        "source/ViTacLab/ViTacLab/tasks/direct/simple_dexhand/hand_pickup/hand_pickup_env.py": (
+            "if cfg.include_object_state_in_policy_obs:",
+            "if self.cfg.include_object_state_in_policy_obs:",
+        ),
+        "source/ViTacLab/ViTacLab/tasks/direct/difficult_dexhand/blind_grasp/blind_grasp_env.py": (
+            "tactile_contact_reward_weight",
+            "tactile_multi_finger_reward_weight",
+            "tactile_load_reward_weight",
+            "External benchmark metric only",
+            "Use timeout only; object geometry cannot alter the control horizon.",
+            "_build_tactile_only_record_dict",
+        ),
+        "scripts/data_collection/full_trajectory/play_single_phase.py": (
+            "Blind-grasp phase replay only supports strict tactile ViTacBench mode.",
+            '"policy_input_contract": "tactile_plus_robot_proprioception"',
+            '"object_geometry_in_control": False',
+            "wrist waypoint without object-state adaptation",
+            "_POLICY_RECORD_KEYS",
+        ),
+        "scripts/debug/validate_play_record_npz.py": (
+            "TACTILE_ONLY_REQUIRED_KEYS",
+            "TACTILE_ONLY_FORBIDDEN_KEYS",
+        ),
+        "bash_command/demo_blind_grasp_collection_replay.sh": (
+            "--profile tactile_only",
+        ),
+        "policy/prepare_dataset.py": (
+            'choices=("canonical", "tactile_only")',
+        ),
+        "policy/ViTacDP/config/task/single_arm_tactile_only_rgb.yaml": (
+            "camera_num: 0",
+            "tac_type: tac_rgb",
+        ),
+        "policy/ViTacDP/config/task/single_arm_tactile_only_force.yaml": (
+            "camera_num: 0",
+            "tac_type: tac_force",
+        ),
     }
     for relative, tokens in required_source_tokens.items():
         path = audit.root / relative
@@ -513,6 +557,34 @@ def audit_tactile_contract(audit: Audit, registrations: list[dict[str, str]]) ->
         for token in tokens:
             if token not in text:
                 audit.error(f"Missing tactile-contract marker {token!r}: {relative}")
+
+    blind_runner = audit.root / "scripts/data_collection/full_trajectory/play_single_phase.py"
+    if blind_runner.is_file():
+        runner_text = blind_runner.read_text(encoding="utf-8", errors="replace")
+        forbidden_blind_control_tokens = (
+            "_align_object_to_keyframe",
+            "_min_fingertip_dist_to_object",
+            "_write_object_pos_env",
+            "pick_geom_contact_dist",
+            "carry_object_after_grasp",
+            "object_pos_env_random",
+        )
+        for token in forbidden_blind_control_tokens:
+            if token in runner_text:
+                audit.error(f"Blind-grasp control contains forbidden geometry shortcut {token!r}")
+
+    blind_env = audit.root / "source/ViTacLab/ViTacLab/tasks/direct/difficult_dexhand/blind_grasp/blind_grasp_env.py"
+    if blind_env.is_file():
+        env_text = blind_env.read_text(encoding="utf-8", errors="replace")
+        forbidden_blind_record_tokens = (
+            "tactile_pos",
+            "ee_pos_env",
+            "third_person_camera",
+            "_build_pickup_style_record_dict",
+        )
+        for token in forbidden_blind_record_tokens:
+            if token in env_text:
+                audit.error(f"Blind-grasp record/obs contains forbidden privilege token {token!r}")
 
     profile_counts = Counter(CANONICAL_TACTILE_SENSOR_COUNT.values())
     audit.note(

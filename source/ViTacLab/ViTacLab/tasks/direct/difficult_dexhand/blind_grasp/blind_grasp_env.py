@@ -1,91 +1,53 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import torch
 from isaaclab.assets import RigidObject
+from isaaclab.utils.math import sample_uniform
 
 from ViTacLab.tasks.direct.simple_dexhand.hand_pickup.hand_pickup_env import TACTILE_SENSOR_NAMES, UR10eShadowHandPickupEnv
 
 from .blind_grasp_env_cfg import UR10eShadowHandBlindGraspEnvCfg
 
 
-def _quat_wxyz_to_rotmat(quat: torch.Tensor) -> torch.Tensor:
-    quat = quat / torch.linalg.norm(quat, dim=-1, keepdim=True).clamp_min(1e-9)
-    w, x, y, z = quat.unbind(dim=-1)
-    ww, xx, yy, zz = w * w, x * x, y * y, z * z
-    wx, wy, wz = w * x, w * y, w * z
-    xy, xz, yz = x * y, x * z, y * z
-    return torch.stack(
-        (
-            torch.stack((ww + xx - yy - zz, 2.0 * (xy - wz), 2.0 * (xz + wy)), dim=-1),
-            torch.stack((2.0 * (xy + wz), ww - xx + yy - zz, 2.0 * (yz - wx)), dim=-1),
-            torch.stack((2.0 * (xz - wy), 2.0 * (yz + wx), ww - xx - yy + zz), dim=-1),
-        ),
-        dim=-2,
-    )
-
-
-def _depth_to_pointcloud_env(
-    depth: torch.Tensor,
-    intrinsic: torch.Tensor,
-    cam_pos_w: torch.Tensor,
-    cam_quat_world: torch.Tensor,
-    env_origins: torch.Tensor,
-    num_points: int = 2048,
-) -> torch.Tensor:
-    depth = depth.squeeze(-1) if depth.ndim == 4 and depth.shape[-1] == 1 else depth
-    num_envs, height, width = depth.shape
-    device = depth.device
-    dtype = depth.dtype
-
-    ys, xs = torch.meshgrid(
-        torch.arange(height, device=device, dtype=dtype),
-        torch.arange(width, device=device, dtype=dtype),
-        indexing="ij",
-    )
-    xs = xs.unsqueeze(0).expand(num_envs, -1, -1)
-    ys = ys.unsqueeze(0).expand(num_envs, -1, -1)
-
-    fx = intrinsic[:, 0, 0].view(-1, 1, 1)
-    fy = intrinsic[:, 1, 1].view(-1, 1, 1)
-    cx = intrinsic[:, 0, 2].view(-1, 1, 1)
-    cy = intrinsic[:, 1, 2].view(-1, 1, 1)
-
-    z = torch.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0).clamp_min(0.0)
-    x = (xs - cx) * z / fx.clamp_min(1e-6)
-    y = (ys - cy) * z / fy.clamp_min(1e-6)
-    pts_cam = torch.stack((x, y, z), dim=-1).reshape(num_envs, -1, 3)
-
-    rot = _quat_wxyz_to_rotmat(cam_quat_world)
-    pts_world = torch.matmul(pts_cam, rot.transpose(1, 2)) + cam_pos_w.unsqueeze(1)
-    pts_env = pts_world - env_origins.unsqueeze(1)
-
-    total = pts_env.shape[1]
-    if total >= num_points:
-        idx = torch.linspace(0, total - 1, num_points, device=device).long()
-        pts_env = pts_env[:, idx]
-    else:
-        pad = pts_env[:, -1:, :].expand(-1, num_points - total, -1) if total > 0 else torch.zeros(num_envs, num_points, 3, device=device, dtype=dtype)
-        pts_env = torch.cat((pts_env, pad), dim=1)
-    return pts_env
-
-
 class UR10eShadowHandBlindGraspEnv(UR10eShadowHandPickupEnv):
-    """Pickup with a kinematic garbage can; the cube resets inside the bin (same rewards/obs as hand_pickup)."""
+    """Level-3 blind bin grasp: object is in slot A or B; actor sees only joints + tactile.
+
+    Object pose is used only for reset randomization and external benchmark
+    scoring. It never enters actor observations, rewards, or termination.
+    """
 
     cfg: UR10eShadowHandBlindGraspEnvCfg
 
     def __init__(self, cfg: UR10eShadowHandBlindGraspEnvCfg, render_mode: str | None = None, **kwargs):
-        choice = max(0, min(int(getattr(cfg, "object_init_choice", 0)), len(cfg.object_init_pos_candidates) - 1))
-        object_init_pos = cfg.resolve_object_init_pos(choice)
-        cfg.object_init_choice = choice
-        cfg.object_cfg = cfg.object_cfg.replace(
-            init_state=cfg.object_cfg.init_state.replace(pos=object_init_pos)
-        )
+        choice = int(getattr(cfg, "object_init_choice", -1))
+        spawn = cfg.resolve_object_init_pos(choice)
+        cfg.object_cfg = cfg.object_cfg.replace(init_state=cfg.object_cfg.init_state.replace(pos=spawn))
         super().__init__(cfg, render_mode, **kwargs)
         self.goal_object_pos.zero_()
         self._goal_time_left_s.fill_(1.0e9)
         self.successes.zero_()
         self._success_streak.zero_()
+        self.object_slot_index = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.tactile_successes = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._tactile_success_streak = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._prev_tactile_shear_peak = torch.zeros(
+            (self.num_envs, len(TACTILE_SENSOR_NAMES)), dtype=torch.float, device=self.device
+        )
+
+    def _num_slots(self) -> int:
+        n_cands = len(self.cfg.object_init_pos_candidates)
+        n_cfg = int(getattr(self.cfg, "object_slot_count", 2) or 2)
+        return max(1, min(n_cfg, n_cands))
+
+    def _sample_slot_indices(self, n: int) -> torch.Tensor:
+        pinned = int(getattr(self.cfg, "object_init_choice", -1))
+        n_slots = self._num_slots()
+        if pinned >= 0:
+            idx = max(0, min(pinned, n_slots - 1))
+            return torch.full((n,), idx, device=self.device, dtype=torch.long)
+        return torch.randint(0, n_slots, (n,), device=self.device)
 
     def _setup_task_scene(self) -> None:
         spawn = self.cfg.trash_can_cfg.spawn.replace(scale=self.cfg.trash_can_scale)
@@ -96,16 +58,54 @@ class UR10eShadowHandBlindGraspEnv(UR10eShadowHandPickupEnv):
 
     def _reset_idx(self, env_ids):
         super()._reset_idx(env_ids)
-        env_ids_t = torch.arange(self.num_envs, device=self.device, dtype=torch.long) if env_ids is None else torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+        env_ids_t = (
+            torch.arange(self.num_envs, device=self.device, dtype=torch.long)
+            if env_ids is None
+            else torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+        )
         if env_ids_t.numel() == 0:
             return
+        if not hasattr(self, "object_slot_index"):
+            self.object_slot_index = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.goal_object_pos[env_ids_t] = 0.0
         self._goal_time_left_s[env_ids_t] = 1.0e9
         self.successes[env_ids_t] = 0.0
         self._success_streak[env_ids_t] = 0
-        obj_state = self.object.data.default_root_state.clone()[env_ids_t]
-        base_pos = torch.tensor(self.cfg.resolve_object_init_pos(self.cfg.object_init_choice), device=self.device, dtype=torch.float).view(1, 3)
-        obj_state[:, 0:3] = base_pos + self.scene.env_origins[env_ids_t]
+        if hasattr(self, "tactile_successes"):
+            self.tactile_successes[env_ids_t] = False
+            self._tactile_success_streak[env_ids_t] = 0
+            self._prev_tactile_shear_peak[env_ids_t] = 0.0
+
+        n = int(env_ids_t.numel())
+        slots = self._sample_slot_indices(n)
+        self.object_slot_index[env_ids_t] = slots
+        cands = torch.tensor(
+            self.cfg.object_init_pos_candidates[: self._num_slots()],
+            device=self.device,
+            dtype=torch.float,
+        )
+        base = cands[slots]
+        dx = sample_uniform(
+            self.cfg.object_reset_pos_x_range[0],
+            self.cfg.object_reset_pos_x_range[1],
+            (n, 1),
+            device=self.device,
+        )
+        dy = sample_uniform(
+            self.cfg.object_reset_pos_y_range[0],
+            self.cfg.object_reset_pos_y_range[1],
+            (n, 1),
+            device=self.device,
+        )
+        dz = sample_uniform(
+            self.cfg.object_reset_pos_z_range[0],
+            self.cfg.object_reset_pos_z_range[1],
+            (n, 1),
+            device=self.device,
+        )
+        obj_state = self.object.data.root_state_w[env_ids_t].clone()
+        obj_state[:, 0:3] = base + torch.cat([dx, dy, dz], dim=1) + self.scene.env_origins[env_ids_t]
+        obj_state[:, 7:] = 0.0
         self.object.write_root_pose_to_sim(obj_state[:, :7], env_ids_t)
         self.object.write_root_velocity_to_sim(obj_state[:, 7:], env_ids_t)
 
@@ -121,15 +121,12 @@ class UR10eShadowHandBlindGraspEnv(UR10eShadowHandPickupEnv):
         self.object_pos = self.object.data.root_pos_w - self.scene.env_origins
         self.object_rot = self.object.data.root_quat_w
 
-    def _get_observations(self) -> dict:
-        base = super()._get_observations()
+    def _build_tactile_only_record_dict(self) -> dict[str, torch.Tensor]:
+        """Policy/IL record: joint proprioception plus tactile arrays only."""
+        record: dict[str, torch.Tensor] = {
+            "joint_pos": self.robot.data.joint_pos[:, self.actuated_dof_indices].detach().cpu(),
+        }
         num_tactile = len(TACTILE_SENSOR_NAMES)
-        record_dict = self._build_pickup_style_record_dict(
-            joint_pos=self.robot.data.joint_pos[:, self.actuated_dof_indices],
-            tactile_sensor_names=TACTILE_SENSOR_NAMES,
-            tactile_sensor_count=num_tactile,
-        )
-
         tactile_hw = self.cfg.scene._tactile_params()["tactile_array_size"]
         norm_list: list[torch.Tensor] = []
         shear_list: list[torch.Tensor] = []
@@ -156,19 +153,98 @@ class UR10eShadowHandBlindGraspEnv(UR10eShadowHandPickupEnv):
                     rgb_u8 = torch.clamp(rgb, 0.0, 255.0).to(torch.uint8)
                 rgb_list.append(rgb_u8)
         if len(norm_list) == num_tactile:
-            record_dict["tactile_normal_force"] = torch.stack(norm_list, dim=1).detach().cpu()
+            record["tactile_normal_force"] = torch.stack(norm_list, dim=1).detach().cpu()
         if len(shear_list) == num_tactile:
-            record_dict["tactile_shear_force"] = torch.stack(shear_list, dim=1).detach().cpu()
+            record["tactile_shear_force"] = torch.stack(shear_list, dim=1).detach().cpu()
         if len(rgb_list) == num_tactile:
-            record_dict["tactile_rgb_image"] = torch.stack(rgb_list, dim=1).detach().cpu()
+            record["tactile_rgb_image"] = torch.stack(rgb_list, dim=1).detach().cpu()
+        return record
 
-        base["record"] = record_dict
+    def _build_record_dict(self) -> dict[str, torch.Tensor]:
+        """Keep IL/deployment records on the same tactile-only contract as actor obs."""
+        return self._build_tactile_only_record_dict()
+
+    def _get_record(self, env_ids: Sequence[int] | None = None) -> dict[str, torch.Tensor]:
+        record = self._build_tactile_only_record_dict()
+        if env_ids is None:
+            return record
+        ids = torch.as_tensor(env_ids, device="cpu", dtype=torch.long)
+        return {key: value[ids] for key, value in record.items()}
+
+    def _get_observations(self) -> dict:
+        base = super()._get_observations()
+        base["record"] = self._build_tactile_only_record_dict()
         return base
 
     def _get_rewards(self) -> torch.Tensor:
+        self._update_tactile_data()
+        if self._tactile_normal_force is None or self._tactile_shear_force is None:
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+
+        num_sensors = len(TACTILE_SENSOR_NAMES)
+        normal = torch.nan_to_num(self._tactile_normal_force, nan=0.0, posinf=0.0, neginf=0.0)
+        shear = torch.nan_to_num(self._tactile_shear_force, nan=0.0, posinf=0.0, neginf=0.0)
+        normal = normal.reshape(self.num_envs, num_sensors, -1).clamp_min(0.0)
+        shear = shear.reshape(self.num_envs, num_sensors, -1, 2)
+
+        normal_peak = normal.amax(dim=-1)
+        shear_peak = torch.linalg.vector_norm(shear, dim=-1).amax(dim=-1)
+        contact_threshold = max(float(self.cfg.tactile_contact_threshold), 1.0e-9)
+        load_threshold = max(float(self.cfg.tactile_load_threshold), 1.0e-9)
+        contact_mask = normal_peak >= contact_threshold
+        contact_count = contact_mask.sum(dim=-1)
+
+        contact_score = torch.tanh(normal_peak / contact_threshold).mean(dim=-1)
+        min_fingers = max(int(self.cfg.tactile_success_min_fingers), 1)
+        multi_finger_score = ((contact_count.float() - 1.0) / max(min_fingers - 1, 1)).clamp(0.0, 1.0)
+        stable_contact = contact_count >= min_fingers
+        load_score = torch.tanh(shear_peak / load_threshold).mean(dim=-1) * stable_contact.float()
+
+        previous_contact = self._prev_tactile_shear_peak > 0.0
+        persistent_contact = contact_mask & previous_contact
+        shear_delta = (shear_peak - self._prev_tactile_shear_peak).abs() / load_threshold
+        slip_score = (shear_delta * persistent_contact.float()).mean(dim=-1).clamp(max=10.0)
+        self._prev_tactile_shear_peak.copy_(shear_peak.detach())
+
+        reward = (
+            float(self.cfg.tactile_contact_reward_weight) * contact_score
+            + float(self.cfg.tactile_multi_finger_reward_weight) * multi_finger_score
+            + float(self.cfg.tactile_load_reward_weight) * load_score
+            + float(self.cfg.tactile_slip_penalty_weight) * slip_score
+            + float(self.cfg.action_l2_weight) * torch.sum(self.actions.square(), dim=-1)
+            + float(self.cfg.action_rate_l2_weight) * torch.sum(self._action_rate.square(), dim=-1)
+        )
+
+        tactile_success_now = stable_contact & (shear_peak.amax(dim=-1) >= load_threshold)
+        self._tactile_success_streak = torch.where(
+            tactile_success_now,
+            self._tactile_success_streak + 1,
+            torch.zeros_like(self._tactile_success_streak),
+        )
+        self.tactile_successes |= self._tactile_success_streak >= int(self.cfg.tactile_success_hold_steps)
+
+        # External benchmark metric only. It is deliberately computed after the
+        # tactile reward and is not consumed by policy/control logic.
+        self._compute_intermediate_values()
+        lift_ok = self.object_pos[:, 2] > float(self.cfg.benchmark_lift_height)
+        self.successes = torch.where(lift_ok, torch.ones_like(self.successes), self.successes)
+        self._success_streak = torch.where(
+            lift_ok, self._success_streak + 1, torch.zeros_like(self._success_streak)
+        )
         if "log" not in self.extras:
             self.extras["log"] = {}
-        self.extras["log"]["consecutive_successes"] = 0.0
+        self.extras["log"]["consecutive_successes"] = self._success_streak.float().mean()
         self.extras["log"]["episode_success_rate"] = 0.0
         self.extras["log"]["episode_success_rate_all_time"] = 0.0
-        return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self.extras["log"]["tactile_contact_count"] = contact_count.float().mean()
+        self.extras["log"]["tactile_contact_score"] = contact_score.mean()
+        self.extras["log"]["tactile_load_score"] = load_score.mean()
+        self.extras["log"]["tactile_slip_score"] = slip_score.mean()
+        self.extras["log"]["tactile_success_rate"] = self.tactile_successes.float().mean()
+        self.extras["log"]["object_slot_index"] = self.object_slot_index.float().mean()
+        return reward
+
+    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Use timeout only; object geometry cannot alter the control horizon."""
+        time_out = self.episode_length_buf >= self.max_episode_length - 1
+        return torch.zeros_like(time_out), time_out

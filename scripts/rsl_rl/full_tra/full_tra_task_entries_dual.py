@@ -26,7 +26,7 @@ _TASK_PRESETS: dict[str, dict[str, str]] = {
 
 _TASK_GYM_ID_ALIASES: dict[str, str] = {
     "Isaac-UR10e-Dual-Shadow-Hand-BiBlindGrasp-Direct-v0": "bi_blind_grasp",
-    "Isaac-UR10e-Dual-Shadow-Hand-HandOver-Direct-v0": "hand_over",
+    "Isaac-UR10e-Dual-Shadow-Hand-Over-Direct-v0": "hand_over",
     "Isaac-UR10e-Dual-Shadow-Hand-BiPeg-Direct-v0": "bi_peg",
     "Isaac-UR10e-Dual-Shadow-Hand-UnscrewBottleCap-Direct-v0": "unscrew",
 }

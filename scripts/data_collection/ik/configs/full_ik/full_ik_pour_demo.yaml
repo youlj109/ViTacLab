@@ -1,0 +1,55 @@
+# Pour **demo** config: GPU IK tracks cup + scripted hand open/grasp + hand-convergence gate before pour.
+#
+# cup_relative + ikpy wrist targets did not reach the deformable cup in practice (no tactile contact in
+# pregrasp/grasp). This file uses the same GPU IK stack as ik_rl/full_ik_pour, but with a longer grasp
+# phase and wait_hand_convergence_before_goal so the arm stays on the cup while fingers close.
+#
+# Usage:
+#   bash bash_command/demo_pour_collection_replay.sh
+
+task: Isaac-UR10eShadowHand-PourDeformable-Direct-v0
+
+freeze_hand_after_script: true
+wait_hand_convergence_before_goal: true
+hand_convergence_pos_tol_rad: 0.06
+hand_convergence_max_hold_steps: 400
+
+train_env_overrides:
+  reset_cup_pos_noise: 0.0
+  # Demo recording: suppress early episode resets while scripted policy learns the sequence.
+  phase1_water_cup_max_dist: 999.0
+  phase2_cup_goal_max_dist: 999.0
+  fall_height: -1.0
+  out_of_bound_x: [0.0, 2.0]
+  out_of_bound_y: [-1.5, 1.5]
+  water_out_of_bound_x: [0.0, 2.0]
+  water_out_of_bound_y: [-1.5, 1.5]
+
+phase_schedule:
+  - name: approach_open
+    mode: ik_trajectory
+    env_steps: 150
+    hand: open
+  - name: apply_grasp
+    mode: ik_trajectory
+    env_steps: 90
+    hand_yaml: scripts/data_collection/manual/config/pour_cup_relative_grasp.yaml
+
+# Arm stays at cup through step 280; hand gate may hold longer until fingers converge; then pour to goal.
+trajectory: "cup:280:0,goal_cup:280:0,goal_cup:-1:1"
+
+object_to_palm_offset: [0.0, 0.05, -0.03]
+palm_in_wrist_pos: [0.0, 0.0, 0.35]
+palm_in_wrist_euler: [1.5707963267948966, -1.5707963267948966, 1.5707963267948966]
+
+palm_orient: pickup_down
+palm_normal_local: [0.0, 0.0, 1.0]
+palm_yaw_offset: 3.141592653589793
+world_down: [0.0, 0.0, -1.0]
+
+palm_euler: [0.0, 2.2, 0.0]
+palm_euler_in_anchor: [0.0, 0.0, 3.141592653589793]
+
+ee_body: wrist_3_link
+ik_method: dls
+ik_lambda: null

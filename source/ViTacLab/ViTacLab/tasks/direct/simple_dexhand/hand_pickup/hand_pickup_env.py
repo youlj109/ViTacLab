@@ -55,9 +55,11 @@ class UR10eShadowHandPickupEnv(UR10eShadowHandDirectBaseEnv):
     cfg: UR10eShadowHandPickupEnvCfg
 
     def __init__(self, cfg: UR10eShadowHandPickupEnvCfg, render_mode: str | None = None, **kwargs):
-        # Dexsuite-style: compact obs; optional full tactile.
-        # [robot_q(30) robot_dq(30) obj_pos(3) obj_quat(4) goal_pos(3) pos_err(3) actions(30) action_rate(30)]
-        base_obs_dim = 30 + 30 + 3 + 4 + 3 + 3 + 30 + 30
+        # Proprioception is always available. Object/goal geometry is opt-in so
+        # blind tasks can enforce a tactile-proprioceptive actor contract.
+        base_obs_dim = 30 + 30 + 30 + 30
+        if cfg.include_object_state_in_policy_obs:
+            base_obs_dim += 3 + 4 + 3 + 3
         tactile_dim = (TACTILE_NORMAL_DIM + TACTILE_SHEAR_DIM) if cfg.use_full_tactile_obs else (5 * (1 + 2))
         cfg.observation_space = base_obs_dim + tactile_dim
 
@@ -204,13 +206,16 @@ class UR10eShadowHandPickupEnv(UR10eShadowHandDirectBaseEnv):
         obs_elems = [
             _unscale(self.robot_dof_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits)[:, self.actuated_dof_indices],
             self.cfg.vel_obs_scale * self.robot_dof_vel[:, self.actuated_dof_indices],
-            self.object_pos,
-            self.object_rot,
-            self.goal_object_pos,
-            (self.goal_object_pos - self.object_pos),
             self.actions,
             self._action_rate,
         ]
+        if self.cfg.include_object_state_in_policy_obs:
+            obs_elems[2:2] = [
+                self.object_pos,
+                self.object_rot,
+                self.goal_object_pos,
+                self.goal_object_pos - self.object_pos,
+            ]
 
         if self._tactile_normal_force is not None:
             self._update_tactile_data()

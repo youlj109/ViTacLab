@@ -202,7 +202,11 @@ class UR10eShadowHandBlindClassificationEnv(UR10eShadowHandPickupEnv):
             super(UR10eShadowHandPickupEnv, self)._reset_idx(env_ids)
 
         nc = self._class_action_dim
-        self.shape_labels[env_ids] = torch.randint(0, nc, (len(env_ids),), device=self.device, dtype=torch.long)
+        fixed = int(getattr(self.cfg, "fixed_shape_label", -1))
+        if 0 <= fixed < nc:
+            self.shape_labels[env_ids] = int(fixed)
+        else:
+            self.shape_labels[env_ids] = torch.randint(0, nc, (len(env_ids),), device=self.device, dtype=torch.long)
 
         goal_x = sample_uniform(
             self.cfg.goal_pos_x_range[0], self.cfg.goal_pos_x_range[1], (len(env_ids), 1), device=self.device

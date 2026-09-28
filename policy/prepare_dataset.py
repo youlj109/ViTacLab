@@ -52,6 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="rgb",
         help="ViTacDP tactile representation; ignored for Diffusion_Policy.",
     )
+    parser.add_argument(
+        "--profile",
+        choices=("canonical", "tactile_only"),
+        default="canonical",
+        help="canonical keeps cameras and tactile poses; tactile_only uses joint + tactile arrays only.",
+    )
     parser.add_argument("--overwrite", action="store_true", help="Replace output_zarr if it already exists.")
     parser.add_argument(
         "--validate-only",
@@ -72,7 +78,9 @@ def _pose_to_6d(pose: np.ndarray) -> np.ndarray:
     return np.concatenate((pose[..., :3].astype(np.float32, copy=False), rotation), axis=-1)
 
 
-def _camera_keys(data, requested: list[str] | None, policy: str) -> list[str]:
+def _camera_keys(data, requested: list[str] | None, policy: str, profile: str) -> list[str]:
+    if profile == "tactile_only":
+        return []
     if requested:
         keys = list(requested)
     else:
@@ -91,22 +99,23 @@ def _camera_keys(data, requested: list[str] | None, policy: str) -> list[str]:
 
 def _episode_payload(path: Path, args, expected_camera_keys: list[str] | None):
     with np.load(path, allow_pickle=False) as data:
-        keys = _camera_keys(data, args.camera_keys or expected_camera_keys, args.policy)
+        keys = _camera_keys(data, args.camera_keys or expected_camera_keys, args.policy, args.profile)
         state = np.asarray(data[args.joint_key])[:: args.stride]
         cameras = [np.asarray(data[key])[:: args.stride, ..., :3] for key in keys]
         lengths = [len(state), *(len(value) for value in cameras)]
 
         tactile = tactile_pos = camera_pos = None
         if args.policy == "ViTacDP":
-            pose_keys = [f"{key}_pos" for key in keys]
-            missing_pose = [key for key in pose_keys if key not in data]
-            if missing_pose:
-                raise KeyError(f"{path.name} lacks camera pose keys required by ViTacDP: {missing_pose}")
-            camera_pos = np.concatenate([np.asarray(data[key])[:: args.stride] for key in pose_keys], axis=1)
-            camera_pos = _pose_to_6d(camera_pos)
-            if "tactile_pos" not in data:
-                raise KeyError(f"{path.name} lacks tactile_pos required by ViTacDP.")
-            tactile_pos = _pose_to_6d(np.asarray(data["tactile_pos"])[:: args.stride])
+            if args.profile != "tactile_only":
+                pose_keys = [f"{key}_pos" for key in keys]
+                missing_pose = [key for key in pose_keys if key not in data]
+                if missing_pose:
+                    raise KeyError(f"{path.name} lacks camera pose keys required by ViTacDP: {missing_pose}")
+                camera_pos = np.concatenate([np.asarray(data[key])[:: args.stride] for key in pose_keys], axis=1)
+                camera_pos = _pose_to_6d(camera_pos)
+                if "tactile_pos" not in data:
+                    raise KeyError(f"{path.name} lacks tactile_pos required by ViTacDP.")
+                tactile_pos = _pose_to_6d(np.asarray(data["tactile_pos"])[:: args.stride])
             if args.tactile_type == "rgb":
                 if "tactile_rgb_image" not in data:
                     raise KeyError(f"{path.name} lacks tactile_rgb_image.")
@@ -119,7 +128,11 @@ def _episode_payload(path: Path, args, expected_camera_keys: list[str] | None):
                 normal = np.asarray(data[required[0]])[:: args.stride]
                 shear = np.asarray(data[required[1]])[:: args.stride]
                 tactile = np.concatenate((normal, shear), axis=-1).astype(np.float32, copy=False)
-            lengths.extend((len(camera_pos), len(tactile), len(tactile_pos)))
+            lengths.append(len(tactile))
+            if camera_pos is not None:
+                lengths.append(len(camera_pos))
+            if tactile_pos is not None:
+                lengths.append(len(tactile_pos))
 
         if args.action_source == "recorded_action":
             if args.action_key not in data:
@@ -145,14 +158,17 @@ def _episode_payload(path: Path, args, expected_camera_keys: list[str] | None):
             "action": action_out,
         }
         if args.policy == "Diffusion_Policy":
+            if args.profile == "tactile_only":
+                raise ValueError("Diffusion_Policy cannot use --profile tactile_only; it is camera-only.")
             payload["head_camera"] = cameras[0][:-1].astype(np.uint8, copy=False)
             if len(cameras) > 1:
                 payload["twist_camera"] = cameras[1][:-1].astype(np.uint8, copy=False)
         else:
-            payload["camera"] = np.stack([camera[:-1] for camera in cameras], axis=1).astype(np.uint8, copy=False)
-            payload["camera_pos"] = camera_pos[:-1].astype(np.float32, copy=False)
             payload["tac_rgb" if args.tactile_type == "rgb" else "tac_force"] = tactile[:-1]
-            payload["tac_pos"] = tactile_pos[:-1].astype(np.float32, copy=False)
+            if args.profile != "tactile_only":
+                payload["camera"] = np.stack([camera[:-1] for camera in cameras], axis=1).astype(np.uint8, copy=False)
+                payload["camera_pos"] = camera_pos[:-1].astype(np.float32, copy=False)
+                payload["tac_pos"] = tactile_pos[:-1].astype(np.float32, copy=False)
         for key, value in payload.items():
             if np.issubdtype(value.dtype, np.number) and not np.isfinite(value).all():
                 first_bad = tuple(int(index) for index in np.argwhere(~np.isfinite(value))[0])
@@ -181,6 +197,8 @@ def _append_dataset(group, key: str, value: np.ndarray, compressor, chunk_length
 
 def main() -> None:
     args = build_parser().parse_args()
+    if args.policy == "Diffusion_Policy" and args.profile == "tactile_only":
+        raise SystemExit("Diffusion_Policy cannot use --profile tactile_only; it is camera-only.")
     if args.stride < 1:
         raise SystemExit("--stride must be >= 1")
     input_dir = args.input_dir.expanduser().resolve()
@@ -214,6 +232,7 @@ def main() -> None:
 
     schema = {
         "policy": args.policy,
+        "profile": args.profile,
         "episodes": len(episodes),
         "transitions": total,
         "camera_keys": resolved_cameras,
@@ -241,7 +260,7 @@ def main() -> None:
         root.attrs["vitaclab_schema"] = json.dumps(schema, sort_keys=True)
     print(json.dumps(schema, indent=2, ensure_ascii=False))
     if not args.validate_only:
-        print(f"Wrote canonical policy dataset: {output}")
+        print(f"Wrote {args.profile} policy dataset: {output}")
 
 
 if __name__ == "__main__":
