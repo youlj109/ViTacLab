@@ -126,6 +126,13 @@ class UR10eShadowHandInHandEnvCfg(DirectRLEnvCfg):
     asymmetric_obs = False
     # Third-person + TacSL GelSight sensors (see UR10eShadowHandDirectBaseEnv). False = fast headless RL.
     enable_cameras: bool = False
+    # Demo / NPZ recording: frame palm + DexCube at env-local ~(0.78, 0, 0.3).
+    # Previous (1.32, -0.48, 0.68) looked at table edge with cube fallen off-hand.
+    # Side-elevated view toward palm; match 480x640 panel layout used by BiStab/HandOver.
+    third_person_camera_pos: tuple[float, float, float] = (0.52, -0.92, 0.88)
+    third_person_camera_rot: tuple[float, float, float, float] = (0.8403, 0.5420, 0.00063, 0.00098)
+    third_person_camera_width: int = 480
+    third_person_camera_height: int = 640
     obs_type: str = "full"
     # Expected hand DOF count (must match `hand_joint_expr` on the USD articulation).
     num_hand_dofs: int = UR10E_SHADOW_LEFT_HAND_DOF_COUNT

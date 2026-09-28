@@ -8,7 +8,7 @@ from isaaclab.utils import configclass
 from ViTacLab.assets.robot.ur10e_dual_shadowhand_direct_base.ur10e_dual_shadowhand_direct_base_cfg import (
     UR10E_DUAL_SHADOWHAND_LEFT_CFG,
     UR10E_DUAL_SHADOWHAND_RIGHT_CFG,
-    UR10eDualShadowHandDirectSceneCfg,
+    UR10eDualShadowHandTacSLSceneCfg,
 )
 from ViTacLab.tasks.direct.difficult_dexhand.blind_grasp.blind_grasp_env_cfg import (
     GARBAGE_CAN_USD_PATH,
@@ -35,6 +35,17 @@ def _state_dim() -> int:
 
 
 @configclass
+class UR10eDualShadowHandBiBlindBinDropTactileSceneCfg(UR10eDualShadowHandTacSLSceneCfg):
+    """TacSL contacts the manipulated object for dual-hand fingertip RGB / force recording."""
+
+    @classmethod
+    def _tactile_params(cls) -> dict:
+        p = super()._tactile_params()
+        p["contact_object_prim_path_expr"] = "/World/envs/env_.*/object"
+        return p
+
+
+@configclass
 class UR10eDualShadowHandBiBlindBinDropEnvCfg(DirectMARLEnvCfg):
     """Dual-arm blind bin-drop: cube starts outside the bin; objective is to drop it into the bin."""
 
@@ -58,7 +69,7 @@ class UR10eDualShadowHandBiBlindBinDropEnvCfg(DirectMARLEnvCfg):
         physx=PhysxCfg(bounce_threshold_velocity=0.2),
     )
 
-    scene: UR10eDualShadowHandDirectSceneCfg = UR10eDualShadowHandDirectSceneCfg(
+    scene: UR10eDualShadowHandBiBlindBinDropTactileSceneCfg = UR10eDualShadowHandBiBlindBinDropTactileSceneCfg(
         num_envs=256,
         env_spacing=1.5,
         replicate_physics=True,

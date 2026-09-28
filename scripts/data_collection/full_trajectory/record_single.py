@@ -375,6 +375,10 @@ def main() -> int:
     cfg.device = getattr(args, "device", None) or "cuda:0"
     if hasattr(cfg, "object_init_choice"):
         cfg.object_init_choice = int(args.object_init_index)
+    if hasattr(cfg, "act_moving_average"):
+        cfg.act_moving_average = 1.0
+    if hasattr(cfg, "episode_length_s"):
+        cfg.episode_length_s = max(float(cfg.episode_length_s), 600.0)
 
     _enable_cams = bool(getattr(args, "enable_cameras", False)) or bool(int(os.environ.get("ENABLE_CAMERAS", "0")))
     setattr(cfg, "enable_cameras", _enable_cams)
@@ -497,19 +501,55 @@ def main() -> int:
         color=np.array([1.0, 0.2, 0.8]),
     )
     marker_xf = XFormPrim(prim_paths_expr=MARKER_PRIM_PATH, name="ArmIkTarget", usd=True)
+
+    def _wrist_world_pose() -> tuple[np.ndarray, np.ndarray]:
+        names = list(getattr(robot, "body_names", []) or [])
+        idx = None
+        for key in ("wrist_3", "wrist3", "flange", "ee_link"):
+            for i, n in enumerate(names):
+                if key in str(n).lower():
+                    idx = i
+                    break
+            if idx is not None:
+                break
+        if idx is None:
+            idx = int(robot.data.body_pos_w.shape[1] - 1)
+        pos = _to_numpy(robot.data.body_pos_w[0, idx]).ravel()[:3]
+        quat = _to_numpy(robot.data.body_quat_w[0, idx]).ravel()[:4]
+        return pos.astype(np.float64), quat.astype(np.float64)
+
     T0 = _make_T(np.array(args.marker_pos, dtype=np.float64), np.array(args.marker_euler, dtype=np.float64))
     pos0 = T0[:3, 3]
     quat_wxyz = R.from_matrix(T0[:3, :3]).as_quat()
     quat_wxyz = np.array([quat_wxyz[3], quat_wxyz[0], quat_wxyz[1], quat_wxyz[2]], dtype=np.float32)
+    try:
+        wpos, wquat = _wrist_world_pose()
+        pos0 = wpos
+        quat_wxyz = wquat.astype(np.float32)
+        print(
+            f"[INFO] Marker snapped onto current wrist at "
+            f"({pos0[0]:.3f}, {pos0[1]:.3f}, {pos0[2]:.3f}). "
+            "Select /World/Debug/ArmIkTarget, press W, drag the arrows.",
+            flush=True,
+        )
+    except Exception as e:
+        print(f"[WARN] Could not snap marker to wrist ({e}); using --marker-pos.", flush=True)
     marker_xf.set_world_poses(
         positions=torch.tensor([pos0], dtype=torch.float32, device="cpu"),
         orientations=torch.tensor([quat_wxyz], dtype=torch.float32, device="cpu"),
     )
-    initial_marker_pos = pos0.copy()
-    initial_marker_quat_wxyz = quat_wxyz.copy()
+    initial_marker_pos = np.asarray(pos0, dtype=np.float64).copy()
+    initial_marker_quat_wxyz = np.asarray(quat_wxyz, dtype=np.float64).copy()
 
     T_world_arm_base = _make_T(np.array(args.arm_base_pos, dtype=np.float64), np.array(args.arm_base_euler, dtype=np.float64))
     control = VideoTeleopControl(T_world_arm_base=T_world_arm_base)
+    try:
+        control._last_arm_joints = np.array(
+            [float(robot.data.joint_pos[0, idx].item()) for idx in arm_indices],
+            dtype=np.float64,
+        )
+    except Exception:
+        pass
 
     def _hand_joints_shadow_from_sim() -> np.ndarray:
         out = np.zeros(24, dtype=np.float64)
@@ -1064,6 +1104,12 @@ def main() -> int:
         if reset_mode_model is not None and hasattr(reset_mode_model, "set_value"):
             reset_mode_model.set_value(_reset_mode_label(reset_mode_state["manual_only"]))
 
+    def _enable_ik_follow_cb() -> None:
+        hold_initial_pose_state["active"] = False
+        hold_initial_pose_state["marker_moved"] = True
+        _record_status_set("IK follow ON — drag ArmIkTarget (W) to move the wrist")
+        print("[INFO] IK follow enabled from GUI button.", flush=True)
+
     if args.hand_gui:
         init_h = np.zeros(24, dtype=np.float64)
         if args.hand_joints == "sim":
@@ -1134,6 +1180,7 @@ def main() -> int:
                             omni.ui.Button("Snapshot", clicked_fn=_record_snapshot_cb)
                             omni.ui.Button("Stop Recording", clicked_fn=_record_stop_cb)
                             omni.ui.Button("Reset", clicked_fn=_manual_reset_cb)
+                        omni.ui.Button("Follow marker (enable IK)", clicked_fn=_enable_ik_follow_cb)
                         with omni.ui.HStack(spacing=4):
                             omni.ui.Label("Reset Mode", width=70)
                             reset_mode_model = omni.ui.SimpleStringModel()
@@ -1209,6 +1256,7 @@ def main() -> int:
     step = 0
     last_arm_print: Optional[np.ndarray] = None
     last_hand_norm_print: Optional[np.ndarray] = None
+    last_actions = torch.zeros(env.num_envs, action_dim, device=env.device)
 
     while simulation_app.is_running():
         t0 = time.time()
@@ -1273,13 +1321,27 @@ def main() -> int:
             targets: Optional[ArmHandTargets] = control.compute(pos, wrist_euler, hvec)
             if targets is None:
                 if step % 60 == 0:
-                    print("[WARN] IK failed for current marker pose.")
-                actions = torch.zeros(env.num_envs, action_dim, device=env.device)
+                    print(
+                        f"[WARN] IK failed for marker "
+                        f"({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}); holding last action.",
+                        flush=True,
+                    )
+                actions = last_actions
             else:
                 actions = _build_action(targets.arm_joints, targets.hand_joints)
+                last_actions = actions.clone()
 
         arm_for_norm = targets.arm_joints if targets is not None else None
 
+        if step % 60 == 0:
+            hold_on = bool(hold_initial_pose_state["active"] and not hold_initial_pose_state["marker_moved"])
+            print(
+                f"[INFO] teleop hold={hold_on} ik={'ok' if targets is not None else 'off'} "
+                f"marker=({pos[0]:.3f},{pos[1]:.3f},{pos[2]:.3f}) "
+                f"— Stage: /World/Debug/ArmIkTarget, press W, drag arrows "
+                f"(or click 'Follow marker' on the right panel).",
+                flush=True,
+            )
         if args.print_every > 0 and step % int(args.print_every) == 0:
             if targets is not None:
                 _print_arm_cfg_block(targets.arm_joints)

@@ -12,8 +12,6 @@ from ViTacLab.assets.sensor.tacsl_sensor.visuotactile_sensor_data import VisuoTa
 
 from ViTacLab.tasks.direct.simple_dexhand.hand_pickup.hand_pickup_env import (
     TACTILE_SENSOR_NAMES,
-    TACTILE_NORMAL_DIM,
-    TACTILE_SHEAR_DIM,
     UR10eShadowHandPickupEnv,
     _unscale,
 )
@@ -26,16 +24,16 @@ class UR10eShadowHandBlindRetrievalEnv(UR10eShadowHandPickupEnv):
 
     cfg: UR10eShadowHandBlindRetrievalEnvCfg
 
+    @staticmethod
+    def _policy_observation_dim(cfg: UR10eShadowHandBlindRetrievalEnvCfg) -> int:
+        # pickup-style + one-hot command (which object to retrieve).
+        return UR10eShadowHandPickupEnv._policy_observation_dim(cfg) + int(cfg.num_shape_classes)
+
     def __init__(self, cfg: UR10eShadowHandBlindRetrievalEnvCfg, render_mode: str | None = None, **kwargs):
         nc = int(cfg.num_shape_classes)
-        # pickup-style + one-hot command (which object to retrieve).
-        base_obs_dim = 30 + 30 + nc + 3 + 4 + 3 + 3 + 30 + 30
-        tactile_dim = (TACTILE_NORMAL_DIM + TACTILE_SHEAR_DIM) if cfg.use_full_tactile_obs else (5 * (1 + 2))
-        cfg.observation_space = base_obs_dim + tactile_dim
 
         super().__init__(cfg, render_mode, **kwargs)
 
-        self.cfg.observation_space = int(base_obs_dim + tactile_dim)
         self._num_shape_classes = nc
         self.target_object_id = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._target_cmd_onehot = torch.zeros((self.num_envs, nc), dtype=torch.float, device=self.device)
@@ -80,13 +78,16 @@ class UR10eShadowHandBlindRetrievalEnv(UR10eShadowHandPickupEnv):
             ],
             self.cfg.vel_obs_scale * self.robot_dof_vel[:, self.actuated_dof_indices],
             self._target_cmd_onehot,
-            self.object_pos,
-            self.object_rot,
-            self.goal_object_pos,
-            (self.goal_object_pos - self.object_pos),
             self.actions,
             self._action_rate,
         ]
+        if self.cfg.include_object_state_in_policy_obs:
+            obs_elems[3:3] = [
+                self.object_pos,
+                self.object_rot,
+                self.goal_object_pos,
+                self.goal_object_pos - self.object_pos,
+            ]
 
         if self._tactile_normal_force is not None:
             self._update_tactile_data()

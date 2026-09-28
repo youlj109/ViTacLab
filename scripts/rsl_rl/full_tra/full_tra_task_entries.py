@@ -3,8 +3,8 @@
 Used by ``record_full_tra_single``, ``play_full_tra_single*``, ``record_full_tra_simple_gripper``,
 and ``play_full_tra_simple_gripper``.
 
-Keeps ``pour`` on ``difficult_dexhand`` (record default); adds Forge presets and Gymnasium
-registry resolution aligned with ``run_ur10e_shadowhand_arm_pose_from_marker.py``.
+Adds Forge presets and Gymnasium registry resolution aligned with
+``run_ur10e_shadowhand_arm_pose_from_marker.py``.
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ from typing import Any
 
 _TASK_PRESETS: dict[str, dict[str, str]] = {
     "pour": {
-        "env": "ViTacLab.tasks.direct.difficult_dexhand.pour_water.ur10e_shadowhand_pour_env:UR10eShadowHandPourEnv",
-        "cfg": "ViTacLab.tasks.direct.difficult_dexhand.pour_water.ur10e_shadowhand_pour_env_cfg:UR10eShadowHandPourEnvCfg",
+        "env": "ViTacLab.tasks.direct.simple_dexhand.pour_water.ur10e_shadowhand_pour_env:UR10eShadowHandPourEnv",
+        "cfg": "ViTacLab.tasks.direct.simple_dexhand.pour_water.ur10e_shadowhand_pour_env_cfg:UR10eShadowHandPourEnvCfg",
     },
     "pickup": {
         "env": "ViTacLab.tasks.direct.simple_dexhand.hand_pickup.hand_pickup_env:UR10eShadowHandPickupEnv",

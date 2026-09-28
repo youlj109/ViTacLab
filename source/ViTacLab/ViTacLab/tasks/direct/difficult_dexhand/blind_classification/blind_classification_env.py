@@ -30,16 +30,21 @@ class UR10eShadowHandBlindClassificationEnv(UR10eShadowHandPickupEnv):
 
     cfg: UR10eShadowHandBlindClassificationEnvCfg
 
+    @staticmethod
+    def _policy_observation_dim(cfg: UR10eShadowHandBlindClassificationEnvCfg) -> int:
+        # Class logits are actions, never part of proprioceptive observations.
+        base_obs_dim = 30 + 30 + 30 + 30
+        if cfg.include_object_state_in_policy_obs:
+            base_obs_dim += 3 + 4
+        tactile_dim = (TACTILE_NORMAL_DIM + TACTILE_SHEAR_DIM) if cfg.use_full_tactile_obs else (5 * (1 + 2))
+        return base_obs_dim + tactile_dim
+
     def __init__(self, cfg: UR10eShadowHandBlindClassificationEnvCfg, render_mode: str | None = None, **kwargs):
         nc = int(cfg.num_shape_classes)
-        base_obs_dim = 30 + 30 + 3 + 4 + 30 + 30
-        tactile_dim = (TACTILE_NORMAL_DIM + TACTILE_SHEAR_DIM) if cfg.use_full_tactile_obs else (5 * (1 + 2))
-        cfg.observation_space = base_obs_dim + tactile_dim
         cfg.action_space = 30 + nc
 
         super().__init__(cfg, render_mode, **kwargs)
 
-        self.cfg.observation_space = int(base_obs_dim + tactile_dim)
         self._robot_action_dim = 30
         self._class_action_dim = nc
         self.num_actions = 30 + nc
@@ -123,11 +128,11 @@ class UR10eShadowHandBlindClassificationEnv(UR10eShadowHandPickupEnv):
                 :, self.actuated_dof_indices
             ],
             self.cfg.vel_obs_scale * self.robot_dof_vel[:, self.actuated_dof_indices],
-            self.object_pos,
-            self.object_rot,
             self.actions[:, : self._robot_action_dim],
             self._action_rate,
         ]
+        if self.cfg.include_object_state_in_policy_obs:
+            obs_elems[2:2] = [self.object_pos, self.object_rot]
 
         if self._tactile_normal_force is not None:
             self._update_tactile_data()
@@ -202,7 +207,11 @@ class UR10eShadowHandBlindClassificationEnv(UR10eShadowHandPickupEnv):
             super(UR10eShadowHandPickupEnv, self)._reset_idx(env_ids)
 
         nc = self._class_action_dim
-        self.shape_labels[env_ids] = torch.randint(0, nc, (len(env_ids),), device=self.device, dtype=torch.long)
+        fixed = int(getattr(self.cfg, "fixed_shape_label", -1))
+        if 0 <= fixed < nc:
+            self.shape_labels[env_ids] = int(fixed)
+        else:
+            self.shape_labels[env_ids] = torch.randint(0, nc, (len(env_ids),), device=self.device, dtype=torch.long)
 
         goal_x = sample_uniform(
             self.cfg.goal_pos_x_range[0], self.cfg.goal_pos_x_range[1], (len(env_ids), 1), device=self.device

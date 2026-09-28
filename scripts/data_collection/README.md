@@ -122,14 +122,21 @@ Pickup：
   --record_env_index 0 --record_max_episodes 10 --max_play_steps 20000
 ```
 
-Pour：
+Pour（演示推荐 ``full_ik_pour_demo.yaml``，cup-relative 预抓 + 抓取；旧 ``full_ik_pour.yaml`` 易够不到软体杯）：
 
 ```bash
 ./isaaclab.sh -p scripts/data_collection/ik/play_full_ik_single.py \
   --task Isaac-UR10eShadowHand-PourDeformable-Direct-v0 \
-  --full-ik-config scripts/data_collection/ik/configs/full_ik/full_ik_pour.yaml \
+  --full-ik-config scripts/data_collection/ik/configs/full_ik/full_ik_pour_demo.yaml \
   --num_envs 1 --device cuda:0 --enable_cameras --no-checkpoint \
-  --record_data --record_path play_records/pour_scripted
+  --record_data --record_path play_records/pour_scripted \
+  --record_save_on_stop --max_play_steps 2800
+```
+
+一键演示（采集 + 校验 + mp4）：
+
+```bash
+bash bash_command/demo_pour_collection_replay.sh
 ```
 
 配置内的 `task` 应与 `--task` 一致；手型 YAML 必须存在。脚本在加载配置时会

@@ -3,7 +3,6 @@ from isaaclab.assets import RigidObjectCfg
 from isaaclab.utils import configclass
 
 from ViTacLab.tasks.direct.difficult_dexhand.blind_grasp.blind_grasp_env_cfg import (
-    GARBAGE_CAN_USD_PATH,
     UR10eShadowHandBlindGraspEnvCfg,
     UR10eShadowHandBlindGraspSceneCfg,
 )
@@ -23,6 +22,9 @@ class UR10eShadowHandBlindRetrievalSceneCfg(UR10eShadowHandBlindGraspSceneCfg):
 
     @classmethod
     def _tactile_params(cls) -> dict:
+        # Sensor construction consumes _tactile_params (Pickup overrides it),
+        # not _tactile_policy. Keep its attribution defaults and change only
+        # the target expression to the three objects actually in this scene.
         p = super()._tactile_params()
         p["contact_object_prim_path_expr"] = "/World/envs/env_.*/object_(cube|sphere|cone)"
         return p
@@ -54,28 +56,8 @@ class UR10eShadowHandBlindRetrievalEnvCfg(UR10eShadowHandBlindGraspEnvCfg):
     )
     layout_pos_jitter: tuple[float, float] = (-0.004, 0.004)
 
-    trash_can_cfg: RigidObjectCfg = RigidObjectCfg(
-        prim_path="/World/envs/env_.*/trash_can",
-        spawn=sim_utils.UsdFileCfg(
-            usd_path=GARBAGE_CAN_USD_PATH,
-            scale=(1.0, 1.0, 1.0),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                kinematic_enabled=True,
-                disable_gravity=True,
-                retain_accelerations=False,
-                enable_gyroscopic_forces=False,
-            ),
-            collision_props=sim_utils.CollisionPropertiesCfg(
-                contact_offset=0.001,
-                rest_offset=-0.001,
-            ),
-            articulation_props=None,
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(0.88, -0.15, 0.14),
-            rot=(1.0, 0.0, 0.0, 0.0),
-        ),
-    )
+    # Inherit trash_can_cfg / trash_can_scale from BlindGrasp (can at ~0.54, 0, 0.20) so
+    # teleop keyframes reach inside the bin instead of groping outside at (0.88, -0.15).
 
     object_cube_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/object_cube",
@@ -84,7 +66,7 @@ class UR10eShadowHandBlindRetrievalEnvCfg(UR10eShadowHandBlindGraspEnvCfg):
             rigid_props=_common_object_spawn_rigid_props(),
             articulation_props=None,
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.88, -0.15, 0.05)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.54, 0.0, 0.11)),
     )
 
     object_sphere_cfg: RigidObjectCfg = RigidObjectCfg(
@@ -97,7 +79,7 @@ class UR10eShadowHandBlindRetrievalEnvCfg(UR10eShadowHandBlindGraspEnvCfg):
             collision_props=sim_utils.CollisionPropertiesCfg(),
             mass_props=sim_utils.MassPropertiesCfg(density=400.0),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.88, -0.15, 0.1)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.54, 0.0, 0.11)),
     )
 
     object_cone_cfg: RigidObjectCfg = RigidObjectCfg(
@@ -112,7 +94,7 @@ class UR10eShadowHandBlindRetrievalEnvCfg(UR10eShadowHandBlindGraspEnvCfg):
             collision_props=sim_utils.CollisionPropertiesCfg(),
             mass_props=sim_utils.MassPropertiesCfg(density=400.0),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.88, -0.15, 0.15)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.54, 0.0, 0.11)),
     )
 
     object_reset_pos_x_range: tuple[float, float] = (-0.012, 0.012)

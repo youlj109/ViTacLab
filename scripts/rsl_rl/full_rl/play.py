@@ -12,10 +12,6 @@ import os
 import sys
 import time
 from datetime import datetime
-import traceback
-import gymnasium as gym
-import numpy as np
-import torch
 
 # Shared helpers with ``ik_rl`` live under ``scripts/rsl_rl/ik_rl/utils``
 _RSL_RL_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -24,12 +20,11 @@ if _IK_UTILS not in sys.path:
     sys.path.insert(0, _IK_UTILS)
 
 from isaaclab.app import AppLauncher
-from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 
 import cli_args  # isort: skip
 
 # add argparse arguments
-parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
+parser = argparse.ArgumentParser(description="Play or record an RL agent with RSL-RL.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
 parser.add_argument(
@@ -71,6 +66,32 @@ parser.add_argument(
     default=0,
     help="Which sub-environment to visualize for tactile panels (default: 0).",
 )
+parser.add_argument("--save_data", action="store_true", default=False, help="Save successful rollout trajectories to disk.")
+parser.add_argument("--data_path", type=str, default=None, help="Directory to save recorded data when --save_data is set.")
+parser.add_argument(
+    "--num_episodes",
+    type=int,
+    default=50,
+    help="Target number of successful trajectories to save when --save_data is set.",
+)
+parser.add_argument(
+    "--max_steps",
+    type=int,
+    default=0,
+    help="Max steps per trajectory while saving data. 0 means no step cap.",
+)
+parser.add_argument(
+    "--max_play_steps",
+    type=int,
+    default=0,
+    help="Stop rollout after this many env steps (0 = run until app closed). Useful for quick validation.",
+)
+parser.add_argument(
+    "--log_interval",
+    type=int,
+    default=100,
+    help="Print rollout progress every N env steps (0 = disable). Default: 100.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -78,10 +99,14 @@ AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
 args_cli, hydra_args = parser.parse_known_args()
 # always enable cameras to record video or show TacSL tactile streams
-if args_cli.video or args_cli.show_rgb or args_cli.show_ff:
+if args_cli.video or args_cli.show_rgb or args_cli.show_ff or args_cli.save_data:
     args_cli.enable_cameras = True
-
-args_cli.enable_cameras = True
+if os.environ.get("ENABLE_CAMERAS", "0") == "1":
+    args_cli.enable_cameras = True
+if args_cli.save_data and args_cli.num_episodes <= 0:
+    parser.error("--num_episodes must be positive when recording")
+if min(args_cli.max_steps, args_cli.max_play_steps, args_cli.log_interval) < 0:
+    parser.error("Step limits and log interval must be non-negative")
 
 sys.argv = [sys.argv[0]] + hydra_args
 
@@ -301,7 +326,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         _enable_cams = True
     setattr(env_cfg, "enable_cameras", _enable_cams)
 
-    env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array")
+    env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
@@ -345,15 +370,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     total_timestep = 0
     max_steps_per_episode = args_cli.max_steps if args_cli.max_steps > 0 else None
 
-    print(f"[INFO] Starting simulation. num_envs={num_envs}. Target: {args_cli.num_episodes} successful trajectories.")
-    if max_steps_per_episode is not None:
-        print(f"[INFO] Max steps per trajectory: {max_steps_per_episode} (trajectory discarded if no success by then).")
     run_until_target = args_cli.save_data and args_cli.num_episodes > 0
     if run_until_target:
+        print(f"[INFO] Starting simulation. num_envs={num_envs}. Target: {args_cli.num_episodes} successful trajectories.")
+        if max_steps_per_episode is not None:
+            print(f"[INFO] Max steps per trajectory: {max_steps_per_episode} (trajectory discarded if no success by then).")
         print("[INFO] Data recording: only successful trajectories are saved; run until target count or app closed.")
     else:
-        is_running = simulation_app.is_running()
-        print(f"[INFO] simulation_app.is_running() = {is_running} (loop depends on it).")
+        print(f"[INFO] Starting simulation. num_envs={num_envs}. Rollout until app closed (no --save_data).")
+        if int(args_cli.max_play_steps) > 0:
+            print(f"[INFO] Will stop after max_play_steps={int(args_cli.max_play_steps)}.")
+        if int(args_cli.log_interval) > 0:
+            print(f"[INFO] Progress log every {int(args_cli.log_interval)} env steps.")
+        print(f"[INFO] simulation_app.is_running() = {simulation_app.is_running()} (loop depends on it).")
 
     # 保存收集到的多回合数据
     if args_cli.save_data:
@@ -372,15 +401,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 obs["record"][i],
             )
 
-    while True:
-        if not simulation_app.is_running():
-            if run_until_target and (episodes_collected > 0 or total_timestep > 0):
-                print("[INFO] App no longer running; stopping and saving collected data.")
-            elif not run_until_target:
-                print("[INFO] App no longer running; exiting.")
-            break
-        if run_until_target and episodes_collected >= args_cli.num_episodes:
-            break
 
     dt = env.unwrapped.step_dt
 
@@ -493,21 +513,44 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         total_timestep += 1
         step_in_episode += 1
 
+        log_every = int(args_cli.log_interval)
+        if log_every > 0 and (total_timestep % log_every == 0):
+            rew = None
+            if isinstance(infos, dict):
+                if "log" in infos and isinstance(infos["log"], dict) and "Episode_Reward/total" in infos["log"]:
+                    rew = infos["log"]["Episode_Reward/total"]
+                elif "episode" in infos and isinstance(infos["episode"], dict):
+                    rew = infos["episode"].get("r", None)
+            succ_n = 0
+            if isinstance(infos, dict) and "curr_success_per_env" in infos:
+                succ_n = int(infos["curr_success_per_env"].sum().item())
+            rew_s = f" reward={float(rew):.2f}" if rew is not None else ""
+            print(
+                f"[PLAY] step={total_timestep} episode_step={step_in_episode} "
+                f"success_envs={succ_n}/{num_envs}{rew_s}",
+                flush=True,
+            )
+
         # 1) 成功：立即保存当前 buffer，但不 reset 环境；一个 global episode 中每个 env 只保存一次
         if args_cli.save_data:
             success_per_env = infos["curr_success_per_env"]
             for i in range(num_envs):
                 if success_per_env[i].item() and not success_saved[i].item():
                     ep_data_torch = current_ep_buffers[i]
-                    np.savez_compressed(
-                        os.path.join(data_dir, f"episode_{episodes_collected}.npz"),
-                        **_episode_buffer_to_npz_kwargs(env.unwrapped, i, ep_data_torch),
-                    )
+                    # Exclusive creation protects prior experiments at an explicit data_path.
+                    with open(os.path.join(data_dir, f"episode_{episodes_collected}.npz"), "xb") as output:
+                        np.savez_compressed(
+                            output, **_episode_buffer_to_npz_kwargs(env.unwrapped, i, ep_data_torch)
+                        )
                     episodes_collected += 1
                     success_saved[i] = True
                     print(f"[INFO] Env {i} success at global step {step_in_episode}; saved episode {episodes_collected} / {args_cli.num_episodes}")
             if episodes_collected >= args_cli.num_episodes:
                 break
+
+        if int(args_cli.max_play_steps) > 0 and total_timestep >= int(args_cli.max_play_steps):
+            print(f"[INFO] Reached max_play_steps={int(args_cli.max_play_steps)}; stopping rollout.")
+            break
 
         # 2) global max_steps：此时才调用 env.reset()，并整体清空缓冲
         if max_steps_per_episode is not None and step_in_episode >= max_steps_per_episode:
@@ -588,10 +631,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env.close()
 
 if __name__ == "__main__":
+    exit_code = 0
     try:
         main()
-    except Exception as e:
-        print(f"[ERROR] {e}")
+    except Exception:
+        import traceback
         traceback.print_exc()
+        sys.stderr.flush()
+        exit_code = 1
     finally:
+        import omni.kit.app
+        omni.kit.app.get_app().post_quit(exit_code)
         simulation_app.close()
+    sys.exit(exit_code)
