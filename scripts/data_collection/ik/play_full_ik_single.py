@@ -90,6 +90,14 @@ parser.add_argument(
     help="Stop after saving this many completed episodes (0 = no episode limit; still respects --max_play_steps).",
 )
 parser.add_argument(
+    "--record_save_on_stop",
+    action="store_true",
+    help=(
+        "When play stops (--max_play_steps or window close), flush buffered canonical record rows to "
+        "episode_XXXX_completed.npz even if the task never signaled success (useful for Pour scripted demos)."
+    ),
+)
+parser.add_argument(
     "--no-checkpoint",
     action="store_true",
     help="Do not load RSL-RL weights: use zero policy actions (arm/hand from full_ik expander only). "
@@ -788,7 +796,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
             # Fallback criterion: episode boundary from cumulative success stats.
             ue = wrapped.unwrapped
-            if hasattr(ue, "get_episode_success_stats"):
+            # Aggregate success counters identify this recorded environment only
+            # for a single-env rollout. Multi-env boundaries use dones below.
+            if wrapped.num_envs == 1 and hasattr(ue, "get_episode_success_stats"):
                 cur_stats = ue.get_episode_success_stats()
                 if prev_success_stats is not None:
                     prev_ok, prev_total, _ = prev_success_stats
@@ -815,13 +825,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                                 )
                         else:
                             t_drop = len(next(iter(rec_bufs.values()))) if rec_bufs else 0
-                            _clear_record_buffers(rec_bufs)
                             print(
                                 f"[INFO] dropped failed episode #{rec_drop_idx:04d} "
                                 f"(record_env_index={record_ei}, T={t_drop})"
                             )
                             rec_drop_idx += 1
+                        _clear_record_buffers(rec_bufs)
                 prev_success_stats = cur_stats
+
+            # Never concatenate a reset into the previous canonical episode,
+            # including tasks without cumulative success counters.
+            if bool(dones.reshape(-1)[record_ei].item()):
+                _clear_record_buffers(rec_bufs)
 
         now = time.time()
         if now - last_print >= interval:
@@ -870,6 +885,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             plt.pause(0.001)
 
         if args_cli.max_play_steps > 0 and step >= int(args_cli.max_play_steps):
+            if (
+                bool(getattr(args_cli, "record_save_on_stop", False))
+                and args_cli.record_data
+                and rec_bufs is not None
+                and rec_bufs
+                and len(next(iter(rec_bufs.values()))) > 0
+            ):
+                assert record_dir is not None
+                path, T = _save_play_episode_npz(
+                    record_dir, f"episode_{rec_ep_idx:04d}_completed.npz", rec_bufs
+                )
+                if path is not None:
+                    print(f"[INFO] recorded completed trajectory on stop {path} (T={T})")
+                    rec_ep_idx += 1
+                _clear_record_buffers(rec_bufs)
             break
 
         if show_tactile and t0 is not None:
@@ -878,10 +908,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 time.sleep(target_dt - elapsed)
 
     if args_cli.record_data and rec_bufs is not None and rec_bufs and len(next(iter(rec_bufs.values()))) > 0:
-        print(
-            "[INFO] play ended mid-episode; unsaved partial trajectory is discarded by design "
-            "(success-only recording)."
-        )
+        if bool(getattr(args_cli, "record_save_on_stop", False)):
+            assert record_dir is not None
+            path, T = _save_play_episode_npz(
+                record_dir, f"episode_{rec_ep_idx:04d}_completed.npz", rec_bufs
+            )
+            if path is not None:
+                print(f"[INFO] recorded completed trajectory on exit {path} (T={T})")
+        else:
+            print(
+                "[INFO] play ended mid-episode; unsaved partial trajectory is discarded by design "
+                "(success-only recording). Pass --record_save_on_stop to flush on exit."
+            )
 
     wrapped.close()
     if fig is not None:
