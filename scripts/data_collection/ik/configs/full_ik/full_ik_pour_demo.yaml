@@ -14,16 +14,8 @@ wait_hand_convergence_before_goal: true
 hand_convergence_pos_tol_rad: 0.06
 hand_convergence_max_hold_steps: 400
 
-train_env_overrides:
-  reset_cup_pos_noise: 0.0
-  # Demo recording: suppress early episode resets while scripted policy learns the sequence.
-  phase1_water_cup_max_dist: 999.0
-  phase2_cup_goal_max_dist: 999.0
-  fall_height: -1.0
-  out_of_bound_x: [0.0, 2.0]
-  out_of_bound_y: [-1.5, 1.5]
-  water_out_of_bound_x: [0.0, 2.0]
-  water_out_of_bound_y: [-1.5, 1.5]
+# Keep the local task's reset randomization, bounds and failure criteria.
+# This file changes the scripted controller only, not the environment.
 
 phase_schedule:
   - name: approach_open

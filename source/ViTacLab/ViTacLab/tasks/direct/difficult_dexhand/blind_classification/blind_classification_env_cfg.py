@@ -43,9 +43,6 @@ class UR10eShadowHandBlindClassificationEnvCfg(UR10eShadowHandBlindGraspEnvCfg):
     num_shape_classes: int = 3
     action_space: int = 33
 
-    # Demo/replay: if >=0, always spawn this shape (0=cube, 1=sphere, 2=cone). -1 = random per episode.
-    fixed_shape_label: int = -1
-
     # Observation: no goal position / error (blind classification); same tactile as pickup summary by default.
     observation_space: int = 142
 

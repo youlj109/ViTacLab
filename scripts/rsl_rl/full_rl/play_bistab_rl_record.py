@@ -3,6 +3,8 @@
 
 BiStab (``Isaac-UR10e-Dual-Shadow-Hand-BiStab-Direct-v0``): fixed UR10e arms; both Shadow
 Hands steer a plate to stabilize an orange toward a random goal marker.
+Recording enables the local sensors without replacing scene fields, the
+orange/plate assets, or physics settings.
 
 Usage (Isaac Sim python)::
 
@@ -138,9 +140,7 @@ import isaaclab_tasks  # noqa: F401
 import ViTacLab.tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
-from ViTacLab.tasks.direct.simple_dexhand.bi_stab.bi_stab_env_cfg import (
-    UR10eDualShadowHandBiStabTactileSceneCfg,
-)
+from dual_recording_scene import enable_dual_tactile_recording
 from ViTacLab.utils.vitaclab_marl_rsl import multi_agent_to_single_agent
 
 
@@ -263,14 +263,9 @@ def _bufs_nonempty(bufs: dict[str, list[np.ndarray]] | None) -> bool:
 
 
 def _apply_tactile_scene(env_cfg: DirectMARLEnvCfg) -> None:
-    old = env_cfg.scene
-    env_cfg.scene = UR10eDualShadowHandBiStabTactileSceneCfg(
-        num_envs=old.num_envs,
-        env_spacing=old.env_spacing,
-        replicate_physics=getattr(old, "replicate_physics", True),
-        clone_in_fabric=getattr(old, "clone_in_fabric", False),
+    enable_dual_tactile_recording(
+        env_cfg, contact_prim_path="/World/envs/env_.*/plate"
     )
-    env_cfg.enable_cameras = True
 
 
 @hydra_task_config(args_cli.task, args_cli.agent)

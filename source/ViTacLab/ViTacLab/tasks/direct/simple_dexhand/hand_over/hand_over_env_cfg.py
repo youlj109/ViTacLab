@@ -16,7 +16,6 @@ from ViTacLab.assets.robot.ur10e_dual_shadowhand_direct_base.ur10e_dual_shadowha
     UR10E_DUAL_SHADOWHAND_LEFT_CFG,
     UR10E_DUAL_SHADOWHAND_RIGHT_CFG,
     UR10eDualShadowHandDirectSceneCfg,
-    UR10eDualShadowHandTacSLSceneCfg,
 )
 
 
@@ -61,17 +60,6 @@ def _hand_over_obs_dim(num_hand_dofs: int) -> int:
 def _hand_over_state_dim(num_hand_dofs: int) -> int:
     """Central critic state dimension (both agents + object + goal)."""
     return 6 * num_hand_dofs + 154
-
-
-@configclass
-class UR10eDualShadowHandHandOverTactileSceneCfg(UR10eDualShadowHandTacSLSceneCfg):
-    """TacSL contacts the manipulated object for dual-hand fingertip RGB / force recording."""
-
-    @classmethod
-    def _tactile_params(cls) -> dict:
-        p = super()._tactile_params()
-        p["contact_object_prim_path_expr"] = "/World/envs/env_.*/object"
-        return p
 
 
 @configclass
@@ -131,43 +119,43 @@ class UR10eDualShadowHandOverEnvCfg(DirectMARLEnvCfg):
     enable_cameras: bool = False
 
     # in-hand object (between the two arm bases, slightly above the table)
-    # Default: yellow sphere — matches RSL-RL checkpoint
-    # ``logs/rsl_rl/Isaac-UR10e-Dual-Shadow-Hand-Over-Direct-v0/.../params/env.yaml``.
-    object_cfg: RigidObjectCfg = RigidObjectCfg(
-        prim_path="/World/envs/env_.*/object",
-        spawn=sim_utils.SphereCfg(
-            radius=0.0335,
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.8, 1.0, 0.0)),
-            physics_material=sim_utils.RigidBodyMaterialCfg(static_friction=0.7, dynamic_friction=0.5),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                kinematic_enabled=False,
-                disable_gravity=False,
-                enable_gyroscopic_forces=True,
-                solver_position_iteration_count=8,
-                solver_velocity_iteration_count=0,
-                sleep_threshold=0.005,
-                stabilization_threshold=0.0025,
-                max_depenetration_velocity=1000.0,
-            ),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(density=500.0),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.6, 0.0, 0.48), rot=(1.0, 0.0, 0.0, 0.0)),
-    )
-    # Optional visual asset (NOT compatible with the default HandOver RL checkpoint):
     # object_cfg: RigidObjectCfg = RigidObjectCfg(
     #     prim_path="/World/envs/env_.*/object",
-    #     spawn=sim_utils.UsdFileCfg(
-    #         usd_path="source/ViTacLab/ViTacLab/assets/data/Objects/cosmos_assets/1_object_A/banana/banana.usd",
+    #     spawn=sim_utils.SphereCfg(
+    #         radius=0.0335,
+    #         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.8, 1.0, 0.0)),
+    #         physics_material=sim_utils.RigidBodyMaterialCfg(static_friction=0.7),
     #         rigid_props=sim_utils.RigidBodyPropertiesCfg(
+    #             kinematic_enabled=False,
     #             disable_gravity=False,
-    #             retain_accelerations=False,
-    #             enable_gyroscopic_forces=False,
+    #             enable_gyroscopic_forces=True,
+    #             solver_position_iteration_count=8,
+    #             solver_velocity_iteration_count=0,
+    #             sleep_threshold=0.005,
+    #             stabilization_threshold=0.0025,
+    #             max_depenetration_velocity=1000.0,
     #         ),
-    #         articulation_props=None,
+    #         collision_props=sim_utils.CollisionPropertiesCfg(),
+    #         mass_props=sim_utils.MassPropertiesCfg(density=500.0),
     #     ),
     #     init_state=RigidObjectCfg.InitialStateCfg(pos=(0.6, 0.0, 0.48), rot=(1.0, 0.0, 0.0, 0.0)),
     # )
+    object_cfg: RigidObjectCfg = RigidObjectCfg(
+        prim_path="/World/envs/env_.*/object",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path="source/ViTacLab/ViTacLab/assets/data/Objects/cosmos_assets/1_object_A/banana/banana.usd",
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                disable_gravity=False,
+                retain_accelerations=False,
+                enable_gyroscopic_forces=False,
+            ),
+            articulation_props=None,
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(
+            # 放在机械臂前方稍远处，避免一开始就贴太近
+            pos=(0.6, 0.0, 0.48), rot=(1.0, 0.0, 0.0, 0.0)
+        ),
+    )
     # goal object
     goal_object_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/goal_marker",

@@ -18,7 +18,7 @@ from isaaclab.utils import configclass
 from ViTacLab.assets.robot.ur10e_dual_shadowhand_direct_base.ur10e_dual_shadowhand_direct_base_cfg import (
     UR10E_DUAL_SHADOWHAND_LEFT_CFG,
     UR10E_DUAL_SHADOWHAND_RIGHT_CFG,
-    UR10eDualShadowHandTacSLSceneCfg,
+    UR10eDualShadowHandDirectSceneCfg,
 )
 
 # -----------------------------------------------------------------------------
@@ -32,8 +32,8 @@ CAP_TRANSLATION_JOINT_NAME: str = "joint_2"
 BOTTLE_USD_PATH: str = "source/ViTacLab/ViTacLab/assets/data/Objects/Bottle/3517/mobility.usd"
 
 
-def _ur10e_bottle_cap_right_arm_joint_pos() -> dict[str, float]:
-    """Default UR10e arm pose for bottle-cap task (tuned via marker teleop)."""
+def _ur10e_unscrew_right_arm_joint_pos() -> dict[str, float]:
+    """Default UR10e arm pose for bottle-cap unscrew (tuned via ``run_ur10e_dual_shadowhand_arm_pose_from_marker``)."""
 
     return {
         "shoulder_pan_joint": -0.2017389824472911,
@@ -45,8 +45,8 @@ def _ur10e_bottle_cap_right_arm_joint_pos() -> dict[str, float]:
     }
 
 
-def _ur10e_bottle_cap_left_arm_joint_pos() -> dict[str, float]:
-    """Default UR10e arm pose for bottle-cap task (tuned via marker teleop)."""
+def _ur10e_unscrew_left_arm_joint_pos() -> dict[str, float]:
+    """Default UR10e arm pose for bottle-cap unscrew (tuned via ``run_ur10e_dual_shadowhand_arm_pose_from_marker``)."""
 
     return {
         "shoulder_pan_joint": 0.2778900402896463,
@@ -65,8 +65,7 @@ def default_bottle_articulation_cfg(
     rotation_joint_name: str = CAP_ROTATION_JOINT_NAME,
     translation_joint_name: str = CAP_TRANSLATION_JOINT_NAME,
     spawn_scale: tuple[float, float, float] = (1.0, 1.0, 1.0),
-    init_pos: tuple[float, float, float] = (0.62, 0.0, 0.43),
-    mass: float | None = 0.01,
+    init_pos: tuple[float, float, float] = (0.62, 0.0, 0.08),
 ) -> ArticulationCfg:
     """Passive cap joints: revolute + prismatic with viscous damping (no stiffness).
 
@@ -80,7 +79,6 @@ def default_bottle_articulation_cfg(
             usd_path=BOTTLE_USD_PATH,
             scale=spawn_scale,
             activate_contact_sensors=False,
-            mass_props=sim_utils.MassPropertiesCfg(mass=mass) if mass is not None else None,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 retain_accelerations=False,
@@ -198,21 +196,6 @@ def _unscrew_state_dim(num_actuated_dofs: int) -> int:
 
 
 @configclass
-class UR10eDualShadowHandUnscrewTactileSceneCfg(UR10eDualShadowHandTacSLSceneCfg):
-    """TacSL contacts the articulated bottle (cap + body) for dual-hand fingertip RGB / force."""
-
-    @classmethod
-    def _tactile_params(cls) -> dict:
-        return {
-            # Cap link (link_1); bottle articulation root/base has no useful rigid SDF for TacSL forces.
-            "contact_object_prim_path_expr": "/World/envs/env_.*/bottle/link_1",
-            "enable_force_field": True,
-            "tactile_array_size": (20, 25),
-            "tactile_margin": 0.005,
-        }
-
-
-@configclass
 class UR10eDualShadowHandUnscrewBottleCapEnvCfg(DirectMARLEnvCfg):
     """Dual UR10e + Shadow Hand (arm + hand) + articulated bottle (cap revolute + prismatic)."""
 
@@ -245,12 +228,12 @@ class UR10eDualShadowHandUnscrewBottleCapEnvCfg(DirectMARLEnvCfg):
     # Task-specific UR10e arm defaults (hand defaults from USD via partial ``joint_pos``).
     right_robot_cfg: ArticulationCfg = UR10E_DUAL_SHADOWHAND_RIGHT_CFG.replace(
         init_state=UR10E_DUAL_SHADOWHAND_RIGHT_CFG.init_state.replace(
-            joint_pos=_ur10e_bottle_cap_right_arm_joint_pos(),
+            joint_pos=_ur10e_unscrew_right_arm_joint_pos(),
         ),
     )
     left_robot_cfg: ArticulationCfg = UR10E_DUAL_SHADOWHAND_LEFT_CFG.replace(
         init_state=UR10E_DUAL_SHADOWHAND_LEFT_CFG.init_state.replace(
-            joint_pos=_ur10e_bottle_cap_left_arm_joint_pos(),
+            joint_pos=_ur10e_unscrew_left_arm_joint_pos(),
         ),
     )
 
@@ -266,22 +249,6 @@ class UR10eDualShadowHandUnscrewBottleCapEnvCfg(DirectMARLEnvCfg):
     )
 
     enable_cameras: bool = False
-    enable_third_person_camera: bool = True
-    # Front-facing dual-arm third-person (see build_ur10e_dual_shadowhand_third_person_camera_cfg); wider FOV for bottle.
-    third_person_camera_pos: tuple[float, float, float] = (0.55, -0.75, 1.25)
-    third_person_camera_rot: tuple[float, float, float, float] = (0.88439, 0.46675, -0.001, -0.00191)
-    third_person_camera_width: int = 640
-    third_person_camera_height: int = 480
-    third_person_camera_horizontal_aperture: float = 28.0
-
-    # Close-up on right-hand cap grasp / twist (mentor BottleCup DP layout).
-    enable_twist_camera: bool = True
-    twist_camera_robot_prim_name: str = "RightRobot"
-    twist_camera_parent_link_name: str = "forearm"
-    twist_camera_pos: tuple[float, float, float] = (0.0, -0.08, 0.18)
-    twist_camera_rot: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
-    twist_camera_width: int = 640
-    twist_camera_height: int = 480
 
     # Joint names (must match USD and ``default_bottle_articulation_cfg``).
     cap_rotation_joint_name: str = CAP_ROTATION_JOINT_NAME
@@ -296,8 +263,8 @@ class UR10eDualShadowHandUnscrewBottleCapEnvCfg(DirectMARLEnvCfg):
 
     # World height after scale (m); tune with ``bottle_spawn_scale``; used when setting ``fall_height`` vs init z.
     bottle_height_m: float = 0.16
-    # Env-frame bottle root on SeattleLabTable (~z=0.43 after scale; same xy as hand-over object).
-    bottle_root_init_pos: tuple[float, float, float] = (0.62, 0.0, 0.43)
+    # Env-frame bottle root position (m); default ~ tabletop + half height if root near centroid (tune with scene).
+    bottle_root_init_pos: tuple[float, float, float] = (0.62, 0.0, 0.15)
 
     bottle_cfg: ArticulationCfg | None = None
 
@@ -312,7 +279,7 @@ class UR10eDualShadowHandUnscrewBottleCapEnvCfg(DirectMARLEnvCfg):
     """If True, world ``goal_pos`` uses the same ``dpos`` as the physical bottle root (see ``reset_position_noise``)."""
 
     # Kinematic cylinder under each env (``visual_goal_bottle``); world pose from ``goal_pos`` / ``goal_quat_w``.
-    enable_visual_goal_bottle: bool = False
+    enable_visual_goal_bottle: bool = True
     visual_goal_bottle_cfg: RigidObjectCfg | None = None
 
     # Runtime: lock prismatic DOF until |revolute| >= this (rad).
@@ -383,11 +350,10 @@ class UR10eDualShadowHandUnscrewBottleCapEnvCfg(DirectMARLEnvCfg):
     success_min_translation_m: float = 0.012
     success_total_rotation_rad: float = 6.0
 
-    scene: UR10eDualShadowHandUnscrewTactileSceneCfg = UR10eDualShadowHandUnscrewTactileSceneCfg(
+    scene: UR10eDualShadowHandDirectSceneCfg = UR10eDualShadowHandDirectSceneCfg(
         num_envs=512,
         env_spacing=1.5,
         replicate_physics=True,
-        clone_in_fabric=False,
     )
 
     reset_position_noise = 0.008
@@ -396,6 +362,6 @@ class UR10eDualShadowHandUnscrewBottleCapEnvCfg(DirectMARLEnvCfg):
     arm_reset_dof_pos_noise_scale: float = 0.0
 
     # Env-frame z: terminate if bottle root drops below this (~ ``bottle_root_init_pos[2] - bottle_height_m``).
-    fall_height = 0.27
+    fall_height = 0.05
     vel_obs_scale = 0.2
     act_moving_average = 1.0

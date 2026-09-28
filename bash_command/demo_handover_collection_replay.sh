@@ -22,7 +22,8 @@
 #   MAX_TOTAL_STEPS=8000
 #   SAVE_MODE=best_episode
 #   SUCCESS_GOAL_DIST=0.06
-#   Object: yellow sphere (matches RL checkpoint training asset; not banana USD)
+#   Object: current local banana asset; checkpoints trained on the donor sphere
+#   scene are not assumed compatible. This collector does not replace the object.
 #   SUCCESS_STREAK=8
 #   SKIP_COLLECT=0
 #   FPS=10

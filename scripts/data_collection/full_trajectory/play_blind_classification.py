@@ -4,6 +4,8 @@
 Blind Classification uses 33-dim actions (30 robot + 3 class logits). Open-loop
 teleop replay pads class logits; on Finish* keyframes the correct label logit is
 asserted when ``--emit-class-logits`` is enabled (default).
+These oracle logits make this a labelled demonstration, not an autonomous
+classification-policy evaluation. Environment observations and resets are kept.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from play_single_phase import (
     _repo_root,
     _reset_and_warmup,
     _save_npz,
+    _step_has_ended,
 )
 from task_entries_single import resolve_env_cfg_entries
 
@@ -71,6 +74,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--shape-label",
         type=int,
+        choices=(-1, 0, 1, 2),
         default=0,
         help="Fixed manipuland shape for the episode: 0=cube, 1=sphere, 2=cone. Use -1 for random.",
     )
@@ -111,6 +115,23 @@ def _active_object_z(env, ei: int) -> float:
     if hasattr(env, "object") and env.object is not None:
         return float((env.object.data.root_pos_w[ei] - env.scene.env_origins[ei])[2].item())
     return 0.0
+
+
+def _reset_for_shape(env, act_dim: int, settle_steps: int, label: int, ei: int, max_attempts: int = 64) -> int:
+    """Select a requested shape through ordinary resets, not env-state patches.
+
+    The preserved environment samples its shape on reset and has no
+    ``fixed_shape_label`` config option. Bounded rejection sampling leaves
+    inactive-object parking and contact attribution entirely in the env.
+    """
+    if label not in (-1, 0, 1, 2):
+        raise ValueError("--shape-label must be -1, 0, 1, or 2.")
+    for _ in range(max_attempts):
+        _reset_and_warmup(env, act_dim=act_dim, settle_steps=settle_steps)
+        actual = int(env.shape_labels[ei].item())
+        if label == -1 or actual == label:
+            return actual
+    raise RuntimeError(f"The preserved environment did not sample requested shape {label} after {max_attempts} resets.")
 
 
 def main() -> int:
@@ -154,14 +175,8 @@ def main() -> int:
     cfg.scene.num_envs = max(1, int(args.num_envs))
     cfg.device = getattr(args, "device", None) or "cuda:0"
     cfg.enable_cameras = True
-    if hasattr(cfg, "goal_resample_time_range_s"):
-        cfg.goal_resample_time_range_s = (1.0e9, 1.0e9)
-    if hasattr(cfg, "fixed_shape_label"):
-        cfg.fixed_shape_label = int(args.shape_label)
-
     env = EnvCls(cfg)
     act_dim = env.num_actions
-    _reset_and_warmup(env, act_dim=act_dim, settle_steps=args.tactile_reset_settle_steps)
 
     robot = env.robot
     jn = list(robot.joint_names)
@@ -255,6 +270,10 @@ def main() -> int:
                 "emit_class_logits": bool(args.emit_class_logits),
                 "keyframe_json": str(kf_path),
                 "save_outcome": str(args.save_outcome),
+                "shape_selection": "rejection_sampling_of_unmodified_environment_resets",
+                "collector_protocol": "keyframe_demo_with_oracle_class_logits" if args.emit_class_logits else "keyframe_demo",
+                "autonomous_classification_policy_evaluation": False,
+                "policy_observations": "unchanged_registered_environment",
             },
             f,
             indent=2,
@@ -265,7 +284,8 @@ def main() -> int:
     succ = 0
 
     for ep in range(int(args.num_episodes)):
-        _reset_and_warmup(env, act_dim=act_dim, settle_steps=args.tactile_reset_settle_steps)
+        label_now = _reset_for_shape(env, act_dim, args.tactile_reset_settle_steps, int(args.shape_label), ei)
+        episode_shape_name = SHAPE_NAMES[label_now]
         bufs: dict[str, list[np.ndarray]] = {}
         ep_steps = 0
         success_latched = False
@@ -285,7 +305,6 @@ def main() -> int:
         stable = 0
         countdown = -1
         sif = 0
-        label_now = int(env.shape_labels[ei].item())
         print(f"[INFO] episode {ep}: shape_label={label_now} ({SHAPE_NAMES[label_now]})")
 
         while app.is_running() and fi < len(frames):
@@ -318,6 +337,11 @@ def main() -> int:
             else:
                 obs, term, trunc, infos = out, None, None, {}
             ep_steps += 1
+            if _step_has_ended(out):
+                # Isaac may already have reset and sampled another shape. Its
+                # post-reset observation is not part of this demonstration.
+                print("[INFO] Environment ended the episode; not appending post-reset data or a new shape.")
+                break
             if ep_steps % max(1, int(args.record_step_interval)) == 0:
                 row = extract_canonical_record_row(obs, env, ei) or {}
                 for key, value in merge_record_row(obs, ei, actions=actions, robot=robot).items():
@@ -355,13 +379,6 @@ def main() -> int:
                 stable = 0
                 countdown = -1
                 sif = 0
-            if torch.is_tensor(term) and torch.is_tensor(trunc) and bool(torch.any(term | trunc).item()):
-                _reset_and_warmup(env, act_dim=act_dim, settle_steps=args.tactile_reset_settle_steps)
-                prev_actions.zero_()
-                stable = 0
-                countdown = -1
-                sif = 0
-                continue
             dt = target_dt - (time.time() - t0)
             if dt > 0:
                 time.sleep(dt)
@@ -382,7 +399,7 @@ def main() -> int:
             t_rows = len(bufs.get("task_episode_sim_step", []))
             if t_rows > 0:
                 bufs["outcome_success"] = [np.asarray(final_success, dtype=np.bool_) for _ in range(t_rows)]
-            fname = f"episode_{ep:04d}_{shape_name}_{outcome}.npz"
+            fname = f"episode_{ep:04d}_{episode_shape_name}_{outcome}.npz"
             p, t_len = _save_npz(rec_dir, fname, bufs)
             print(f"[INFO] saved {outcome} -> {p} (T={t_len}, success_source={success_source})")
         else:

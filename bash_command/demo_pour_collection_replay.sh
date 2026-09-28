@@ -2,7 +2,7 @@
 # Pour task demo: scripted full-IK pour + canonical NPZ + replay videos.
 #
 # Pour uses deformable cup/water; collection path is play_full_ik_single (not play_single JSON replay).
-# Config: scripts/data_collection/ik/configs/full_ik/full_ik_pour.yaml
+# Config: scripts/data_collection/ik/configs/full_ik/full_ik_pour_demo.yaml
 #
 # Usage (ViTacLab repo root, an Isaac Sim-enabled Python environment):
 #   bash bash_command/demo_pour_collection_replay.sh
@@ -16,7 +16,7 @@
 # Common env vars:
 #   RECORD_DIR=logs/demo_pour/collection
 #   VIDEO_DIR=logs/demo_pour/videos
-#   MAX_PLAY_STEPS=560   (just under one Pour episode; avoids timeout reset mid-NPZ)
+#   MAX_PLAY_STEPS=560   (bounded rollout; task resets always split/discard buffers)
 #   SKIP_COLLECT=0
 #   FPS=10
 #
@@ -105,7 +105,6 @@ run_collect() {
     --record_env_index 0 \
     --record_max_episodes 1 \
     --record_save_on_stop \
-    --record_demo_mode \
     --max_play_steps "$MAX_PLAY_STEPS"
 
   echo "[OK] collection finished under $RECORD_DIR"

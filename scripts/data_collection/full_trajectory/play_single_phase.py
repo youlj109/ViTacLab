@@ -31,6 +31,33 @@ _POLICY_RECORD_KEYS = {
     "third_person_camera",
 }
 
+
+def _recording_scope_metadata() -> dict[str, Any]:
+    """Describe saved fields without changing or misrepresenting actor observations."""
+    return {
+        "record_input_subset": "tactile_plus_robot_proprioception",
+        "demo_third_person_camera": True,
+        "policy_observations": "unchanged_registered_environment",
+        "policy_tactile_only_enforced": False,
+        "record_subset_excludes_object_state": True,
+    }
+
+
+def _step_has_ended(result) -> bool:
+    """Detect an auto-reset boundary before reading any post-step scene data."""
+    if not isinstance(result, tuple) or len(result) < 4:
+        return False
+    flags = result[2:4] if len(result) >= 5 else (result[2],)
+    for flag in flags:
+        if flag is None:
+            continue
+        if torch.is_tensor(flag):
+            if bool(torch.any(flag).item()):
+                return True
+        elif bool(np.asarray(flag).any()):
+            return True
+    return False
+
 _PHASES = {
     1: {
         "task": "blind_grasp",
@@ -294,8 +321,8 @@ def _parser():
     p.add_argument("--num-envs", type=int, default=1, help='Number of parallel simulation environments.')
     p.add_argument("--fps", type=float, default=30.0, help='Target control and recording loop frequency in frames per second.')
     p.add_argument("--num-episodes", type=int, default=1, help='Number of episodes to attempt and save.')
-    p.add_argument("--object-init-index", type=int, default=0, help='Object initialization preset index; -1 uses the trajectory/keyframe default.')
-    p.add_argument("--object-xy-noise", type=float, default=0.03, help='Uniform object-reset position noise in the world XY plane, in meters.')
+    p.add_argument("--object-init-index", type=int, default=0, help='Nonnegative fixed object-initialization preset index.')
+    p.add_argument("--object-xy-noise", type=float, default=0.0, help='Reserved compatibility option; the preserved BlindGrasp environment supports fixed slots only, so this must be zero.')
     p.add_argument("--hand-noise", type=float, default=0.0, help='Uniform random hand-joint perturbation magnitude in radians.')
     p.add_argument("--success-z-threshold", type=float, default=0.4, help='Object world-height threshold in meters used to label successful pickup.')
     p.add_argument("--arm-base-pos", type=float, nargs=3, default=(0.0, 0.0, 0.0), help='Robot arm-base world position as X Y Z in meters.')
@@ -338,7 +365,8 @@ def _parser():
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            "Strict ViTacBench contract: no object teleport/alignment, no object-pose IK adaptation, "
+            "Keyframe replay restrictions only (not an actor-observation contract): "
+            "no object teleport/alignment, no object-pose IK adaptation, "
             "no fingertip/object distance gate, no palm carry, and no robot joint teleport."
         ),
     )
@@ -373,8 +401,8 @@ def _parser():
         choices=("success", "completed", "all"),
         default="success",
         help=(
-            "Which attempts may be written: success uses canonical environment success signals with the "
-            "legacy pickup-height fallback; completed also saves trajectories that reach their final frame; "
+            "Which attempts may be written: success uses the collector's height plus lift-contact check "
+            "(not the environment reward); completed also saves trajectories that reach their final frame; "
             "all additionally saves interrupted/done attempts."
         ),
     )
@@ -384,9 +412,13 @@ def _parser():
 
 def main() -> int:
     args = _parser().parse_args()
+    if int(args.object_init_index) < 0:
+        raise ValueError("The preserved BlindGrasp environment supports fixed nonnegative initialization indices only.")
+    if float(args.object_xy_noise) != 0.0:
+        raise ValueError("--object-xy-noise is unsupported by the preserved fixed-slot BlindGrasp reset; use 0.")
     bench_mode = bool(args.bench_mode)
     if not bench_mode:
-        raise ValueError("Blind-grasp phase replay only supports strict tactile ViTacBench mode.")
+        raise ValueError("Blind-grasp phase replay supports only the restricted keyframe-control mode.")
     if float(args.tactile_contact_threshold) <= 0.0:
         args.tactile_contact_threshold = 1.0e-4
     app = AppLauncher(args).app
@@ -417,41 +449,16 @@ def main() -> int:
     CfgCls = _load_symbol(cfg_entry)
     cfg = CfgCls(); cfg.scene.num_envs = max(1, int(args.num_envs)); cfg.device = getattr(args, "device", None) or "cuda:0"
     cfg.object_init_choice = int(args.object_init_index); cfg.enable_cameras = True
-    noise = max(0.0, float(args.object_xy_noise))
-    if hasattr(cfg, "object_reset_pos_x_range"):
-        cfg.object_reset_pos_x_range = (-noise, noise)
-    if hasattr(cfg, "object_reset_pos_y_range"):
-        cfg.object_reset_pos_y_range = (-noise, noise)
-    if hasattr(cfg, "episode_length_s"):
-        cfg.episode_length_s = max(float(cfg.episode_length_s), 300.0)
-    if hasattr(cfg, "act_moving_average"):
-        cfg.act_moving_average = 1.0  # replay: track joint targets in one step (0.3 prevents hand closure)
+    if int(args.object_init_index) >= len(cfg.object_init_pos_candidates):
+        raise ValueError(f"--object-init-index must be below {len(cfg.object_init_pos_candidates)}.")
     print(
-        "[INFO] replay uses registered env physics; tactile follows the BlindGrasp scene "
-        "(bin contact allowed during probe). No object-pose IK or finger retarget. "
+        "[INFO] replay preserves registered env physics, tactile contact attribution, and actor observations. "
+        "Only the saved NPZ subset excludes object state. No object-pose IK or finger retarget. "
         f"MediaPipe FJ1 follows FJ2; Pick*_03 THJ5 slew={float(args.thumb_oppose_step_rad):.3f} rad/step.",
         flush=True,
     )
     env = EnvCls(cfg)
-    # Drive the env through its normal joint-position action path. Dummy-zero
-    # steps with _use_rl_control=False left the fingers stuck open (hand_err~0.6).
-    if hasattr(env, "_use_rl_control"):
-        env._use_rl_control = True
-    if hasattr(cfg, "act_moving_average"):
-        env.cfg.act_moving_average = 1.0
-    env._replay_q = None
-    _base_apply_action = type(env)._apply_action
-
-    def _apply_replay_action(_env=env):
-        # Position targets must be written every physics substep. A one-shot
-        # apply_joint_targets() before env.step() is overwritten or dropped.
-        q = getattr(_env, "_replay_q", None)
-        if q is not None:
-            _env.apply_joint_targets(q)
-            return
-        _base_apply_action(_env)
-
-    env._apply_action = _apply_replay_action
+    # Normal action input only: do not replace environment physics callbacks.
     _reset_and_warmup(env, act_dim=env.num_actions, settle_steps=args.tactile_reset_settle_steps, object_settle_steps=args.object_settle_steps)
     robot = env.robot; jn = list(robot.joint_names); sh = shadowhand_joint_names(); act_dim = env.num_actions
     arm_expr = getattr(cfg, "arm_joint_expr", ".*(shoulder|elbow|wrist_1|wrist_2|wrist_3|ur10).*")
@@ -476,7 +483,7 @@ def main() -> int:
         print(f"  {sn:5s} -> {mapped} lo={sh_lo[si]:.3f} hi={sh_hi[si]:.3f}", flush=True)
     print(
         f"[INFO] object_init_choice={int(args.object_init_index)} "
-        f"( -1=sample A/B each reset; 0=slot A 0.62; 1=slot B 0.50 )",
+        f"(fixed slot; position={cfg.resolve_object_init_pos(int(args.object_init_index))})",
         flush=True,
     )
     print(
@@ -556,16 +563,15 @@ def main() -> int:
                 "use_recorded_arm": bool(args.use_recorded_arm),
                 "tactile_contact_threshold": float(args.tactile_contact_threshold),
                 "bench_mode": bench_mode,
-                "policy_input_contract": "tactile_plus_robot_proprioception",
+                **_recording_scope_metadata(),
                 "object_geometry_in_control": False,
-                "demo_third_person_camera": True,
+                "success_label_source": "collector_height_and_lift_tactile_not_environment_reward",
             },
             f,
             indent=2,
         )
     ei = max(0, min(int(args.record_env_index), env.num_envs - 1)); target_dt = 1.0 / max(1e-3, float(args.fps)); succ = 0
     for ep in range(int(args.num_episodes)):
-        env._replay_q = None
         _reset_and_warmup(env, act_dim=act_dim, settle_steps=args.tactile_reset_settle_steps, object_settle_steps=args.object_settle_steps)
         pick_contact_seen = False
         pick_contact_streak = 0
@@ -638,7 +644,6 @@ def main() -> int:
                 hand_cmd[19] = env._thj5_cmd
             elif hasattr(env, "_thj5_cmd"):
                 delattr(env, "_thj5_cmd")
-            full_j = build_full_joint_pos(arm_cmd, hand_cmd)
             actions = build_action(arm_cmd, hand_cmd)
             ae = float(np.max(np.abs(cur_arm_j - des_arm)))
             he = float(np.max(np.abs(cur_hand_j - des_hand)))
@@ -648,11 +653,10 @@ def main() -> int:
                 actions = actions.expand(env.num_envs, -1).clone()
             step_actions = action_smoothing * prev_actions + (1.0 - action_smoothing) * actions
             prev_actions = step_actions.clone()
-            replay_q = torch.tensor(full_j, dtype=torch.float32, device=env.device).unsqueeze(0)
-            if env.num_envs > 1:
-                replay_q = replay_q.expand(env.num_envs, -1).clone()
-            env._replay_q = replay_q
             out = env.step(step_actions)
+            if _step_has_ended(out):
+                print(f"[INFO] Environment ended during {frame_name}; not recording its post-reset state.")
+                break
             if isinstance(out, tuple) and len(out) >= 5:
                 obs, term, trunc, infos = out[0], out[2], out[3], out[4]
             elif isinstance(out, tuple) and len(out) >= 4:
@@ -661,7 +665,7 @@ def main() -> int:
                 obs, term, trunc, infos = out, None, None, {}
             ep_steps += 1
             if ep_steps % max(1, int(args.record_step_interval)) == 0:
-                row = merge_record_row(obs, ei, actions=actions, robot=robot)
+                row = merge_record_row(obs, ei, actions=step_actions, robot=robot)
                 tactile_row = _read_tactile_from_scene(env, ei)
                 row.update(tactile_row)
                 row.update(_read_third_person_from_scene(env, ei))
@@ -676,7 +680,7 @@ def main() -> int:
                 success_signal_seen = True
                 success_latched = success_latched or signal_success
                 success_source = signal_source_now
-            z = float((env.object.data.root_pos_w[0] - env.scene.env_origins[0])[2].item()); zmax = max(zmax, z); z_fallback_ok = z_fallback_ok or (z > float(args.success_z_threshold))
+            z = float((env.object.data.root_pos_w[ei] - env.scene.env_origins[ei])[2].item()); zmax = max(zmax, z); z_fallback_ok = z_fallback_ok or (z > float(args.success_z_threshold))
             tact_peak = _tactile_contact_strength(env, ei)
             tact_peak_max = max(tact_peak_max, tact_peak)
             if "Finish" in frame_name:
@@ -794,13 +798,6 @@ def main() -> int:
                         flush=True,
                     )
                 fi += 1; stable = 0; countdown = -1; sif = 0; dwell = 0; pick_contact_seen = False; pick_contact_streak = 0
-            if torch.is_tensor(term) and torch.is_tensor(trunc) and bool(torch.any(term | trunc).item()):
-                print(
-                    f"[WARN] env timed out during {frame_name} at step={sif}; "
-                    f"ending episode instead of resetting the object back into the bin.",
-                    flush=True,
-                )
-                break
             dt = target_dt - (time.time() - t0)
             if dt > 0 and not bool(getattr(args, "headless", False)):
                 time.sleep(dt)

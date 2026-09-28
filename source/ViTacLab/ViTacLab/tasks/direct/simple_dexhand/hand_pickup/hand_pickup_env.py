@@ -54,20 +54,12 @@ class UR10eShadowHandPickupEnv(UR10eShadowHandDirectBaseEnv):
 
     cfg: UR10eShadowHandPickupEnvCfg
 
-    @staticmethod
-    def _policy_observation_dim(cfg: UR10eShadowHandPickupEnvCfg) -> int:
-        # Proprioception is always available. Object/goal geometry is opt-in so
-        # blind tasks can enforce a tactile-proprioceptive actor contract.
-        base_obs_dim = 30 + 30 + 30 + 30
-        if cfg.include_object_state_in_policy_obs:
-            base_obs_dim += 3 + 4 + 3 + 3
-        tactile_dim = (TACTILE_NORMAL_DIM + TACTILE_SHEAR_DIM) if cfg.use_full_tactile_obs else (5 * (1 + 2))
-        return base_obs_dim + tactile_dim
-
     def __init__(self, cfg: UR10eShadowHandPickupEnvCfg, render_mode: str | None = None, **kwargs):
-        # Resolve subclass-specific actor layouts before DirectRLEnv builds Gym
-        # spaces; changing cfg.observation_space after super() is too late.
-        cfg.observation_space = self._policy_observation_dim(cfg)
+        # Dexsuite-style: compact obs; optional full tactile.
+        # [robot_q(30) robot_dq(30) obj_pos(3) obj_quat(4) goal_pos(3) pos_err(3) actions(30) action_rate(30)]
+        base_obs_dim = 30 + 30 + 3 + 4 + 3 + 3 + 30 + 30
+        tactile_dim = (TACTILE_NORMAL_DIM + TACTILE_SHEAR_DIM) if cfg.use_full_tactile_obs else (5 * (1 + 2))
+        cfg.observation_space = base_obs_dim + tactile_dim
 
         super().__init__(cfg, render_mode, **kwargs)
 
@@ -87,11 +79,15 @@ class UR10eShadowHandPickupEnv(UR10eShadowHandDirectBaseEnv):
         self._prev_actions = torch.zeros((self.num_envs, self.num_actions), device=self.device)
         self._action_rate = torch.zeros_like(self._prev_actions)
 
-        # Base _setup_scene registers sensors *after* _setup_task_scene. Allocate
-        # the actor buffers now, once sensor construction has completed. Keep the
-        # same zero-filled layout when cameras are disabled instead of silently
-        # dropping all tactile dimensions from observations.
-        self._init_pickup_tactile_buffers()
+        # tactile buffers (match pour env)
+        self._tactile_normal_force: torch.Tensor | None = None
+        self._tactile_shear_force: torch.Tensor | None = None
+        self._num_tactile_sensors = 0
+        self._tactile_array_total = 0
+
+        # tactile summary (per-sensor mean normal, mean shear xy)
+        self._tactile_normal_mean: torch.Tensor | None = None
+        self._tactile_shear_mean: torch.Tensor | None = None
 
         # success stats (per-env sticky "ever succeeded this episode" for bonus reward)
         self.successes = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
@@ -104,21 +100,6 @@ class UR10eShadowHandPickupEnv(UR10eShadowHandDirectBaseEnv):
         self._episode_total_count = 0
         # EMA of per-reset-batch success fraction (reactive; see ``extras["log"]["episode_success_rate"]``).
         self._episode_success_rate_ema: float = 0.0
-
-    def _init_pickup_tactile_buffers(self) -> None:
-        self._num_tactile_sensors = len(TACTILE_SENSOR_NAMES)
-        tactile_hw = self.cfg.scene._tactile_params()["tactile_array_size"]
-        if TACTILE_SENSOR_NAMES[0] in self.scene.sensors:
-            tactile_hw = self.scene[TACTILE_SENSOR_NAMES[0]].cfg.tactile_array_size
-        self._tactile_array_total = int(tactile_hw[0]) * int(tactile_hw[1])
-        self._tactile_normal_force = torch.zeros(
-            (self.num_envs, self._num_tactile_sensors * self._tactile_array_total), device=self.device
-        )
-        self._tactile_shear_force = torch.zeros(
-            (self.num_envs, self._num_tactile_sensors * self._tactile_array_total * 2), device=self.device
-        )
-        self._tactile_normal_mean = torch.zeros((self.num_envs, self._num_tactile_sensors), device=self.device)
-        self._tactile_shear_mean = torch.zeros((self.num_envs, self._num_tactile_sensors * 2), device=self.device)
 
     def _out_of_bounds(self, object_pos_env: torch.Tensor) -> torch.Tensor:
         """Boolean (N,) — object root in env frame outside configured bounds."""
@@ -223,16 +204,13 @@ class UR10eShadowHandPickupEnv(UR10eShadowHandDirectBaseEnv):
         obs_elems = [
             _unscale(self.robot_dof_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits)[:, self.actuated_dof_indices],
             self.cfg.vel_obs_scale * self.robot_dof_vel[:, self.actuated_dof_indices],
+            self.object_pos,
+            self.object_rot,
+            self.goal_object_pos,
+            (self.goal_object_pos - self.object_pos),
             self.actions,
             self._action_rate,
         ]
-        if self.cfg.include_object_state_in_policy_obs:
-            obs_elems[2:2] = [
-                self.object_pos,
-                self.object_rot,
-                self.goal_object_pos,
-                self.goal_object_pos - self.object_pos,
-            ]
 
         if self._tactile_normal_force is not None:
             self._update_tactile_data()
@@ -550,3 +528,5 @@ class UR10eShadowHandPickupEnv(UR10eShadowHandDirectBaseEnv):
             "task": task_state,
             "sensors": sensors,
         }
+
+

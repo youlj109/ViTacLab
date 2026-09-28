@@ -20,7 +20,7 @@ RETRIEVAL = ast.parse((SCRIPTS / "play_blind_retrieval.py").read_text())
 def extracted_helpers():
     names = {
         "_target_object", "_palm_pos_env", "_pick_close_frame",
-        "_settle_after_object_write", "_min_fingertip_dist_to_target", "_is_pick_close_frame",
+        "_settle_after_object_write", "_min_fingertip_dist_to_target", "_is_pick_close_frame", "_step_has_ended",
     }
     body = [node for tree in (PHASE, RETRIEVAL) for node in tree.body
             if isinstance(node, ast.FunctionDef) and node.name in names]

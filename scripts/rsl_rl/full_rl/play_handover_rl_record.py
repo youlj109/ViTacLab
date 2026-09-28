@@ -3,6 +3,8 @@
 
 Per mentor guidance, HandOver (``Isaac-UR10e-Dual-Shadow-Hand-Over-Direct-v0``) demos use
 RL checkpoints — not open-loop pose trajectories.
+The current local task assets (including its default banana) are retained;
+checkpoints trained with a different object need separate validation.
 
 Usage (Isaac Sim python)::
 
@@ -130,9 +132,7 @@ import isaaclab_tasks  # noqa: F401
 import ViTacLab.tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
-from ViTacLab.tasks.direct.simple_dexhand.hand_over.hand_over_env_cfg import (
-    UR10eDualShadowHandHandOverTactileSceneCfg,
-)
+from dual_recording_scene import enable_dual_tactile_recording
 from ViTacLab.utils.vitaclab_marl_rsl import multi_agent_to_single_agent
 
 
@@ -252,14 +252,9 @@ def _bufs_nonempty(bufs: dict[str, list[np.ndarray]] | None) -> bool:
 
 
 def _apply_tactile_scene(env_cfg: DirectMARLEnvCfg) -> None:
-    old = env_cfg.scene
-    env_cfg.scene = UR10eDualShadowHandHandOverTactileSceneCfg(
-        num_envs=old.num_envs,
-        env_spacing=old.env_spacing,
-        replicate_physics=getattr(old, "replicate_physics", True),
-        clone_in_fabric=getattr(old, "clone_in_fabric", False),
+    enable_dual_tactile_recording(
+        env_cfg, contact_prim_path="/World/envs/env_.*/object"
     )
-    env_cfg.enable_cameras = True
 
 
 @hydra_task_config(args_cli.task, args_cli.agent)

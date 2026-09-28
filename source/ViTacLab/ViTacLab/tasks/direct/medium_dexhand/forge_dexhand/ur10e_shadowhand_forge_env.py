@@ -497,6 +497,9 @@ class UR10eShadowHandForgeEnv(UR10eShadowHandDirectBaseEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
+        if getattr(self.cfg, "enable_cameras", False):
+            self._maybe_init_tacsl_nominal_render()
+
     def _setup_task_scene(self) -> None:
         available_tactile = [n for n in TACTILE_SENSOR_NAMES if n in self.scene.sensors]
         if available_tactile:
@@ -676,8 +679,6 @@ class UR10eShadowHandForgeEnv(UR10eShadowHandDirectBaseEnv):
         )
 
     def _update_tactile(self) -> None:
-        if getattr(self.cfg, "enable_cameras", False):
-            self._maybe_init_tacsl_nominal_render()
         if not self._printed_tactile_status:
             print(
                 f"[ForgeDexhand][Tactile] enable_cameras={bool(getattr(self.cfg, 'enable_cameras', False))} "

@@ -311,7 +311,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Allow the environment to auto-reset when an episode ends.",
     )
-    p.set_defaults(hand_gui=True, manual_reset_only=True, hold_initial_pose=True)
+    p.set_defaults(hand_gui=True, manual_reset_only=False, hold_initial_pose=True)
     AppLauncher.add_app_launcher_args(p)
     return p
 
@@ -375,10 +375,6 @@ def main() -> int:
     cfg.device = getattr(args, "device", None) or "cuda:0"
     if hasattr(cfg, "object_init_choice"):
         cfg.object_init_choice = int(args.object_init_index)
-    if hasattr(cfg, "act_moving_average"):
-        cfg.act_moving_average = 1.0
-    if hasattr(cfg, "episode_length_s"):
-        cfg.episode_length_s = max(float(cfg.episode_length_s), 600.0)
 
     _enable_cams = bool(getattr(args, "enable_cameras", False)) or bool(int(os.environ.get("ENABLE_CAMERAS", "0")))
     setattr(cfg, "enable_cameras", _enable_cams)

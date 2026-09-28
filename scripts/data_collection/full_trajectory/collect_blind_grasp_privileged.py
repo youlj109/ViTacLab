@@ -2,12 +2,14 @@
 """Privileged Blind Grasp demo collector (replaces GUI teleop).
 
 Object pose is used only to generate the expert motion (approach / pinch / lift).
-Recorded NPZ and policy observations stay tactile + proprioception. Do not train
-a policy that reads object pose from this script.
+Recorded NPZ contains a tactile/proprioception subset plus a demo camera.
+The registered environment's actor observations are unchanged and may contain
+object state; this collector does not enforce a tactile-only actor.
 
 Arm seed is the in-bin pose_008 reach. The hand is an advisor enclosure:
-thumb on one side, FF/MF/RF/LF closed on the other. Cube mass/friction are
-set on the BlindGrasp env (light + mu 3.0/2.5).
+thumb on one side, FF/MF/RF/LF closed on the other. Registered mass, friction,
+and actuator effort are preserved. This geometry-assisted demonstration also
+optionally uses explicit robot joint-state snaps, so it is not a blind policy evaluation.
 
 Usage (repo root, env_isaaclab_510test; close other Isaac GUIs first):
 
@@ -42,9 +44,11 @@ from play_single_phase import (
     _np,
     _read_tactile_from_scene,
     _read_third_person_from_scene,
+    _recording_scope_metadata,
     _repo_root,
     _reset_and_warmup,
     _save_npz,
+    _step_has_ended,
     _tactile_contact_strength,
     _tendon_couple_distal,
 )
@@ -58,6 +62,12 @@ _PINCH_FINGERS = (
     "tactile_sensor_th",
 )
 _PINCH_TIPS = ("ffdistal", "mfdistal", "rfdistal", "lfdistal", "thdistal")
+
+
+class _EpisodeEnded(Exception):
+    """Stop the expert immediately at the environment's ordinary reset boundary."""
+
+
 _DEFAULT_KF = HERE / "pose_keyframes" / "UR10eShadowHandBlindGraspEnv__UR10eShadowHandBlindGraspEnvCfg.json"
 # Advisor enclosure: four-finger pad vs opposed thumb (pickup-cube thumb + recorded close).
 _ENCLOSURE_HAND = np.array(
@@ -110,6 +120,7 @@ def _parser():
     p.add_argument("--min-wrist-z", type=float, default=0.22)
     p.add_argument("--record-step-interval", type=int, default=5)
     p.add_argument("--object-settle-steps", type=int, default=60)
+    p.add_argument("--allow-joint-snaps", action="store_true", help="Debug-only explicit robot state teleport; disabled by default.")
     AppLauncher.add_app_launcher_args(p)
     return p
 
@@ -208,19 +219,10 @@ def main() -> int:
     cfg.device = getattr(args, "device", None) or "cuda:0"
     cfg.object_init_choice = int(args.object_init_index)
     cfg.enable_cameras = True
-    if hasattr(cfg, "episode_length_s"):
-        cfg.episode_length_s = 300.0
-    if hasattr(cfg, "act_moving_average"):
-        cfg.act_moving_average = 1.0
-    if hasattr(cfg, "object_reset_pos_x_range"):
-        cfg.object_reset_pos_x_range = (0.0, 0.0)
-        cfg.object_reset_pos_y_range = (0.0, 0.0)
     fingers_act = cfg.robot_cfg.actuators.get("fingers") if hasattr(cfg.robot_cfg, "actuators") else None
-    if fingers_act is not None and hasattr(fingers_act, "effort_limit_sim"):
-        fingers_act.effort_limit_sim = 25.0
     print(
         "[INFO] privileged expert uses object pose for motion only; "
-        f"policy obs object state={getattr(cfg, 'include_object_state_in_policy_obs', None)} "
+        "actor observations unchanged (not guaranteed tactile-only); "
         f"cube_mass={getattr(getattr(cfg.object_cfg.spawn, 'mass_props', None), 'mass', None)} "
         f"mu=({getattr(getattr(cfg.sim, 'physics_material', None), 'static_friction', None)},"
         f"{getattr(getattr(cfg.sim, 'physics_material', None), 'dynamic_friction', None)}) "
@@ -228,19 +230,6 @@ def main() -> int:
         flush=True,
     )
     env = EnvCls(cfg)
-    if hasattr(env, "_use_rl_control"):
-        env._use_rl_control = True
-    env._replay_q = None
-    _base_apply = type(env)._apply_action
-
-    def _apply_replay(_env=env):
-        q = getattr(_env, "_replay_q", None)
-        if q is not None:
-            _env.apply_joint_targets(q)
-            return
-        _base_apply(_env)
-
-    env._apply_action = _apply_replay
     _reset_and_warmup(env, act_dim=env.num_actions, settle_steps=8, object_settle_steps=args.object_settle_steps)
     robot = env.robot
     jn = list(robot.joint_names)
@@ -327,9 +316,17 @@ def main() -> int:
 
     rec_dir = os.path.abspath(os.path.expanduser(args.record_path))
     os.makedirs(rec_dir, exist_ok=True)
+    with open(os.path.join(rec_dir, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump({
+            **_recording_scope_metadata(),
+            "collector_protocol": "privileged_geometry_assisted_demo",
+            "robot_joint_state_snaps": bool(args.allow_joint_snaps),
+            "autonomous_blind_policy_evaluation": False,
+            "success_label_source": "collector_height_and_lift_tactile_not_environment_reward",
+            "environment_physics_parameters": "unchanged_registered_environment",
+        }, f, indent=2)
     succ = 0
     for ep in range(int(args.num_episodes)):
-        env._replay_q = None
         _reset_and_warmup(env, act_dim=env.num_actions, settle_steps=8, object_settle_steps=args.object_settle_steps)
         cube0 = _cube_pos_env(env)
         print(
@@ -351,8 +348,9 @@ def main() -> int:
             arm_cmd = arm_cmd + np.clip(des_arm - arm_cmd, -arm_step, arm_step)
             hand_cmd = hand_cmd + np.clip(hand_des - hand_cmd, -float(args.hand_step_rad), float(args.hand_step_rad))
             actions = build_action(arm_cmd, hand_cmd)
-            env._replay_q = torch.tensor(build_full(arm_cmd, hand_cmd), dtype=torch.float32, device=env.device).unsqueeze(0)
             out = env.step(actions)
+            if _step_has_ended(out):
+                raise _EpisodeEnded
             obs = out[0] if isinstance(out, tuple) and len(out) >= 5 else out
             ep_steps += 1
             cube = _cube_pos_env(env)
@@ -413,13 +411,15 @@ def main() -> int:
             nonlocal arm_cmd, hand_cmd
             arm_cmd = np.asarray(arm_j, dtype=np.float64).copy()
             hand_cmd = np.asarray(hand_j, dtype=np.float64).copy()
+            if not args.allow_joint_snaps:
+                # The following hold sends these commands through normal env.step,
+                # including the registered environment's own target smoothing.
+                return
             full = build_full(arm_cmd, hand_cmd)
             q = torch.tensor(full, dtype=torch.float32, device=env.device).unsqueeze(0)
             qpos = env.robot.data.joint_pos.clone()
             qpos[0] = q[0]
             env.robot.write_joint_state_to_sim(qpos, torch.zeros_like(qpos))
-            env.apply_joint_targets(q)
-            env._replay_q = q
 
         def _hand_err() -> str:
             actual = cur_hand()
@@ -430,148 +430,155 @@ def main() -> int:
                     bits.append(f"{name}={actual[i]:.2f}/{squeeze_hand[i]:.2f}")
             return " ".join(bits) or "ok"
 
-        # 1) Joint-space approach to the recorded in-bin grasp, fingers still mostly open.
-        for sif in range(max(1, int(args.phase_steps))):
-            cube, tact, peaks, n_pinch = _step_once("approach", sif, seed_arm, approach_hand, float(args.arm_step_rad))
-            actual_arm = cur_arm()
-            if sif % 30 == 0:
-                print(
-                    f"[INFO] approach track cmd_err={float(np.max(np.abs(arm_cmd - seed_arm))):.3f} "
-                    f"act_err={float(np.max(np.abs(actual_arm - seed_arm))):.3f}",
-                    flush=True,
-                )
-            if float(np.max(np.abs(actual_arm - seed_arm))) <= 0.05 and sif > 30:
-                break
-
-        # Force the recorded hand (PD was ~0.2 rad short, so the gel never reached pose_008).
-        lift_hand = closed_hand.copy()
-        cube, tact, peaks, n_pinch = _cube_pos_env(env), 0.0, _finger_peaks(env, 0), 0
-        for attempt in range(3):
-            _snap_q(seed_arm, lift_hand)
-            cube, tact, peaks, n_pinch = _hold(
-                "snap", seed_arm, lift_hand, 36, float(args.arm_step_rad), latch_fingers=1
-            )
-            print(
-                f"[INFO] after snap attempt={attempt} tact={tact:.2e} fingers={n_pinch} "
-                f"hand={_hand_err()}",
-                flush=True,
-            )
-            if n_pinch >= 1:
-                break
-        if n_pinch >= 1:
-            pinch_ok = True
-            print(f"[INFO] latching gel contact fingers={n_pinch} tact={tact:.2e}; press down next.", flush=True)
-            # Thumb flexion raised the tip; lower the whole hand so the thumb pad meets the cube top.
-            press_arm = seed_arm.copy()
-            for dz_try, d_elb, d_lift in ((1, 0.05, -0.03), (2, 0.10, -0.05), (3, 0.14, -0.07)):
-                trial = seed_arm.copy()
-                trial[1] = float(seed_arm[1] + d_lift)
-                trial[2] = float(seed_arm[2] + d_elb)
-                _snap_q(trial, lift_hand)
-                cube, tact, peaks, n_pinch = _hold(
-                    "press", trial, lift_hand, 28, float(args.arm_step_rad), latch_fingers=2
-                )
-                print(
-                    f"[INFO] press k={dz_try} tact={tact:.2e} fingers={n_pinch} "
-                    f"cube_z={cube[2]:.3f} wrist_z={float(wrist_pos_env()[2]):.3f}",
-                    flush=True,
-                )
-                press_arm = trial
-                if n_pinch >= 1 and cube[2] > float(cube0[2] + 0.008):
-                    pinch_ok = True
-                    print("[INFO] press raised the cube with gel contact; lifting from this pose.", flush=True)
+        def _run_trajectory():
+            nonlocal pinch_ok
+            # 1) Joint-space approach to the recorded in-bin grasp, fingers still mostly open.
+            for sif in range(max(1, int(args.phase_steps))):
+                cube, tact, peaks, n_pinch = _step_once("approach", sif, seed_arm, approach_hand, float(args.arm_step_rad))
+                actual_arm = cur_arm()
+                if sif % 30 == 0:
+                    print(
+                        f"[INFO] approach track cmd_err={float(np.max(np.abs(arm_cmd - seed_arm))):.3f} "
+                        f"act_err={float(np.max(np.abs(actual_arm - seed_arm))):.3f}",
+                        flush=True,
+                    )
+                if float(np.max(np.abs(actual_arm - seed_arm))) <= 0.05 and sif > 30:
                     break
-            best_arm = press_arm
-        else:
-            thumb_hand = closed_hand.copy()
-            thumb_hand[22] = float(np.clip(thumb_hand[22] - 0.12, sh_lo[22], sh_hi[22]))
-            thumb_hand[23] = float(np.clip(thumb_hand[23] + 0.18, sh_lo[23], sh_hi[23]))
-            thumb_hand = np.clip(_tendon_couple_distal(thumb_hand), sh_lo, sh_hi)
-            cube, tact, peaks, n_pinch = _hold(
-                "thumb", seed_arm, thumb_hand, 40, float(args.arm_step_rad), latch_fingers=1
-            )
-            print(f"[INFO] after thumb dip tact={tact:.2e} fingers={n_pinch} cube_z={cube[2]:.3f}", flush=True)
+
+            # Force the recorded hand (PD was ~0.2 rad short, so the gel never reached pose_008).
+            lift_hand = closed_hand.copy()
+            cube, tact, peaks, n_pinch = _cube_pos_env(env), 0.0, _finger_peaks(env, 0), 0
+            for attempt in range(3):
+                _snap_q(seed_arm, lift_hand)
+                cube, tact, peaks, n_pinch = _hold(
+                    "snap", seed_arm, lift_hand, 36, float(args.arm_step_rad), latch_fingers=1
+                )
+                print(
+                    f"[INFO] after snap attempt={attempt} tact={tact:.2e} fingers={n_pinch} "
+                    f"hand={_hand_err()}",
+                    flush=True,
+                )
+                if n_pinch >= 1:
+                    break
             if n_pinch >= 1:
                 pinch_ok = True
-                lift_hand = thumb_hand
-
-        # 2) Only keep searching if the recorded pose never touched gel.
-        if not pinch_ok:
-            cube, tact, peaks, n_pinch = _hold("close", seed_arm, closed_hand, 90, float(args.arm_step_rad))
-            cube, tact, peaks, n_pinch = _hold("squeeze", seed_arm, squeeze_hand, 60, float(args.arm_step_rad))
-            if n_pinch >= 1:
-                pinch_ok = True
-                print(f"[INFO] pinch ready at seed fingers={n_pinch} tact={tact:.2e}", flush=True)
-
-        # 3) Joint-space search around the seed. IK probe was twisting the wrist off the gel.
-        if "best_arm" not in locals():
-            best_arm = seed_arm.copy()
-        best_score = _grasp_score(cube, tact, n_pinch)
-        if not pinch_ok:
-            print(
-                f"[INFO] joint probe start score={best_score:.3f} cube=({cube[0]:.3f},{cube[1]:.3f},{cube[2]:.3f}) "
-                f"hand_err={float(np.max(np.abs(cur_hand() - squeeze_hand))):.3f}",
-                flush=True,
-            )
-            deltas = (
-                (0, -0.05), (0, 0.05),
-                (1, -0.05), (1, 0.05),
-                (2, -0.05), (2, 0.05),
-                (3, -0.06), (3, 0.06),
-            )
-            for it in range(5):
-                improved = False
-                for j, dlt in deltas:
-                    trial = best_arm.copy()
-                    trial[j] = float(trial[j] + dlt)
-                    cube, tact, peaks, n_pinch = _hold("probe", trial, lift_hand, 22, float(args.arm_step_rad))
-                    score = _grasp_score(cube, tact, n_pinch)
-                    if n_pinch >= 1:
-                        print(
-                            f"[INFO] probe it={it} j={j} d={dlt:+.2f} fingers={n_pinch} "
-                            f"tact={tact:.2e} cube_z={cube[2]:.3f} score={score:.3f}",
-                            flush=True,
-                        )
-                    if n_pinch >= 1 or cube[2] > float(cube0[2] + 0.015):
-                        best_arm = trial
+                print(f"[INFO] latching gel contact fingers={n_pinch} tact={tact:.2e}; press down next.", flush=True)
+                # Thumb flexion raised the tip; lower the whole hand so the thumb pad meets the cube top.
+                press_arm = seed_arm.copy()
+                for dz_try, d_elb, d_lift in ((1, 0.05, -0.03), (2, 0.10, -0.05), (3, 0.14, -0.07)):
+                    trial = seed_arm.copy()
+                    trial[1] = float(seed_arm[1] + d_lift)
+                    trial[2] = float(seed_arm[2] + d_elb)
+                    _snap_q(trial, lift_hand)
+                    cube, tact, peaks, n_pinch = _hold(
+                        "press", trial, lift_hand, 28, float(args.arm_step_rad), latch_fingers=2
+                    )
+                    print(
+                        f"[INFO] press k={dz_try} tact={tact:.2e} fingers={n_pinch} "
+                        f"cube_z={cube[2]:.3f} wrist_z={float(wrist_pos_env()[2]):.3f}",
+                        flush=True,
+                    )
+                    press_arm = trial
+                    if n_pinch >= 1 and cube[2] > float(cube0[2] + 0.008):
                         pinch_ok = True
-                        print(f"[INFO] pinch ready after joint probe fingers={n_pinch} tact={tact:.2e}", flush=True)
+                        print("[INFO] press raised the cube with gel contact; lifting from this pose.", flush=True)
                         break
-                    if score < best_score - 1e-3:
-                        best_arm = trial
-                        best_score = score
-                        improved = True
-                if pinch_ok:
-                    break
-                if not improved:
-                    break
-            cube, tact, peaks, n_pinch = _hold("probe", best_arm, lift_hand, 20, float(args.arm_step_rad))
-        if not pinch_ok:
-            print(f"[WARN] joint probe finished score={best_score:.3f}; lifting only if cube moved.", flush=True)
-
-        # 4) Joint-space lift: keep wrist_1/2/3 and the hand, unfold lift/elbow.
-        #    Cartesian IK was twisting the graze contact off the gel.
-        hold_arm = best_arm.copy()
-        wrist0 = wrist_pos_env()
-        if not pinch_ok and zmax < float(cube0[2] + 0.012):
-            print("[WARN] skip lift: no tactile pinch and cube never rose.", flush=True)
-        else:
-            print(
-                f"[INFO] joint lift from wrist_z={float(wrist0[2]):.3f} cube_z={float(_cube_pos_env(env)[2]):.3f}",
-                flush=True,
-            )
-            for k in range(18):
-                des_arm = hold_arm.copy()
-                des_arm[1] = float(hold_arm[1] + 0.028 * (k + 1))
-                des_arm[2] = float(hold_arm[2] - 0.040 * (k + 1))
+                best_arm = press_arm
+            else:
+                thumb_hand = closed_hand.copy()
+                thumb_hand[22] = float(np.clip(thumb_hand[22] - 0.12, sh_lo[22], sh_hi[22]))
+                thumb_hand[23] = float(np.clip(thumb_hand[23] + 0.18, sh_lo[23], sh_hi[23]))
+                thumb_hand = np.clip(_tendon_couple_distal(thumb_hand), sh_lo, sh_hi)
                 cube, tact, peaks, n_pinch = _hold(
-                    "lift", des_arm, lift_hand, 20, float(args.lift_arm_step_rad), latch_fingers=99
+                    "thumb", seed_arm, thumb_hand, 40, float(args.arm_step_rad), latch_fingers=1
                 )
-                if zmax > float(args.success_z_threshold) and lift_tact_max >= float(args.tactile_contact_threshold):
-                    break
-                if pinch_ok and cube[2] < float(cube0[2] + 0.008) and float(wrist_pos_env()[2]) > float(wrist0[2] + 0.10):
-                    print("[WARN] cube slipped back during joint lift; stopping raise.", flush=True)
-                    break
+                print(f"[INFO] after thumb dip tact={tact:.2e} fingers={n_pinch} cube_z={cube[2]:.3f}", flush=True)
+                if n_pinch >= 1:
+                    pinch_ok = True
+                    lift_hand = thumb_hand
+
+            # 2) Only keep searching if the recorded pose never touched gel.
+            if not pinch_ok:
+                cube, tact, peaks, n_pinch = _hold("close", seed_arm, closed_hand, 90, float(args.arm_step_rad))
+                cube, tact, peaks, n_pinch = _hold("squeeze", seed_arm, squeeze_hand, 60, float(args.arm_step_rad))
+                if n_pinch >= 1:
+                    pinch_ok = True
+                    print(f"[INFO] pinch ready at seed fingers={n_pinch} tact={tact:.2e}", flush=True)
+
+            # 3) Joint-space search around the seed. IK probe was twisting the wrist off the gel.
+            if "best_arm" not in locals():
+                best_arm = seed_arm.copy()
+            best_score = _grasp_score(cube, tact, n_pinch)
+            if not pinch_ok:
+                print(
+                    f"[INFO] joint probe start score={best_score:.3f} cube=({cube[0]:.3f},{cube[1]:.3f},{cube[2]:.3f}) "
+                    f"hand_err={float(np.max(np.abs(cur_hand() - squeeze_hand))):.3f}",
+                    flush=True,
+                )
+                deltas = (
+                    (0, -0.05), (0, 0.05),
+                    (1, -0.05), (1, 0.05),
+                    (2, -0.05), (2, 0.05),
+                    (3, -0.06), (3, 0.06),
+                )
+                for it in range(5):
+                    improved = False
+                    for j, dlt in deltas:
+                        trial = best_arm.copy()
+                        trial[j] = float(trial[j] + dlt)
+                        cube, tact, peaks, n_pinch = _hold("probe", trial, lift_hand, 22, float(args.arm_step_rad))
+                        score = _grasp_score(cube, tact, n_pinch)
+                        if n_pinch >= 1:
+                            print(
+                                f"[INFO] probe it={it} j={j} d={dlt:+.2f} fingers={n_pinch} "
+                                f"tact={tact:.2e} cube_z={cube[2]:.3f} score={score:.3f}",
+                                flush=True,
+                            )
+                        if n_pinch >= 1 or cube[2] > float(cube0[2] + 0.015):
+                            best_arm = trial
+                            pinch_ok = True
+                            print(f"[INFO] pinch ready after joint probe fingers={n_pinch} tact={tact:.2e}", flush=True)
+                            break
+                        if score < best_score - 1e-3:
+                            best_arm = trial
+                            best_score = score
+                            improved = True
+                    if pinch_ok:
+                        break
+                    if not improved:
+                        break
+                cube, tact, peaks, n_pinch = _hold("probe", best_arm, lift_hand, 20, float(args.arm_step_rad))
+            if not pinch_ok:
+                print(f"[WARN] joint probe finished score={best_score:.3f}; lifting only if cube moved.", flush=True)
+
+            # 4) Joint-space lift: keep wrist_1/2/3 and the hand, unfold lift/elbow.
+            #    Cartesian IK was twisting the graze contact off the gel.
+            hold_arm = best_arm.copy()
+            wrist0 = wrist_pos_env()
+            if not pinch_ok and zmax < float(cube0[2] + 0.012):
+                print("[WARN] skip lift: no tactile pinch and cube never rose.", flush=True)
+            else:
+                print(
+                    f"[INFO] joint lift from wrist_z={float(wrist0[2]):.3f} cube_z={float(_cube_pos_env(env)[2]):.3f}",
+                    flush=True,
+                )
+                for k in range(18):
+                    des_arm = hold_arm.copy()
+                    des_arm[1] = float(hold_arm[1] + 0.028 * (k + 1))
+                    des_arm[2] = float(hold_arm[2] - 0.040 * (k + 1))
+                    cube, tact, peaks, n_pinch = _hold(
+                        "lift", des_arm, lift_hand, 20, float(args.lift_arm_step_rad), latch_fingers=99
+                    )
+                    if zmax > float(args.success_z_threshold) and lift_tact_max >= float(args.tactile_contact_threshold):
+                        break
+                    if pinch_ok and cube[2] < float(cube0[2] + 0.008) and float(wrist_pos_env()[2]) > float(wrist0[2] + 0.10):
+                        print("[WARN] cube slipped back during joint lift; stopping raise.", flush=True)
+                        break
+
+        try:
+            _run_trajectory()
+        except _EpisodeEnded:
+            print("[INFO] Environment ended the demonstration; saving only pre-reset samples.", flush=True)
 
         extracted = zmax > float(args.success_z_threshold)
         pinched_lift = lift_tact_max >= float(args.tactile_contact_threshold)

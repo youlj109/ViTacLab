@@ -1,132 +1,109 @@
-# ViTacBench handoff
+# ViTacBench 数据采集增量
 
-ViTacBench task/recording changes from `d5c5e2d` integrated onto main `2ca8b79`.
-The current Xense force-depth reconstruction, calibration, measured-marker
-optimization, website, and six-load results are preserved. This is not an
-update to the Xense physical or optical parameters.
+按用户要求：**保留当前本地 ViTacSim，实现远端数据采集代码的兼容接入，
+不合并远端任务环境。** 采集代码来自 `wip/advisor-vitacbench` 的 `d5c5e2d`，
+本地集成前版本为 `2ca8b79`。
 
-## Run (repo root, configured Isaac Lab environment)
+## 保留与引入的范围
 
-The launchers accept `PYTHON_SIM=/path/to/python.sh` (or an activated Isaac Lab
-Python), `ISAACLAB_SH=/path/to/isaaclab.sh`, and
-`PYTHON_OFFLINE=/path/to/python`. The offline interpreter needs NumPy/OpenCV
-and the dependencies of the requested exporter. No specific conda environment
-name is required. The Isaac Lab Docker Python can be selected explicitly as
-`PYTHON_SIM=/isaac-sim/python.sh` inside the container.
+- 整个 `source/` 与集成前版本一致：触觉渲染、力到深度纠正、标定、marker、
+  任务资产、物理参数、奖励、成功判定和 actor observation 均不从远端覆盖。
+- README、项目主页、已发布的 Xense 六质量对比图和数值结果保持原样。
+- 引入采集/回放脚本、关键帧、IK 演示配置、一键 shell、NPZ 检查与视频导出，
+  以及 `policy/prepare_dataset.py` 的数据转换支持。
+- 通用 RL 播放器补齐录像参数和步数上限，并保留本地触觉可视化实现。
+- 通用 RL/Pour 采集不跨 reset 拼接轨迹。RL 保存 step 前的独立快照，
+  不伪造自动 reset 后无法获取的 terminal 画面；未成功尝试的缓存会丢弃。
+- Pour 演示 YAML 仅配置脚本控制器，不关闭本地失败条件或重置随机化。
+- 双臂录像所需的 TacSL 适配位于采集脚本侧；不替换任务物体、物理参数或场景内容。
+  Handover 仍使用本地香蕉，**不是**远端训练时的黄色球。
 
-| Paper / suite task | Command |
+最初较宽的集成曾包含任务环境修正；这些源码变更已撤回。
+相应的 donor observation/reward 单测不再适用于本次数采范围。
+不要把之前 `(1, 7620)` 的运行日志当作本版的 actor observation 验证结果。
+
+## 运行方式
+
+从仓库根目录，在配置好的 Isaac Lab 环境内运行。启动器支持
+`PYTHON_SIM=/path/to/python.sh`、`ISAACLAB_SH=/path/to/isaaclab.sh` 和
+`PYTHON_OFFLINE=/path/to/python`，不绑定特定 conda 环境名。
+在现有 Isaac Lab Docker 内可使用 `PYTHON_SIM=/isaac-sim/python.sh`。
+离线校验/视频解释器需要 NumPy/OpenCV；Zarr 导出还需要对应依赖。
+
+| 任务 | 一键入口 |
 | --- | --- |
 | Pickup | `bash bash_command/demo_data_collection_replay.sh` |
 | Pour | `bash bash_command/demo_pour_collection_replay.sh` |
 | In-hand | `bash bash_command/demo_inhand_collection_replay.sh` |
 | Handover | `bash bash_command/demo_handover_collection_replay.sh` |
-| Forge DexHand (peg/gear/nut) | `bash bash_command/demo_forge_all_collection_replay.sh` |
+| Forge DexHand | `bash bash_command/demo_forge_all_collection_replay.sh` |
 | Forge Franka RL | `bash bash_command/demo_forge_franka_rl_all_collection_replay.sh` |
 | Unscrew / bottle | `bash bash_command/demo_bottle_collection_replay.sh` |
 | BiStab | `bash bash_command/demo_bistab_collection_replay.sh` |
 | Blind Classification | `bash bash_command/demo_blind_classification_all_shapes.sh` |
 | Blind Grasp | `bash bash_command/demo_blind_grasp_all_phases.sh` |
-| Blind Targeted Grasp (Retrieval) | `bash bash_command/demo_blind_retrieval_collection_replay.sh` |
-| Blind Drop + Blind Targeted Drop | `bash bash_command/demo_bi_blind_bin_drop_all_phases.sh` |
+| Blind Retrieval | `bash bash_command/demo_blind_retrieval_collection_replay.sh` |
+| Blind Bin Drop | `bash bash_command/demo_bi_blind_bin_drop_all_phases.sh` |
 
-`MODE=collect|visualize|full`, `DEVICE=cuda:0`, `SAVE_OUTCOME=completed|success`.
-NPZ + panel mp4 land under fresh run subdirectories of `logs/demo_<task>/`.
-Existing recordings and videos are never pre-deleted. Each command prints its
-actual output paths. For replay, set `MODE=visualize` and point `RECORD_DIR`
-to the actual collection run directory, not its parent. Checkpoint-based demos
-still require compatible local checkpoints; these are not bundled here.
+通用选项：`MODE=collect|visualize|full`、`DEVICE=cuda:0`。
+需要 policy 的入口必须提供与**本地**环境匹配的 checkpoint；本次没有附带或重新训练模型。
+NPZ、视频和报告写入 `logs/demo_<task>/` 下的新运行子目录，不预先删除旧文件。
+回放已有数据时，`MODE=visualize RECORD_DIR=...` 应指向包含 NPZ 的具体运行目录。
+各脚本输出实际路径，完整参数以 `--help` 为准。
 
-`SAVE_OUTCOME=completed` does not mean benchmark success. Forge's optional
-geometric threshold overrides are not calibrated benchmark settings; disabled
-or relaxed success criteria must be reported as demonstration-only output.
+`SAVE_OUTCOME=completed` 只代表轨迹完成，不代表任务成功。
+Forge 的可选几何成功阈值不是经过标定的 benchmark 设置；放宽或关闭判据的输出
+只能标为演示数据。源环境的奖励和成功函数不随这些采集选项改写。
 
-## Integration notes
+## 数据、actor 与演示的区别
 
-- The generic RL player gains recording arguments and bounded rollout support;
-  cameras are enabled for explicit camera/recording requests instead of always.
-- Blind task observation dimensions are resolved before Gym spaces are created.
-  Disabling object-state observations removes privileged object/goal geometry;
-  Retrieval retains its explicit target-class command.
-- Pickup-family tactile buffers are initialized after sensor construction and
-  retain a zero-filled observation layout when cameras are disabled, rather
-  than silently dropping the declared tactile dimensions.
-- The mainline strict target-contact attribution is retained. Retrieval's
-  sensor builder targets the cube/sphere/cone paths. The donor's permissive
-  `_tactile_policy` overrides did not connect to the actual `_tactile_params`
-  construction path and are not used here.
-- Imported scene changes include Blind Grasp bin size/friction/object mass,
-  Handover's yellow sphere, and the bottle contact link/initial height. Existing
-  checkpoints and old benchmark success rates must not be assumed compatible.
-- `policy/prepare_dataset.py --profile tactile_only` prepares data; the included
-  ViTacDP task YAML files remain templates. The existing training dataset loader
-  expects camera/pose fields, so these templates are **not train-ready** without
-  a separate loader/model adaptation.
-- Existing repository audit checks are kept. The donor's new source-string
-  matching checks were not imported; focused data/tensor regression tests cover
-  the integration behavior instead.
+- `policy_record_profile=tactile_only` / `--profile tactile_only` 限制**归档或转换后的
+  数据字段**，不更改环境 actor observation；原环境可能仍包含物体状态等特权信息。
+- `play_blind_retrieval.py` 和 privileged grasp collector 使用物体几何辅助，
+  不能作为自主盲操作策略评测，也未验证成功举升率。
+- Classification 在本地环境不支持固定形状参数时，通过常规 reset 抽样获取指定类别，
+  不修改源环境。记录的类别必须与实际 episode 一致。
+- Blind Grasp 使用本地固定初始位置，采集默认 `--object-xy-noise 0`；
+  不静默导入远端初始位置随机化。远端关键帧在本地物理场景中的成功性需要重新验证。
+- NPZ 原始演示归档可以包含用于诊断的相机画面/位姿。
+  `scripts/debug/validate_play_record_npz.py --profile tactile_only` 校验受限记录，
+  转为 policy 输入时用 `policy/prepare_dataset.py --profile tactile_only`。
+- ViTacDP 的 `single_arm_tactile_only_{force,rgb}.yaml` 仅为数据形状模板。
+  现有训练 loader 仍依赖相机/位姿，**不能直接视为已适配的训练配置**。
 
-## Blind Grasp blocker
+## 验证与限制
 
-Actor contract is in place: tactile + proprio only (`include_object_state_in_policy_obs=False`, `policy_record_profile=tactile_only`). Success is live multi-finger gel contact then cube `z > 0.35` (external metric, not in obs/reward).
+验证分为：脚本语法/CLI、离线数据与启动器回归、真实 Isaac 短时采集。
+离线单测不代表完整十二任务成功率测试；未验证远端 checkpoint 对本地场景的兼容性。
+原始论文文件和本地三质量论文图不包含在此次提交中。
 
-The donor reports that keyframe replay and GUI teleop do not extract. Its
-privileged expert (`scripts/data_collection/full_trajectory/collect_blind_grasp_privileged.py`)
-can reach pose_008 gels but **has not produced a successful lift** with live
-lift-tactile and `z>0.35`. Imported configuration requests cube mass `0.05 kg`
-and sim friction `(3.0, 2.5)`. Our local startup warns that mass modification
-could not be applied to `/object`; the requested mass is **not a verified
-effective mass** of the loaded asset. No new successful lift is claimed here.
+2026-09-28 已完成：
 
-## IL contract
+- `scripts/audit_project.py --repro-only`：0 error / 0 warning；不是完整风格审计结果。
+- 启动器测试：12 个入口的 24 个 full/visualize 场景，旧 NPZ/视频/报告保留。
+- 数据测试：13 项，由现有 RMBench（Zarr）和 embodiedgen（PyTorch3D）环境
+  互补覆盖，包含实际 Zarr 往返和 pose 转换。
+- 采集兼容测试、Retrieval helper 测试、RL episode 边界测试通过。
+- 双臂适配离线测试通过；实际 Isaac Kit 配置加载、复制、序列化及传感器构造通过，
+  香蕉/橙子/盘子、机器人和物理配置保持原样。
+- Xense measured-marker CPU/CUDA 六质量图像回归逐像素一致，已发布 MAE/RMSE
+  从提交的 RGB 图像重新计算通过。
 
-Use `scripts/debug/validate_play_record_npz.py --profile tactile_only` for
-Blind Grasp's policy records. Classification/Retrieval demo archives still use
-the canonical recording schema (which may contain diagnostic cameras/poses);
-do not confuse that archive with actor observations. Use the tactile-only
-converter profile when preparing restricted policy inputs.
-`policy/prepare_dataset.py` has `canonical` / `tactile_only`. Placeholder ViTacDP task yamls: `policy/ViTacDP/config/task/single_arm_tactile_only_{force,rgb}.yaml`.
+上述双臂检查是配置/传感器构造验证，不是完整策略 rollout。
 
-## Integration verification (2026-09-28)
-
-- `python3 scripts/audit_project.py --repro-only`: passes asset/task/tactile checks.
-  This is not a claim that the broader repository style audit is clean.
-- `python3 scripts/debug/test_demo_launchers.py`: 24 stubbed full/visualize
-  scenarios (12 launchers), preserving existing NPZ, MP4, summaries, and reports.
-- `python3 scripts/debug/test_blind_retrieval_helpers.py`: four tests for
-  task-local helpers, shared imports, and target-specific geometry without
-  mutation of `env.object`. The Retrieval runner's `--help` also passes inside
-  the Isaac container. This runner is explicitly a privileged geometry-assisted
-  keyframe demo, not an autonomous blind-policy evaluation.
-- `scripts/debug/test_advisor_dataset_offline.py`: 13 synthetic data tests;
-  cross-checked in environments with Zarr and PyTorch3D respectively, including
-  real RGB/force Zarr round trips and canonical pose conversion. Each environment
-  skips only its unavailable optional dependency; together all cases are covered.
-- Isaac Lab 2.3.2 Python: `scripts/debug/test_blind_observations_offline.py`
-  passes six tensor/interface tests, including 12 observation configurations,
-  target paths, no object-geometry leakage when disabled, and grasp success
-  requiring both current tactile support and lift. The constructor lifecycle
-  test additionally covers sensor-present/absent and full/summary observations.
-- The existing Xense measured-marker CPU/CUDA regression and six-load published
-  metric recomputation both pass. Sensor/calibration source and published
-  Xense assets have no integration diff against main.
-- `scripts/rsl_rl/full_rl/play.py --help` works in the Isaac container. General
-  multi-environment recording semantics and checkpoint compatibility across
-  changed scenes are not certified by this integration.
-- Actual Isaac Lab 2.3.2 Docker / RTX 5090 smoke: Blind Grasp creates and steps
-  for two zero-action control steps; policy shape is `(1, 7620)`, and finite
-  joint, normal-force, shear-force, and tactile-RGB record fields are present.
-  Log: `logs/advisor_integration_blindgrasp_smoke_final_20260928.log` (local),
-  clean exit code 0. A deliberately invalid task exits with code 1 as expected.
-  The requested-mass warning described above remains; this is not a mass or
-  manipulation-success validation. The smoke helper reports the test exit code
-  to Kit before shutdown so exceptions are not silently masked as success.
-
-For a checkpoint-free two-step runtime smoke in the configured Isaac container:
+无 checkpoint 的实际采集检查（在 Isaac Lab 容器内）：
 
 ```bash
-/isaac-sim/python.sh scripts/debug/smoke_advisor_integration.py --headless --steps 2
+/isaac-sim/python.sh scripts/debug/smoke_advisor_integration.py \
+  --headless --steps 2 --output logs/collection_check/record.npz
+python scripts/debug/validate_play_record_npz.py logs/collection_check/record.npz
 ```
 
-This checks creation/stepping, observation dimensions, and finite tactile record
-fields. It does not demonstrate a successful manipulation episode or estimate
-a task success rate.
+输出路径必须尚不存在。该检查使用未修改的本地任务，验证有限步仿真和 joint、
+触觉力/RGB、相机及位姿记录，并可实际写入 NPZ。它会单独报告 actor observation
+与声明空间不匹配的问题，**不会为了通过检查而修补源环境**；因此采集通过不等于
+policy 可加载，也不代表成功操作。Kit 关闭前显式设置退出码，避免异常被掩盖。
+
+本地 Pickup 派生任务存在触觉 observation 缓冲初始化/维度问题；这属于原环境，
+本次数采兼容不改动它。记录器可直接读取现有 sensor record 接口，与 actor 缓冲
+不是同一路径。需要修正 actor 或训练策略时应另开任务处理。

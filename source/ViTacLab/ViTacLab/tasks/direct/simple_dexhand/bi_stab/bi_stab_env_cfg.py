@@ -61,17 +61,6 @@ def _bi_stab_state_dim(num_hand_dofs: int) -> int:
     return 6 * num_hand_dofs + 154
 
 
-@configclass
-class UR10eDualShadowHandBiStabTactileSceneCfg(UR10eDualShadowHandTacSLSceneCfg):
-    """TacSL contacts the shared plate for dual-hand fingertip RGB / force recording."""
-
-    @classmethod
-    def _tactile_params(cls) -> dict:
-        p = super()._tactile_params()
-        p["contact_object_prim_path_expr"] = "/World/envs/env_.*/plate"
-        return p
-
-
 PLATE_USD_PATH: str = "source/ViTacLab/ViTacLab/assets/data/Objects/RealCups/plate/plate.usd"
 
 

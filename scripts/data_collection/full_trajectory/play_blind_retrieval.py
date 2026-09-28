@@ -42,6 +42,7 @@ from play_single_phase import (
     _repo_root,
     _reset_and_warmup,
     _save_npz,
+    _step_has_ended,
     _tactile_contact_strength,
     _use_ik_for_frame,
     _wrist_pos_for_frame,
@@ -117,11 +118,13 @@ def _pick_close_frame(frames: list[dict[str, Any]]) -> dict[str, Any] | None:
     return next((frame for frame in frames if _is_pick_close_frame(str(frame.get("name", "")))), None)
 
 
-def _settle_after_object_write(env, act_dim: int, steps: int) -> None:
+def _settle_after_object_write(env, act_dim: int, steps: int) -> bool:
     """Settle demo-only target placement without replacing no-contact calibration."""
     actions = torch.zeros(env.num_envs, act_dim, device=env.device)
     for _ in range(max(0, int(steps))):
-        env.step(actions)
+        if _step_has_ended(env.step(actions)):
+            return True
+    return False
 
 
 def _min_fingertip_dist_to_target(env, ei: int) -> float:
@@ -186,7 +189,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--snap-at-pick-close",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Hard-set robot joints to Pick* targets on first step of each Pick frame.",
     )
     p.add_argument(
@@ -313,16 +316,7 @@ def main() -> int:
     cfg.scene.num_envs = max(1, int(args.num_envs))
     cfg.device = getattr(args, "device", None) or "cuda:0"
     cfg.enable_cameras = True
-    if hasattr(cfg, "goal_resample_time_range_s"):
-        cfg.goal_resample_time_range_s = (1.0e9, 1.0e9)
-    if hasattr(cfg, "episode_length_s"):
-        cfg.episode_length_s = max(float(cfg.episode_length_s), 300.0)
-    if hasattr(cfg, "act_moving_average"):
-        cfg.act_moving_average = 1.0
-
     env = EnvCls(cfg)
-    if hasattr(env, "_use_rl_control"):
-        env._use_rl_control = False
     act_dim = env.num_actions
     _reset_and_warmup(
         env,
@@ -427,6 +421,8 @@ def main() -> int:
                 "bench_mode": bench_mode,
                 "collector_protocol": "privileged_geometry_assisted_keyframe_demo",
                 "autonomous_blind_policy_evaluation": False,
+                "policy_observations": "unchanged_registered_environment",
+                "environment_physics_parameters": "unchanged_registered_environment",
             },
             f,
             indent=2,
@@ -435,8 +431,6 @@ def main() -> int:
     ei = max(0, min(int(args.record_env_index), env.num_envs - 1))
     target_dt = 1.0 / max(1e-3, float(args.fps))
     succ = 0
-    dummy_actions = torch.zeros(env.num_envs, act_dim, device=env.device)
-    use_joint_targets = hasattr(env, "apply_joint_targets")
     pick_align_frame = _pick_close_frame(frames)
 
     for ep in range(int(args.num_episodes)):
@@ -448,7 +442,9 @@ def main() -> int:
         )
         label_now = _apply_target_label(env, ei, fixed_label)
         _align_target_to_keyframe(env, ei, pick_align_frame)
-        _settle_after_object_write(env, act_dim, steps=20)
+        if _settle_after_object_write(env, act_dim, steps=20):
+            print("[INFO] Environment ended while settling; skipping this empty attempt.")
+            continue
 
         bufs: dict[str, list[np.ndarray]] = {}
         ep_steps = 0
@@ -486,7 +482,9 @@ def main() -> int:
             pick_frame = "Pick" in frame_name
             if pick_close and sif == 0:
                 _align_target_to_keyframe(env, ei, fr, offset_env=tuple(args.pick_object_align_offset))
-                _settle_after_object_write(env, act_dim, steps=15)
+                if _settle_after_object_write(env, act_dim, steps=15):
+                    print("[INFO] Environment ended while settling a keyframe; stopping the recording.")
+                    break
 
             marker_pos = np.asarray(fr["marker_pos_w"], dtype=np.float64)[:3]
             marker_euler = np.asarray(fr["marker_euler_xyz"], dtype=np.float64)[:3]
@@ -520,35 +518,23 @@ def main() -> int:
             arm_ok = ae <= float(args.arm_pos_tol)
             conv = arm_ok and he <= hand_tol
 
-            actuated_j = build_actuated_joint_pos(des_arm, des_hand)
-            if use_joint_targets:
-                env.apply_joint_targets(
-                    torch.tensor(actuated_j, dtype=torch.float32, device=env.device).unsqueeze(0)
-                )
-                if (
-                    bool(args.snap_at_pick_close)
-                    and pick_frame
-                    and hasattr(env.robot, "write_joint_state_to_sim")
-                ):
-                    snap_j = build_actuated_joint_pos(des_arm, des_hand)
-                    jpos = env.robot.data.joint_pos.clone()
-                    jvel = torch.zeros_like(jpos)
-                    act_t = torch.tensor(snap_j, dtype=jpos.dtype, device=env.device)
-                    for j, dof_i in enumerate(env.actuated_dof_indices):
-                        jpos[:, dof_i] = act_t[j]
-                    env.robot.write_joint_state_to_sim(jpos, jvel)
-                step_actions = dummy_actions
-            else:
-                if env.num_envs > 1:
-                    actions = actions.expand(env.num_envs, -1).clone()
-                step_actions = action_smoothing * prev_actions + (1.0 - action_smoothing) * actions
-                prev_actions = step_actions.clone()
-
+            if bool(args.snap_at_pick_close) and pick_frame and sif == 0:
+                snap_j = build_actuated_joint_pos(des_arm, des_hand)
+                jpos = env.robot.data.joint_pos.clone()
+                jvel = torch.zeros_like(jpos)
+                act_t = torch.tensor(snap_j, dtype=jpos.dtype, device=env.device)
+                for j, dof_i in enumerate(env.actuated_dof_indices):
+                    jpos[:, dof_i] = act_t[j]
+                env.robot.write_joint_state_to_sim(jpos, jvel)
             if env.num_envs > 1:
-                step_actions = step_actions.expand(env.num_envs, -1).clone()
                 actions = actions.expand(env.num_envs, -1).clone()
+            step_actions = action_smoothing * prev_actions + (1.0 - action_smoothing) * actions
+            prev_actions = step_actions.clone()
 
             out = env.step(step_actions)
+            if _step_has_ended(out):
+                print(f"[INFO] Environment ended during {frame_name}; not appending its post-reset state.")
+                break
             if (
                 grasp_latched
                 and grasp_palm_offset is not None
@@ -567,12 +553,11 @@ def main() -> int:
             ep_steps += 1
             if ep_steps % max(1, int(args.record_step_interval)) == 0:
                 row = extract_canonical_record_row(obs, env, ei) or {}
-                for key, value in merge_record_row(obs, ei, actions=actions, robot=robot).items():
+                for key, value in merge_record_row(obs, ei, actions=step_actions, robot=robot).items():
                     row.setdefault(key, value)
                 for key, value in _read_tactile_from_scene(env, ei).items():
                     row.setdefault(key, value)
-                if actions is not None:
-                    row["action"] = _np(actions[ei])
+                row["action"] = _np(step_actions[ei])
                 if not bufs:
                     for k in row:
                         bufs[k] = []
@@ -658,29 +643,6 @@ def main() -> int:
                 dwell = 0
                 pick_contact_seen = False
 
-            if torch.is_tensor(term) and torch.is_tensor(trunc) and bool(torch.any(term | trunc).item()):
-                print(
-                    f"[WARN] env reset during {frame_name} at step={sif} "
-                    f"(episode timeout); re-aligning and continuing frame",
-                    flush=True,
-                )
-                _reset_and_warmup(
-                    env,
-                    act_dim=act_dim,
-                    settle_steps=args.tactile_reset_settle_steps,
-                    object_settle_steps=args.object_settle_steps,
-                )
-                _apply_target_label(env, ei, fixed_label)
-                if pick_close:
-                    _align_target_to_keyframe(env, ei, fr, offset_env=tuple(args.pick_object_align_offset))
-                    _settle_after_object_write(env, act_dim, steps=15)
-                elif pick_frame:
-                    _align_target_to_keyframe(env, ei, pick_align_frame)
-                    _settle_after_object_write(env, act_dim, steps=10)
-                prev_actions.zero_()
-                stable = 0
-                countdown = -1
-                continue
 
             dt = target_dt - (time.time() - t0)
             if dt > 0:

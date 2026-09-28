@@ -1,8 +1,10 @@
 # ViTacLab 数据采集统一入口
 
-本目录是 ViTacLab 唯一的数据采集脚本目录。所有可执行的任务数据采集实现、
-采集配置、关键帧与手工录制配置都在这里；`scripts/rsl_rl` 只保留训练入口和
-不允许传入数采参数的评测兼容入口。数采脚本不会再转发到 `scripts/rsl_rl`。
+本目录是 ViTacLab 主要的数据采集脚本目录，包含采集配置、关键帧与手工录制。
+从 `wip/advisor-vitacbench` 引入的任务专用 RL 录像入口暂保留在
+`scripts/rsl_rl/full_rl/play_*_rl_record.py`（以及 bottle IK recorder）；
+对应的一键采集、校验、视频导出命令见 [ViTacBench 采集说明](../../docs/VITACBENCH.md)。
+本次数采集成保留本地 `source/`，不引入远端的仿真器、任务物理、奖励或观测改动。
 
 训练、推理与数采共同使用但本身不可执行的 CLI、日志路径和 IK 控制模块位于
 `scripts/common/rl/`。这样可以避免复制代码，同时保持数采入口和实现完全归档。

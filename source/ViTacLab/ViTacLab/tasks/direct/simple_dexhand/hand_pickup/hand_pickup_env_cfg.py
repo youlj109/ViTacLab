@@ -119,9 +119,6 @@ class UR10eShadowHandPickupEnvCfg(DirectRLEnvCfg):
     # --- observations
     vel_obs_scale: float = 0.2
     use_full_tactile_obs: bool = False
-    # Keep object/goal pose out of the actor for blind tasks. Robot joint state,
-    # previous actions, and tactile readings remain available as proprioception.
-    include_object_state_in_policy_obs: bool = True
 
     # --- reward composition (dexsuite-like)
     pos_tracking_std: float = 0.10

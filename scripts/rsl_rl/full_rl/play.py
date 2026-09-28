@@ -182,7 +182,31 @@ def _append_env_frame_to_buffer(buf, obs_record):
     for k, v in obs_record.items():
         if k not in buf:
             buf[k] = []
-        buf[k].append(v.numpy())
+        # Simulator tensors/arrays can be reused in-place at the next step.
+        if hasattr(v, "detach"):
+            v = v.detach().cpu().numpy()
+        buf[k].append(np.array(v, copy=True))
+
+
+def _advance_episode_recording(buffers, saved, successes, dones, save_episode, remaining):
+    """Handle one transition without joining separate auto-reset episodes.
+
+    Buffers contain pre-action records: a done transition's returned observation
+    belongs to the next episode in Isaac Lab, so it must never enter this buffer.
+    The generic player does not invent an unavailable terminal record.
+    """
+    count = 0
+    for i in range(len(buffers)):
+        if successes[i] and not saved[i] and count < remaining:
+            save_episode(i, buffers[i])
+            saved[i] = True
+            buffers[i] = {}
+            count += 1
+        if dones[i]:
+            # Failed attempts are discarded, and a new episode may save again.
+            buffers[i] = {}
+            saved[i] = False
+    return count
 
 
 def _apply_farthest_point_sample(env, env_idx, buf):
@@ -360,11 +384,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     num_envs = obs_policy.shape[0] if hasattr(obs_policy, "shape") else getattr(env.unwrapped, "num_envs", 1)
     device = env.unwrapped.device
 
-    # 每个环境独立的 episode 缓冲；所有 env 共享同一个 global episode 步数
+    # Each environment owns its episode buffer; max_steps additionally caps the
+    # whole rollout between explicit resets.
     current_ep_buffers = [dict() for _ in range(num_envs)]
     step_in_episode = 0  # global episode step counter (since last env.reset())
-    # 当前 global episode 中，各 env 是否已经保存过一条成功轨迹（避免重复保存）
-    success_saved = torch.zeros(num_envs, dtype=torch.bool, device=device)
+    success_saved = [False] * num_envs
 
     episodes_collected = 0
     total_timestep = 0
@@ -394,14 +418,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             data_dir = os.path.abspath(os.path.join("data", "rsl_rl", task_name + "_" + str(seed_val), current_time))
         os.makedirs(data_dir, exist_ok=True)
         
-    if args_cli.save_data:
-        for i in range(num_envs):
-            _append_env_frame_to_buffer(
-                current_ep_buffers[i],
-                obs["record"][i],
-            )
-
-
     dt = env.unwrapped.step_dt
 
     fig = None
@@ -492,6 +508,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
+        if args_cli.save_data:
+            # Record before stepping: returned rows for done envs are already
+            # reset observations. They are recorded on the next iteration.
+            for i in range(num_envs):
+                if not success_saved[i]:
+                    _append_env_frame_to_buffer(current_ep_buffers[i], obs["record"][i])
         # run everything in inference mode
         with torch.inference_mode():
             # agent stepping
@@ -502,13 +524,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         dones_flat = dones.flatten() if isinstance(dones, torch.Tensor) else torch.tensor(dones, device=device).flatten()
         if dones_flat.numel() != num_envs:
             dones_flat = dones_flat.expand(num_envs)
-
-        if args_cli.save_data:
-            for i in range(num_envs):
-                _append_env_frame_to_buffer(
-                    current_ep_buffers[i],
-                    obs["record"][i],
-                )
+        if policy_nn is not None and hasattr(policy_nn, "reset"):
+            policy_nn.reset(dones_flat)
 
         total_timestep += 1
         step_in_episode += 1
@@ -531,20 +548,30 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 flush=True,
             )
 
-        # 1) 成功：立即保存当前 buffer，但不 reset 环境；一个 global episode 中每个 env 只保存一次
+        # Save once per actual environment episode, not once per global reset.
         if args_cli.save_data:
+            if "curr_success_per_env" not in infos:
+                raise RuntimeError(
+                    "--save_data requires curr_success_per_env from this task; "
+                    "use its task-specific collector if it has a different success API."
+                )
             success_per_env = infos["curr_success_per_env"]
-            for i in range(num_envs):
-                if success_per_env[i].item() and not success_saved[i].item():
-                    ep_data_torch = current_ep_buffers[i]
-                    # Exclusive creation protects prior experiments at an explicit data_path.
-                    with open(os.path.join(data_dir, f"episode_{episodes_collected}.npz"), "xb") as output:
-                        np.savez_compressed(
-                            output, **_episode_buffer_to_npz_kwargs(env.unwrapped, i, ep_data_torch)
-                        )
-                    episodes_collected += 1
-                    success_saved[i] = True
-                    print(f"[INFO] Env {i} success at global step {step_in_episode}; saved episode {episodes_collected} / {args_cli.num_episodes}")
+
+            def save_episode(i, episode_buffer):
+                nonlocal episodes_collected
+                # Exclusive creation protects prior experiments at an explicit data_path.
+                with open(os.path.join(data_dir, f"episode_{episodes_collected}.npz"), "xb") as output:
+                    np.savez_compressed(
+                        output, **_episode_buffer_to_npz_kwargs(env.unwrapped, i, episode_buffer)
+                    )
+                episodes_collected += 1
+                print(f"[INFO] Env {i} success at global step {step_in_episode}; saved episode {episodes_collected} / {args_cli.num_episodes}")
+
+            _advance_episode_recording(
+                current_ep_buffers, success_saved,
+                success_per_env.flatten().tolist(), dones_flat.tolist(), save_episode,
+                args_cli.num_episodes - episodes_collected,
+            )
             if episodes_collected >= args_cli.num_episodes:
                 break
 
@@ -556,7 +583,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if max_steps_per_episode is not None and step_in_episode >= max_steps_per_episode:
             if args_cli.save_data:
                 for i in range(num_envs):
-                    if not success_saved[i].item():
+                    if not success_saved[i]:
                         # ep_data_torch = current_ep_buffers[i]
                         # np.savez_compressed(
                         #     os.path.join(data_dir, f"episode_{episodes_collected}.npz"),
@@ -565,7 +592,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         # episodes_collected += 1
                         print(f"[INFO] Env {i} discarded (max_steps={max_steps_per_episode} without success).")
             current_ep_buffers = [dict() for _ in range(num_envs)]
-            success_saved = torch.zeros(num_envs, dtype=torch.bool, device=device)
+            success_saved = [False] * num_envs
             step_in_episode = 0
 
             # reset policy 隐状态与环境本身
