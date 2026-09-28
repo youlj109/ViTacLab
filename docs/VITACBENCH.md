@@ -88,6 +88,13 @@ Forge 的可选几何成功阈值不是经过标定的 benchmark 设置；放宽
   香蕉/橙子/盘子、机器人和物理配置保持原样。
 - Xense measured-marker CPU/CUDA 六质量图像回归逐像素一致，已发布 MAE/RMSE
   从提交的 RGB 图像重新计算通过。
+- 未改动的 BlindGrasp 在 Isaac Lab 2.3.2 / RTX 5090 实际运行 2 个控制步，
+  写出 `logs/advisor_collection_only_20260928/record_smoke.npz`，canonical 校验通过，
+  退出码 0。包含 5 个传感器的 RGB `(2, 5, 320, 240, 3)`、法向力
+  `(2, 5, 20, 25, 1)`、剪切力 `(2, 5, 20, 25, 2)`，以及关节/动作/相机/位姿。
+  日志为 `logs/advisor_collection_only_smoke_20260928.log`（两者均留在本地工作空间）。
+  同次运行检测到 actor 实际为 `(1, 133)`、声明空间为 `(148,)`，已明确警告；
+  **采集路径通过，不代表 actor 或 checkpoint 兼容。**
 
 上述双臂检查是配置/传感器构造验证，不是完整策略 rollout。
 
